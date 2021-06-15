@@ -1,0 +1,40 @@
+# github.com/hhrutter/lzw v0.0.0-20190829144645-6f07a24e8650
+github.com/hhrutter/lzw
+# github.com/hhrutter/tiff v0.0.0-20190829141212-736cae8d0bc7
+github.com/hhrutter/tiff
+# github.com/patrickmn/go-cache v2.1.0+incompatible
+## explicit
+github.com/patrickmn/go-cache
+# github.com/pdfcpu/pdfcpu v0.3.11
+## explicit
+github.com/pdfcpu/pdfcpu/internal/config
+github.com/pdfcpu/pdfcpu/internal/corefont/metrics
+github.com/pdfcpu/pdfcpu/pkg/filter
+github.com/pdfcpu/pdfcpu/pkg/font
+github.com/pdfcpu/pdfcpu/pkg/log
+github.com/pdfcpu/pdfcpu/pkg/pdfcpu
+github.com/pdfcpu/pdfcpu/pkg/pdfcpu/validate
+github.com/pdfcpu/pdfcpu/pkg/types
+# github.com/phpdave11/gofpdf v1.4.2
+## explicit
+github.com/phpdave11/gofpdf
+github.com/phpdave11/gofpdf/contrib/gofpdi
+# github.com/phpdave11/gofpdi v1.0.12
+## explicit
+github.com/phpdave11/gofpdi
+# github.com/pkg/errors v0.9.1
+github.com/pkg/errors
+# github.com/vsenko/pdfcpu v0.3.15
+## explicit
+github.com/vsenko/pdfcpu/pkg/api
+# golang.org/x/image v0.0.0-20210220032944-ac19c3e999fb
+golang.org/x/image/ccitt
+golang.org/x/image/riff
+golang.org/x/image/vp8
+golang.org/x/image/vp8l
+golang.org/x/image/webp
+# golang.org/x/text v0.3.6
+golang.org/x/text/transform
+golang.org/x/text/unicode/norm
+# gopkg.in/yaml.v2 v2.4.0
+gopkg.in/yaml.v2
