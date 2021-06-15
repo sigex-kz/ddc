@@ -93,7 +93,7 @@ type ExtractorGetDocumentPartArgs struct {
 	// MaxPartSize should be used to limit the size of the part
 	MaxPartSize int
 
-	// Rewind to the begining of the document
+	// Rewind to the beginning of the document
 	Rewind bool
 }
 
