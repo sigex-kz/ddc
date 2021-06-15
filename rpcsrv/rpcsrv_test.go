@@ -256,6 +256,24 @@ func TestPingPong(t *testing.T) {
 		t.Fatalf("extracted embedded file (size %v) differs from the original (size %v)", len(embeddedPdfBytes), embeddedPDFBuffer.Len())
 	}
 
+	// Rewind and retrieve embedded PDF again
+
+	egdpArgs.Rewind = true
+	egdpArgs.MaxPartSize = 100 * 1024 * 1024
+
+	err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !egdpResp.IsFinal {
+		t.Fatal("should be final")
+	}
+
+	if !bytes.Equal(embeddedPdfBytes, egdpResp.Part) {
+		t.Fatalf("extracted embedded file (size %v) differs from the original (size %v)", len(embeddedPdfBytes), len(egdpResp.Part))
+	}
+
 	// Retrieve signatures
 
 	for i, s := range di.Signatures {

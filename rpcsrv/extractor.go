@@ -92,6 +92,9 @@ type ExtractorGetDocumentPartArgs struct {
 
 	// MaxPartSize should be used to limit the size of the part
 	MaxPartSize int
+
+	// Rewind to the begining of the document
+	Rewind bool
 }
 
 // ExtractorGetDocumentPartResp used to retrieve data from Extractor.GetDocumentPart
@@ -104,7 +107,7 @@ type ExtractorGetDocumentPartResp struct {
 }
 
 // GetDocumentPart retrieves parts of the original document in the specified slot successively, should be called after Parse
-func (t *Extractor) GetDocumentPart(args *BuilderGetDDCPartArgs, resp *BuilderGetDDCPartResp) error {
+func (t *Extractor) GetDocumentPart(args *ExtractorGetDocumentPartArgs, resp *ExtractorGetDocumentPartResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		return err
@@ -121,14 +124,19 @@ func (t *Extractor) GetDocumentPart(args *BuilderGetDDCPartArgs, resp *BuilderGe
 		return errors.New("DDC not parsed")
 	}
 
+	if args.Rewind {
+		e.ee.documentOriginalBytesRead = 0
+	}
+
+	bytesRemain := len(e.ee.documentOriginal.Bytes) - e.ee.documentOriginalBytesRead
 	partSize := args.MaxPartSize
-	if partSize >= len(e.ee.documentOriginal.Bytes) {
-		partSize = len(e.ee.documentOriginal.Bytes)
+	if partSize >= bytesRemain {
+		partSize = bytesRemain
 		resp.IsFinal = true
 	}
 
-	resp.Part = e.ee.documentOriginal.Bytes[:partSize]
-	e.ee.documentOriginal.Bytes = e.ee.documentOriginal.Bytes[partSize:]
+	resp.Part = e.ee.documentOriginal.Bytes[e.ee.documentOriginalBytesRead : e.ee.documentOriginalBytesRead+partSize]
+	e.ee.documentOriginalBytesRead += partSize
 
 	return nil
 }

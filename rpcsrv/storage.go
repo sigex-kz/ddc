@@ -26,9 +26,10 @@ type builderEntry struct {
 }
 
 type extractorEntry struct {
-	ddcFileBuffer    bytes.Buffer
-	documentOriginal *ddc.AttachedFile
-	signatures       []ddc.AttachedFile
+	ddcFileBuffer             bytes.Buffer
+	documentOriginal          *ddc.AttachedFile
+	documentOriginalBytesRead int
+	signatures                []ddc.AttachedFile
 }
 
 type entry struct {
