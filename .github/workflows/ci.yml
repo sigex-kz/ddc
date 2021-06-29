@@ -16,14 +16,14 @@ jobs:
       - run: |
           apt -qy update
           apt -qy install clamav clamav-daemon
-          mkdir /var/run/clamav/
-          chown clamav /var/run/clamav/
           /usr/bin/freshclam --foreground=true
           /usr/sbin/clamd --foreground=true &
           cat /etc/clamav/clamd.conf
-          ps aux
           sleep 4
           ls -la /var/run/clamav/
+          ls -la /var/lib/clamav/
+          ps aux
+          cat /var/log/clamav/clamav.log
           go test -mod vendor -timeout 30m -count=1 -failfast ./... -v
           jobs
           kill %1
