@@ -18,12 +18,10 @@ jobs:
           apt -qy install clamav clamav-daemon
           mkdir /var/run/clamav/
           chown clamav /var/run/clamav/
-          touch /var/run/clamav/clamd.ctl
           /usr/bin/freshclam --foreground=true
           /usr/sbin/clamd -c /etc/clamav/clamd.conf &
-          sleep 4
+          sleep 15
           ls -la /var/run/clamav/
-          ls -la /var/lib/clamav/
           ps aux
           cat /var/log/clamav/clamav.log
           go test -mod vendor -timeout 30m -count=1 -failfast ./... -v
