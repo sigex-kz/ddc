@@ -13,6 +13,10 @@ jobs:
     container: golang:1.16.4-buster
     steps:
       - uses: actions/checkout@v2
+      - run: |
+          apt install clamav clamav-daemon
+          systemctl daemon-reload
+          systemctl restart clamav-daemon.service
       - run: go test -mod vendor -timeout 30m -count=1 -failfast ./... -v
 
   build:
