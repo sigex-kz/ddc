@@ -16,9 +16,10 @@ jobs:
       - run: |
           apt -qy update
           apt -qy install clamav clamav-daemon
-          systemctl daemon-reload
-          systemctl restart clamav-daemon.service
-      - run: go test -mod vendor -timeout 30m -count=1 -failfast ./... -v
+          /usr/sbin/clamd --foreground=true &
+          go test -mod vendor -timeout 30m -count=1 -failfast ./... -v
+          jobs
+          kill %1
 
   build:
     if: startsWith( github.ref, 'refs/tags/v')
