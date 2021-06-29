@@ -25,8 +25,6 @@ jobs:
           ps aux
           cat /var/log/clamav/clamav.log
           go test -mod vendor -timeout 30m -count=1 -failfast ./... -v
-          jobs
-          kill %1
 
   build:
     if: startsWith( github.ref, 'refs/tags/v')
