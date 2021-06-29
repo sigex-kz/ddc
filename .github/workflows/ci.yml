@@ -17,9 +17,10 @@ jobs:
           apt -qy update
           apt -qy install clamav clamav-daemon
           mkdir /var/run/clamav/
+          chown clamav /var/run/clamav/
+          cp /etc/clamav/clamd.conf /etc/clamd.conf
           /usr/bin/freshclam --foreground=true
           /usr/sbin/clamd --foreground=true &
-          cat /etc/clamav/clamd.conf
           sleep 4
           ls -la /var/run/clamav/
           ls -la /var/lib/clamav/
