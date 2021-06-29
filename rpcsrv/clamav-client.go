@@ -33,7 +33,13 @@ func clamAVScan(data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() {
+		// To calm down errcheck
+		closeErr := conn.Close()
+		if closeErr != nil {
+			return
+		}
+	}()
 
 	_, err = conn.Write([]byte("nINSTREAM\n"))
 	if err != nil {
