@@ -68,6 +68,11 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, documentFileName *string) er
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
+	err = clamAVScan(e.ee.ddcFileBuffer.Bytes())
+	if err != nil {
+		return err
+	}
+
 	if e.ee == nil {
 		return errors.New("unknown id")
 	}
@@ -75,6 +80,18 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, documentFileName *string) er
 	documentOriginal, signatures, err := ddc.ExtractAttachments(bytes.NewReader(e.ee.ddcFileBuffer.Bytes()))
 	if err != nil {
 		return err
+	}
+
+	err = clamAVScan(documentOriginal.Bytes)
+	if err != nil {
+		return err
+	}
+
+	for _, s := range signatures {
+		err = clamAVScan(s.Bytes)
+		if err != nil {
+			return err
+		}
 	}
 
 	e.ee.documentOriginal = documentOriginal

@@ -12,11 +12,17 @@ import (
 )
 
 const (
-	network = "tcp"
-	address = "127.0.0.1:1234"
+	network          = "tcp"
+	address          = "127.0.0.1:1234"
+	eicar            = `X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`
+	clamAVEicarFound = "unexpected response from clamd 'stream: Win.Test.EICAR_HDB-1 FOUND\n'"
 )
 
 func TestPingPong(t *testing.T) {
+
+	// Configure ClamAV
+
+	ClamAVConfigure("unix", "/var/run/clamav/clamd.ctl")
 
 	// Start server
 
@@ -300,4 +306,191 @@ func TestPingPong(t *testing.T) {
 			t.Fatalf("extracted signature (size %v) differs from the original (size %v)", len(egsResp.Signature.Bytes), len(s.Body))
 		}
 	}
+}
+
+func TestClamAV(t *testing.T) {
+
+	// Configure ClamAV
+
+	ClamAVConfigure("unix", "/var/run/clamav/clamd.ctl")
+
+	// Start server
+
+	errChan := make(chan error)
+	go func(errChan chan error) {
+		srvErr := <-errChan
+		t.Log(srvErr)
+	}(errChan)
+
+	err := Start(network, address, errChan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() {
+		stopErr := Stop()
+		if stopErr != nil {
+			t.Fatal(stopErr)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}()
+
+	client, err := jsonrpc.Dial(network, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Load test data
+
+	jsonBytes, err := os.ReadFile("../tests-data/fullfeatured-di.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	di := ddc.DocumentInfo{}
+	err = json.Unmarshal(jsonBytes, &di)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("bad signature", func(t *testing.T) {
+
+		// Register builder id
+
+		brArgs := BuilderRegisterArgs{
+			Title:       di.Title,
+			Description: di.Description,
+			FileName:    "embed.pdf",
+		}
+
+		id := ""
+		err = client.Call("Builder.Register", &brArgs, &id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if id == "" {
+			t.Fatal("received bad id")
+		}
+
+		// Send signature
+
+		s := di.Signatures[0]
+		s.Body = []byte(eicar)
+		basArgs := BuilderAppendSignatureArgs{
+			ID:            id,
+			SignatureInfo: s,
+		}
+
+		notUsed := 0
+		err = client.Call("Builder.AppendSignature", &basArgs, &notUsed)
+		if err == nil || err.Error() != clamAVEicarFound {
+			t.Fatal("should fail because of the antivirus test")
+		}
+	})
+
+	t.Run("bad document", func(t *testing.T) {
+
+		// Register builder id
+
+		brArgs := BuilderRegisterArgs{
+			Title:       di.Title,
+			Description: di.Description,
+			FileName:    "embed.pdf",
+		}
+
+		id := ""
+		err = client.Call("Builder.Register", &brArgs, &id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if id == "" {
+			t.Fatal("received bad id")
+		}
+
+		// Send PDF to embed
+
+		badpArgs := BuilderAppendDocumentPartArgs{
+			ID:    id,
+			Bytes: []byte(eicar),
+		}
+
+		notUsed := 0
+		err = client.Call("Builder.AppendDocumentPart", &badpArgs, &notUsed)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Send signatures
+
+		for _, s := range di.Signatures {
+			basArgs := BuilderAppendSignatureArgs{
+				ID:            id,
+				SignatureInfo: s,
+			}
+
+			err = client.Call("Builder.AppendSignature", &basArgs, &notUsed)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// Build
+
+		bbArgs := BuilderBuildArgs{
+			ID:           id,
+			CreationDate: "2021.01.31 13:45:00 UTC+6",
+			BuilderName:  "RPC builder",
+			HowToVerify:  "Somehow",
+		}
+
+		err = client.Call("Builder.Build", &bbArgs, &notUsed)
+		if err == nil || err.Error() != clamAVEicarFound {
+			t.Fatal("should fail because of the antivirus test")
+		}
+	})
+
+	t.Run("bad ddc", func(t *testing.T) {
+
+		// Register extractor id
+
+		erArgs := ExtractorRegisterArgs{}
+
+		id := ""
+		err = client.Call("Extractor.Register", &erArgs, &id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if id == "" {
+			t.Fatal("received bad id")
+		}
+
+		// Send DDC to extractor
+
+		eaddcpArgs := ExtractorAppendDDCPartArgs{
+			ID:   id,
+			Part: []byte(eicar),
+		}
+
+		notUsed := 0
+		err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &notUsed)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Parse
+
+		epArgs := ExtractorParseArgs{
+			ID: id,
+		}
+
+		docFileName := ""
+		err = client.Call("Extractor.Parse", &epArgs, &docFileName)
+		if err == nil || err.Error() != clamAVEicarFound {
+			t.Fatal("should fail because of the antivirus test")
+		}
+	})
 }

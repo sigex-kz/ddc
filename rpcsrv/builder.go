@@ -81,6 +81,11 @@ type BuilderAppendSignatureArgs struct {
 
 // AppendSignature to the specified builder slot
 func (t *Builder) AppendSignature(args *BuilderAppendSignatureArgs, notUsed *int) error {
+	err := clamAVScan(args.SignatureInfo.Body)
+	if err != nil {
+		return err
+	}
+
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		return err
@@ -124,6 +129,11 @@ func (t *Builder) Build(args *BuilderBuildArgs, notUsed *int) error {
 
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
+
+	err = clamAVScan(e.be.embeddedFileBuffer.Bytes())
+	if err != nil {
+		return err
+	}
 
 	if e.be == nil {
 		return errors.New("unknown id")

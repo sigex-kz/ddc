@@ -22,6 +22,8 @@ var (
 
 var portFlag = flag.String("port", "4567", "port to launch RPC server on")
 var versionFlag = flag.Bool("version", false, "Show version")
+var clamdNetworkFlag = flag.String("clamd-network-type", "unix", "type of network socket to use to connect to clamd (ClamAV)")
+var clamdSocketFlag = flag.String("clamd-socket", "", "socket to use to connect to clamd (e.g. \"/var/run/clamav/clamd.ctl\"), disable ClamAV integration if empty")
 
 func main() {
 	if AppVersion == "" {
@@ -37,6 +39,10 @@ func main() {
 	if *versionFlag {
 		fmt.Printf("Version: %s\nBuildTimeStamp:%s\n", AppVersion, BuildTimeStamp)
 		return
+	}
+
+	if *clamdSocketFlag != "" {
+		rpcsrv.ClamAVConfigure(*clamdNetworkFlag, *clamdSocketFlag)
 	}
 
 	errChan := make(chan error)
