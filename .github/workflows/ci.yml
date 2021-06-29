@@ -19,8 +19,8 @@ jobs:
           mkdir /var/run/clamav/
           chown clamav /var/run/clamav/
           /usr/bin/freshclam --foreground=true
-          /usr/sbin/clamd -c /etc/clamav/clamd.conf &
-          sleep 15
+          /usr/sbin/clamd -c /etc/clamav/clamd.conf
+          sleep 3
           ls -la /var/run/clamav/
           ps aux
           cat /var/log/clamav/clamav.log
