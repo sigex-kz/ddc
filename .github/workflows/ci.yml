@@ -20,11 +20,10 @@ jobs:
           chown clamav /var/run/clamav/
           /usr/bin/freshclam --foreground=true
           /usr/sbin/clamd --foreground=true &
+          cat /etc/clamav/clamd.conf
           ps aux
           sleep 4
-          ls -l /var/
-          ls -l /var/run/
-          ls -l /var/run/clamav/
+          ls -la /var/run/clamav/
           go test -mod vendor -timeout 30m -count=1 -failfast ./... -v
           jobs
           kill %1
