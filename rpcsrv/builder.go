@@ -2,7 +2,6 @@ package rpcsrv
 
 import (
 	"bytes"
-	"errors"
 
 	"github.com/sigex-kz/ddc"
 )
@@ -22,8 +21,17 @@ type BuilderRegisterArgs struct {
 	FileName string
 }
 
+// BuilderRegisterResp used to retrieve data from Builder.Register
+type BuilderRegisterResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+
+	// ID of the new builder slot
+	ID string
+}
+
 // Register new builder slot and retrieve it's id
-func (t *Builder) Register(args *BuilderRegisterArgs, id *string) error {
+func (t *Builder) Register(args *BuilderRegisterArgs, resp *BuilderRegisterResp) error {
 	be := builderEntry{
 		di: ddc.DocumentInfo{
 			Title:       args.Title,
@@ -34,7 +42,7 @@ func (t *Builder) Register(args *BuilderRegisterArgs, id *string) error {
 		embeddedFileName: args.FileName,
 	}
 
-	*id = newStoreEntry(&be, nil)
+	resp.ID = newStoreEntry(&be, nil)
 
 	return nil
 }
@@ -48,23 +56,32 @@ type BuilderAppendDocumentPartArgs struct {
 	Bytes []byte
 }
 
+// BuilderAppendDocumentPartResp used to retrieve data from Builder.AppendDocumentPart
+type BuilderAppendDocumentPartResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+}
+
 // AppendDocumentPart to the specified builder slot
-func (t *Builder) AppendDocumentPart(args *BuilderAppendDocumentPartArgs, notUsed *int) error {
+func (t *Builder) AppendDocumentPart(args *BuilderAppendDocumentPartArgs, resp *BuilderAppendDocumentPartResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
 	if e.be == nil {
-		return errors.New("unknown id")
+		resp.Error = "unknown id"
+		return nil
 	}
 
 	_, err = e.be.embeddedFileBuffer.Write(args.Bytes)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	return nil
@@ -79,23 +96,32 @@ type BuilderAppendSignatureArgs struct {
 	SignatureInfo ddc.SignatureInfo
 }
 
+// BuilderAppendSignatureResp used to retrieve data from Builder.AppendSignature
+type BuilderAppendSignatureResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+}
+
 // AppendSignature to the specified builder slot
-func (t *Builder) AppendSignature(args *BuilderAppendSignatureArgs, notUsed *int) error {
+func (t *Builder) AppendSignature(args *BuilderAppendSignatureArgs, resp *BuilderAppendSignatureResp) error {
 	err := clamAVScan(args.SignatureInfo.Body)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
 	if e.be == nil {
-		return errors.New("unknown id")
+		resp.Error = "unknown id"
+		return nil
 	}
 
 	e.be.di.Signatures = append(e.be.di.Signatures, args.SignatureInfo)
@@ -119,12 +145,19 @@ type BuilderBuildArgs struct {
 	HowToVerify string
 }
 
+// BuilderBuildResp used to retrieve data from Builder.Build
+type BuilderBuildResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+}
+
 // Build DDC in the specified slot, should be called once after all data've been passed
 // to the slot via calls to AppendDocumentPart and AppendSignature
-func (t *Builder) Build(args *BuilderBuildArgs, notUsed *int) error {
+func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	e.mutex.Lock()
@@ -132,26 +165,31 @@ func (t *Builder) Build(args *BuilderBuildArgs, notUsed *int) error {
 
 	err = clamAVScan(e.be.embeddedFileBuffer.Bytes())
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	if e.be == nil {
-		return errors.New("unknown id")
+		resp.Error = "unknown id"
+		return nil
 	}
 
 	ddcBuilder, err := ddc.NewBuilder(e.be.di)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	err = ddcBuilder.EmbedPDF(bytes.NewReader(e.be.embeddedFileBuffer.Bytes()), e.be.embeddedFileName)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	err = ddcBuilder.Build(true, true, args.CreationDate, args.BuilderName, args.HowToVerify, &e.be.ddcFileBuffer)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	return nil
@@ -168,6 +206,9 @@ type BuilderGetDDCPartArgs struct {
 
 // BuilderGetDDCPartResp used to retrieve data from Builder.GetDDCPart
 type BuilderGetDDCPartResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+
 	// Part of DDC not larger than MaxPartSize
 	Part []byte
 
@@ -179,14 +220,16 @@ type BuilderGetDDCPartResp struct {
 func (t *Builder) GetDDCPart(args *BuilderGetDDCPartArgs, resp *BuilderGetDDCPartResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
 	if e.be == nil {
-		return errors.New("unknown id")
+		resp.Error = "unknown id"
+		return nil
 	}
 
 	resp.Part = e.be.ddcFileBuffer.Next(args.MaxPartSize)
@@ -197,14 +240,20 @@ func (t *Builder) GetDDCPart(args *BuilderGetDDCPartArgs, resp *BuilderGetDDCPar
 	return nil
 }
 
-// BuilderDropArgs used to pass data to Builder.GetDDCPart
+// BuilderDropArgs used to pass data to Builder.Drop
 type BuilderDropArgs struct {
 	// ID of the builder slot to use
 	ID string
 }
 
+// BuilderDropResp used to retrieve data from Builder.Drop
+type BuilderDropResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+}
+
 // Drop DDC in the specified slot
-func (t *Builder) Drop(args *BuilderDropArgs, notUsed *int) error {
+func (t *Builder) Drop(args *BuilderDropArgs, resp *BuilderDropResp) error {
 	deleteStoreEntry(args.ID)
 	return nil
 }

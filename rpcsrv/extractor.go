@@ -2,7 +2,6 @@ package rpcsrv
 
 import (
 	"bytes"
-	"errors"
 
 	"github.com/sigex-kz/ddc"
 )
@@ -14,11 +13,20 @@ type Extractor int
 type ExtractorRegisterArgs struct {
 }
 
-// Register new extraactor slot and retrieve it's id
-func (t *Extractor) Register(args *ExtractorRegisterArgs, id *string) error {
+// ExtractorRegisterResp used to retrieve data from Extractor.Register
+type ExtractorRegisterResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+
+	// ID of the new extractor slot
+	ID string
+}
+
+// Register new extractor slot and retrieve it's id
+func (t *Extractor) Register(args *ExtractorRegisterArgs, resp *ExtractorRegisterResp) error {
 	ee := extractorEntry{}
 
-	*id = newStoreEntry(nil, &ee)
+	resp.ID = newStoreEntry(nil, &ee)
 
 	return nil
 }
@@ -32,21 +40,33 @@ type ExtractorAppendDDCPartArgs struct {
 	Part []byte
 }
 
+// ExtractorAppendDDCPartresp used to retrieve data from Extractor.AppendDDCPart
+type ExtractorAppendDDCPartResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+}
+
 // AppendDDCPart to the specified extractor slot
-func (t *Extractor) AppendDDCPart(args *ExtractorAppendDDCPartArgs, notUsed *int) error {
+func (t *Extractor) AppendDDCPart(args *ExtractorAppendDDCPartArgs, resp *ExtractorAppendDDCPartResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
 	if e.ee == nil {
-		return errors.New("unknown id")
+		resp.Error = "unknown id"
+		return nil
 	}
 
-	e.ee.ddcFileBuffer.Write(args.Part)
+	_, err = e.ee.ddcFileBuffer.Write(args.Part)
+	if err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
 
 	return nil
 }
@@ -57,12 +77,22 @@ type ExtractorParseArgs struct {
 	ID string
 }
 
+// ExtractorParseResp used to retrieve data from Extractor.Parse
+type ExtractorParseResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+
+	// DocumentFileName extracted from DDC
+	DocumentFileName string
+}
+
 // Parse DDC in the specified slot, should be called after all parts of DDC've been
 // transmitted via AppendDDCPart
-func (t *Extractor) Parse(args *ExtractorParseArgs, documentFileName *string) error {
+func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	e.mutex.Lock()
@@ -70,34 +100,39 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, documentFileName *string) er
 
 	err = clamAVScan(e.ee.ddcFileBuffer.Bytes())
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	if e.ee == nil {
-		return errors.New("unknown id")
+		resp.Error = "unknown id"
+		return nil
 	}
 
 	documentOriginal, signatures, err := ddc.ExtractAttachments(bytes.NewReader(e.ee.ddcFileBuffer.Bytes()))
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	err = clamAVScan(documentOriginal.Bytes)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	for _, s := range signatures {
 		err = clamAVScan(s.Bytes)
 		if err != nil {
-			return err
+			resp.Error = err.Error()
+			return nil
 		}
 	}
 
 	e.ee.documentOriginal = documentOriginal
 	e.ee.signatures = signatures
 
-	*documentFileName = documentOriginal.Name
+	resp.DocumentFileName = documentOriginal.Name
 
 	return nil
 }
@@ -116,6 +151,9 @@ type ExtractorGetDocumentPartArgs struct {
 
 // ExtractorGetDocumentPartResp used to retrieve data from Extractor.GetDocumentPart
 type ExtractorGetDocumentPartResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+
 	// Part of the original document not larger than MaxPartSize
 	Part []byte
 
@@ -127,18 +165,21 @@ type ExtractorGetDocumentPartResp struct {
 func (t *Extractor) GetDocumentPart(args *ExtractorGetDocumentPartArgs, resp *ExtractorGetDocumentPartResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
 	if e.ee == nil {
-		return errors.New("unknown id")
+		resp.Error = "unknown id"
+		return nil
 	}
 
 	if e.ee.documentOriginal == nil {
-		return errors.New("DDC not parsed")
+		resp.Error = "DDC not parsed"
+		return nil
 	}
 
 	if args.Rewind {
@@ -166,6 +207,9 @@ type ExtractorGetSignatureArgs struct {
 
 // ExtractorGetSignatureResp used to retrieve data from Extractor.GetSignature
 type ExtractorGetSignatureResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+
 	// Signature bytes and file name
 	Signature ddc.AttachedFile
 
@@ -177,18 +221,21 @@ type ExtractorGetSignatureResp struct {
 func (t *Extractor) GetSignature(args *ExtractorGetSignatureArgs, resp *ExtractorGetSignatureResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
 	if e.ee == nil {
-		return errors.New("unknown id")
+		resp.Error = "unknown id"
+		return nil
 	}
 
 	if e.ee.signatures == nil {
-		return errors.New("DDC not parsed")
+		resp.Error = "DDC not parsed"
+		return nil
 	}
 
 	resp.Signature = e.ee.signatures[0]
@@ -202,14 +249,20 @@ func (t *Extractor) GetSignature(args *ExtractorGetSignatureArgs, resp *Extracto
 	return nil
 }
 
-// ExtractorDropArgs used to pass data to Extractor.GetDDCPart
+// ExtractorDropArgs used to pass data to Extractor.Drop
 type ExtractorDropArgs struct {
 	// ID of the extractor slot to use
 	ID string
 }
 
+// ExtractorDropResp used to retrieve data from Extractor.Drop
+type ExtractorDropResp struct {
+	// Error is not "" if any error occured during the operation
+	Error string
+}
+
 // Drop DDC in the specified slot
-func (t *Extractor) Drop(args *ExtractorDropArgs, notUsed *int) error {
+func (t *Extractor) Drop(args *ExtractorDropArgs, resp *ExtractorDropResp) error {
 	deleteStoreEntry(args.ID)
 	return nil
 }

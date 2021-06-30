@@ -76,69 +76,86 @@ func TestPingPong(t *testing.T) {
 		Description: di.Description,
 		FileName:    "embed.pdf",
 	}
+	brResp := BuilderRegisterResp{}
 
-	id := ""
-	err = client.Call("Builder.Register", &brArgs, &id)
+	err = client.Call("Builder.Register", &brArgs, &brResp)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if brResp.Error != "" {
+		t.Fatal(brResp.Error)
+	}
 
-	if id == "" {
+	if brResp.ID == "" {
 		t.Fatal("received bad id")
 	}
 
 	// Send PDF to embed
 
 	badpArgs := BuilderAppendDocumentPartArgs{
-		ID:    id,
+		ID:    brResp.ID,
 		Bytes: embeddedPdfBytes[:len(embeddedPdfBytes)/2],
 	}
+	badpResp := BuilderAppendDocumentPartResp{}
 
-	notUsed := 0
-	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &notUsed)
+	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if badpResp.Error != "" {
+		t.Fatal(badpResp.Error)
 	}
 
 	badpArgs.Bytes = embeddedPdfBytes[len(embeddedPdfBytes)/2:]
 
-	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &notUsed)
+	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if badpResp.Error != "" {
+		t.Fatal(badpResp.Error)
 	}
 
 	// Send signatures
 
 	for _, s := range di.Signatures {
 		basArgs := BuilderAppendSignatureArgs{
-			ID:            id,
+			ID:            brResp.ID,
 			SignatureInfo: s,
 		}
+		basResp := BuilderAppendSignatureResp{}
 
-		err = client.Call("Builder.AppendSignature", &basArgs, &notUsed)
+		err = client.Call("Builder.AppendSignature", &basArgs, &basResp)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if basResp.Error != "" {
+			t.Fatal(basResp.Error)
 		}
 	}
 
 	// Build
 
 	bbArgs := BuilderBuildArgs{
-		ID:           id,
+		ID:           brResp.ID,
 		CreationDate: "2021.01.31 13:45:00 UTC+6",
 		BuilderName:  "RPC builder",
 		HowToVerify:  "Somehow",
 	}
+	bbResp := BuilderBuildResp{}
 
-	err = client.Call("Builder.Build", &bbArgs, &notUsed)
+	err = client.Call("Builder.Build", &bbArgs, &bbResp)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if bbResp.Error != "" {
+		t.Fatal(bbResp.Error)
 	}
 
 	// Retrieve
 
 	bgddcpArgs := BuilderGetDDCPartArgs{
-		ID:          id,
+		ID:          brResp.ID,
 		MaxPartSize: 10,
 	}
 	bgddcpResp := BuilderGetDDCPartResp{}
@@ -146,6 +163,9 @@ func TestPingPong(t *testing.T) {
 	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if bgddcpResp.Error != "" {
+		t.Fatal(bgddcpResp.Error)
 	}
 
 	if bgddcpResp.IsFinal {
@@ -161,6 +181,9 @@ func TestPingPong(t *testing.T) {
 	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if bgddcpResp.Error != "" {
+		t.Fatal(bgddcpResp.Error)
 	}
 
 	if !bgddcpResp.IsFinal {
@@ -179,64 +202,79 @@ func TestPingPong(t *testing.T) {
 	// Register extractor id
 
 	erArgs := ExtractorRegisterArgs{}
+	erResp := ExtractorRegisterResp{}
 
-	id = ""
-	err = client.Call("Extractor.Register", &erArgs, &id)
+	err = client.Call("Extractor.Register", &erArgs, &erResp)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if erResp.Error != "" {
+		t.Fatal(erResp.Error)
+	}
 
-	if id == "" {
+	if erResp.ID == "" {
 		t.Fatal("received bad id")
 	}
 
 	// Send DDC to extractor
 
 	eaddcpArgs := ExtractorAppendDDCPartArgs{
-		ID:   id,
+		ID:   erResp.ID,
 		Part: ddcPDFBuffer.Next(10),
 	}
+	eaddcpResp := ExtractorAppendDDCPartResp{}
 
-	err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &notUsed)
+	err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &eaddcpResp)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if eaddcpResp.Error != "" {
+		t.Fatal(eaddcpResp.Error)
 	}
 
 	eaddcpArgs.Part = ddcPDFBuffer.Next(ddcPDFBuffer.Len())
 
-	err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &notUsed)
+	err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &eaddcpResp)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if eaddcpResp.Error != "" {
+		t.Fatal(eaddcpResp.Error)
 	}
 
 	// Parse
 
 	epArgs := ExtractorParseArgs{
-		ID: id,
+		ID: erResp.ID,
 	}
+	epResp := ExtractorParseResp{}
 
-	docFileName := ""
-	err = client.Call("Extractor.Parse", &epArgs, &docFileName)
+	err = client.Call("Extractor.Parse", &epArgs, &epResp)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if epResp.Error != "" {
+		t.Fatal(epResp.Error)
+	}
 
-	if docFileName != "embed.pdf" {
-		t.Fatalf("bad file name '%v', expected '%v'", docFileName, "embed.pdf")
+	if epResp.DocumentFileName != "embed.pdf" {
+		t.Fatalf("bad file name '%v', expected '%v'", epResp.DocumentFileName, "embed.pdf")
 	}
 
 	// Retrieve embedded PDF
 
 	egdpArgs := ExtractorGetDocumentPartArgs{
-		ID:          id,
+		ID:          erResp.ID,
 		MaxPartSize: 10,
 	}
-
 	egdpResp := ExtractorGetDocumentPartResp{}
 
 	err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if egdpResp.Error != "" {
+		t.Fatal(egdpResp.Error)
 	}
 
 	if egdpResp.IsFinal {
@@ -250,6 +288,9 @@ func TestPingPong(t *testing.T) {
 	err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if egdpResp.Error != "" {
+		t.Fatal(egdpResp.Error)
 	}
 
 	if !egdpResp.IsFinal {
@@ -271,6 +312,9 @@ func TestPingPong(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if egdpResp.Error != "" {
+		t.Fatal(egdpResp.Error)
+	}
 
 	if !egdpResp.IsFinal {
 		t.Fatal("should be final")
@@ -284,14 +328,16 @@ func TestPingPong(t *testing.T) {
 
 	for i, s := range di.Signatures {
 		egsArgs := ExtractorGetSignatureArgs{
-			ID: id,
+			ID: erResp.ID,
 		}
-
 		egsResp := ExtractorGetSignatureResp{}
 
 		err = client.Call("Extractor.GetSignature", &egsArgs, &egsResp)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if egsResp.Error != "" {
+			t.Fatal(egsResp.Error)
 		}
 
 		if (i+1 != len(di.Signatures)) && egsResp.IsFinal {
@@ -363,14 +409,17 @@ func TestClamAV(t *testing.T) {
 			Description: di.Description,
 			FileName:    "embed.pdf",
 		}
+		brResp := BuilderRegisterResp{}
 
-		id := ""
-		err = client.Call("Builder.Register", &brArgs, &id)
+		err = client.Call("Builder.Register", &brArgs, &brResp)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if brResp.Error != "" {
+			t.Fatal(brResp.Error)
+		}
 
-		if id == "" {
+		if brResp.ID == "" {
 			t.Fatal("received bad id")
 		}
 
@@ -379,13 +428,16 @@ func TestClamAV(t *testing.T) {
 		s := di.Signatures[0]
 		s.Body = []byte(eicar)
 		basArgs := BuilderAppendSignatureArgs{
-			ID:            id,
+			ID:            brResp.ID,
 			SignatureInfo: s,
 		}
+		basResp := BuilderAppendSignatureResp{}
 
-		notUsed := 0
-		err = client.Call("Builder.AppendSignature", &basArgs, &notUsed)
-		if err == nil || err.Error() != clamAVEicarFound {
+		err = client.Call("Builder.AppendSignature", &basArgs, &basResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if basResp.Error != clamAVEicarFound {
 			t.Fatal("should fail because of the antivirus test")
 		}
 	})
@@ -399,55 +451,69 @@ func TestClamAV(t *testing.T) {
 			Description: di.Description,
 			FileName:    "embed.pdf",
 		}
+		brResp := BuilderRegisterResp{}
 
-		id := ""
-		err = client.Call("Builder.Register", &brArgs, &id)
+		err = client.Call("Builder.Register", &brArgs, &brResp)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if brResp.Error != "" {
+			t.Fatal(brResp.Error)
+		}
 
-		if id == "" {
+		if brResp.ID == "" {
 			t.Fatal("received bad id")
 		}
 
 		// Send PDF to embed
 
 		badpArgs := BuilderAppendDocumentPartArgs{
-			ID:    id,
+			ID:    brResp.ID,
 			Bytes: []byte(eicar),
 		}
+		badpResp := BuilderAppendDocumentPartResp{}
 
-		notUsed := 0
-		err = client.Call("Builder.AppendDocumentPart", &badpArgs, &notUsed)
+		err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if badpResp.Error != "" {
+			t.Fatal(badpResp.Error)
 		}
 
 		// Send signatures
 
 		for _, s := range di.Signatures {
 			basArgs := BuilderAppendSignatureArgs{
-				ID:            id,
+				ID:            brResp.ID,
 				SignatureInfo: s,
 			}
+			basResp := BuilderAppendSignatureResp{}
 
-			err = client.Call("Builder.AppendSignature", &basArgs, &notUsed)
+			err = client.Call("Builder.AppendSignature", &basArgs, &basResp)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if basResp.Error != "" {
+				t.Fatal(basResp.Error)
 			}
 		}
 
 		// Build
 
 		bbArgs := BuilderBuildArgs{
-			ID:           id,
+			ID:           brResp.ID,
 			CreationDate: "2021.01.31 13:45:00 UTC+6",
 			BuilderName:  "RPC builder",
 			HowToVerify:  "Somehow",
 		}
+		bbResp := BuilderBuildResp{}
 
-		err = client.Call("Builder.Build", &bbArgs, &notUsed)
-		if err == nil || err.Error() != clamAVEicarFound {
+		err = client.Call("Builder.Build", &bbArgs, &bbResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bbResp.Error != clamAVEicarFound {
 			t.Fatal("should fail because of the antivirus test")
 		}
 	})
@@ -457,39 +523,48 @@ func TestClamAV(t *testing.T) {
 		// Register extractor id
 
 		erArgs := ExtractorRegisterArgs{}
+		erResp := ExtractorRegisterResp{}
 
-		id := ""
-		err = client.Call("Extractor.Register", &erArgs, &id)
+		err = client.Call("Extractor.Register", &erArgs, &erResp)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if erResp.Error != "" {
+			t.Fatal(erResp.Error)
+		}
 
-		if id == "" {
+		if erResp.ID == "" {
 			t.Fatal("received bad id")
 		}
 
 		// Send DDC to extractor
 
 		eaddcpArgs := ExtractorAppendDDCPartArgs{
-			ID:   id,
+			ID:   erResp.ID,
 			Part: []byte(eicar),
 		}
+		eaddcpResp := ExtractorAppendDDCPartResp{}
 
-		notUsed := 0
-		err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &notUsed)
+		err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &eaddcpResp)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if eaddcpResp.Error != "" {
+			t.Fatal(eaddcpResp.Error)
 		}
 
 		// Parse
 
 		epArgs := ExtractorParseArgs{
-			ID: id,
+			ID: erResp.ID,
 		}
+		epResp := ExtractorParseResp{}
 
-		docFileName := ""
-		err = client.Call("Extractor.Parse", &epArgs, &docFileName)
-		if err == nil || err.Error() != clamAVEicarFound {
+		err = client.Call("Extractor.Parse", &epArgs, &epResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if epResp.Error != clamAVEicarFound {
 			t.Fatal("should fail because of the antivirus test")
 		}
 	})
