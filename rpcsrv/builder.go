@@ -23,7 +23,7 @@ type BuilderRegisterArgs struct {
 
 // BuilderRegisterResp used to retrieve data from Builder.Register
 type BuilderRegisterResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 
 	// ID of the new builder slot
@@ -58,7 +58,7 @@ type BuilderAppendDocumentPartArgs struct {
 
 // BuilderAppendDocumentPartResp used to retrieve data from Builder.AppendDocumentPart
 type BuilderAppendDocumentPartResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 }
 
@@ -98,7 +98,7 @@ type BuilderAppendSignatureArgs struct {
 
 // BuilderAppendSignatureResp used to retrieve data from Builder.AppendSignature
 type BuilderAppendSignatureResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 }
 
@@ -147,7 +147,7 @@ type BuilderBuildArgs struct {
 
 // BuilderBuildResp used to retrieve data from Builder.Build
 type BuilderBuildResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 }
 
@@ -206,7 +206,7 @@ type BuilderGetDDCPartArgs struct {
 
 // BuilderGetDDCPartResp used to retrieve data from Builder.GetDDCPart
 type BuilderGetDDCPartResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 
 	// Part of DDC not larger than MaxPartSize
@@ -248,7 +248,7 @@ type BuilderDropArgs struct {
 
 // BuilderDropResp used to retrieve data from Builder.Drop
 type BuilderDropResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 }
 

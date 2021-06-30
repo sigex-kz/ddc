@@ -15,7 +15,7 @@ type ExtractorRegisterArgs struct {
 
 // ExtractorRegisterResp used to retrieve data from Extractor.Register
 type ExtractorRegisterResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 
 	// ID of the new extractor slot
@@ -40,9 +40,9 @@ type ExtractorAppendDDCPartArgs struct {
 	Part []byte
 }
 
-// ExtractorAppendDDCPartresp used to retrieve data from Extractor.AppendDDCPart
+// ExtractorAppendDDCPartResp used to retrieve data from Extractor.AppendDDCPart
 type ExtractorAppendDDCPartResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 }
 
@@ -79,7 +79,7 @@ type ExtractorParseArgs struct {
 
 // ExtractorParseResp used to retrieve data from Extractor.Parse
 type ExtractorParseResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 
 	// DocumentFileName extracted from DDC
@@ -151,7 +151,7 @@ type ExtractorGetDocumentPartArgs struct {
 
 // ExtractorGetDocumentPartResp used to retrieve data from Extractor.GetDocumentPart
 type ExtractorGetDocumentPartResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 
 	// Part of the original document not larger than MaxPartSize
@@ -207,7 +207,7 @@ type ExtractorGetSignatureArgs struct {
 
 // ExtractorGetSignatureResp used to retrieve data from Extractor.GetSignature
 type ExtractorGetSignatureResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 
 	// Signature bytes and file name
@@ -257,7 +257,7 @@ type ExtractorDropArgs struct {
 
 // ExtractorDropResp used to retrieve data from Extractor.Drop
 type ExtractorDropResp struct {
-	// Error is not "" if any error occured during the operation
+	// Error is not "" if any error occurred during the operation
 	Error string
 }
 
