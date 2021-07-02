@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/phpdave11/gofpdf"
 	"github.com/phpdave11/gofpdf/contrib/gofpdi"
@@ -240,24 +239,12 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 }
 
 func (ddc *Builder) initPdf() (pdf *gofpdf.Fpdf, err error) {
-	fontsFolder, err := extractEmbeddedFonts()
-	defer func() {
-		// To calm down errcheck
-		rmErr := os.RemoveAll(fontsFolder)
-		if rmErr != nil {
-			return
-		}
-	}()
-	if err != nil {
-		return nil, err
-	}
+	pdf = gofpdf.New(constPageOrientation, constPageUnits, constPageType, "")
 
-	pdf = gofpdf.New(constPageOrientation, constPageUnits, constPageType, fontsFolder)
-
-	pdf.AddUTF8Font(constFontRegular, "", "")
-	pdf.AddUTF8Font(constFontBold, "", "")
-	pdf.AddUTF8Font(constFontItalic, "", "")
-	pdf.AddUTF8Font(constFontBoldItalic, "", "")
+	pdf.AddUTF8FontFromBytes(constFontRegular, "", embeddedFontRegular)
+	pdf.AddUTF8FontFromBytes(constFontBold, "", embeddedFontBold)
+	pdf.AddUTF8FontFromBytes(constFontItalic, "", embeddedFontItalic)
+	pdf.AddUTF8FontFromBytes(constFontBoldItalic, "", embeddedFontBoldItalic)
 
 	// Fpdf margins are used only on Info Block pages, configure them with header and footer height to utilize auto page break
 	pdf.SetMargins(constPageLeftMargin, constPageTopMargin+constHeaderHeight, constPageRightMargin)
