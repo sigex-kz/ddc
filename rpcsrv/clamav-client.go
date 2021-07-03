@@ -59,7 +59,7 @@ func clamAVScan(data []byte) error {
 			return err
 		}
 
-		thisChunk := data[len(data)-remainderSize : thisChunkSize]
+		thisChunk := data[len(data)-remainderSize : len(data)-remainderSize+thisChunkSize]
 		_, err = conn.Write(thisChunk)
 		if err != nil {
 			return err
