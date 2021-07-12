@@ -46,7 +46,12 @@ type Box struct {
 
 // PageBoundaries represent the defined PDF page boundaries.
 type PageBoundaries struct {
-	Media, Crop, Trim, Bleed, Art *Box
+	Media *Box
+	Crop  *Box
+	Trim  *Box
+	Bleed *Box
+	Art   *Box
+	Rot   int // The effective page rotation.
 }
 
 // SelectAll selects all page boundaries.
@@ -845,9 +850,62 @@ func ParseBox(s string, u DisplayUnit) (*Box, error) {
 	return parseBoxByMarginVals(ss, s, abs, u)
 }
 
+func (ctx *Context) addPageBoundaryString(i int, pb PageBoundaries, wantPB *PageBoundaries) []string {
+	unit := ctx.unit()
+	ss := []string{}
+	d := pb.CropBox().Dimensions()
+	if pb.Rot%180 != 0 {
+		d.Width, d.Height = d.Height, d.Width
+	}
+	or := "portrait"
+	if d.Landscape() {
+		or = "landscape"
+	}
+
+	s := fmt.Sprintf("rot=%+d orientation:%s", pb.Rot, or)
+	ss = append(ss, fmt.Sprintf("Page %d: %s", i+1, s))
+	if wantPB.Media != nil {
+		s := ""
+		if pb.Media.Inherited {
+			s = "(inherited)"
+		}
+		ss = append(ss, fmt.Sprintf("  MediaBox (%s) %v %s", unit, pb.MediaBox().Format(ctx.Unit), s))
+	}
+	if wantPB.Crop != nil {
+		s := ""
+		if pb.Crop == nil {
+			s = "(default)"
+		} else if pb.Crop.Inherited {
+			s = "(inherited)"
+		}
+		ss = append(ss, fmt.Sprintf("   CropBox (%s) %v %s", unit, pb.CropBox().Format(ctx.Unit), s))
+	}
+	if wantPB.Trim != nil {
+		s := ""
+		if pb.Trim == nil {
+			s = "(default)"
+		}
+		ss = append(ss, fmt.Sprintf("   TrimBox (%s) %v %s", unit, pb.TrimBox().Format(ctx.Unit), s))
+	}
+	if wantPB.Bleed != nil {
+		s := ""
+		if pb.Bleed == nil {
+			s = "(default)"
+		}
+		ss = append(ss, fmt.Sprintf("  BleedBox (%s) %v %s", unit, pb.BleedBox().Format(ctx.Unit), s))
+	}
+	if wantPB.Art != nil {
+		s := ""
+		if pb.Art == nil {
+			s = "(default)"
+		}
+		ss = append(ss, fmt.Sprintf("    ArtBox (%s) %v %s", unit, pb.ArtBox().Format(ctx.Unit), s))
+	}
+	return append(ss, "")
+}
+
 // ListPageBoundaries lists page boundaries specified in wantPB for selected pages.
 func (ctx *Context) ListPageBoundaries(selectedPages IntSet, wantPB *PageBoundaries) ([]string, error) {
-	unit := ctx.unit()
 	// TODO ctx.PageBoundaries(selectedPages)
 	pbs, err := ctx.PageBoundaries()
 	if err != nil {
@@ -858,45 +916,7 @@ func (ctx *Context) ListPageBoundaries(selectedPages IntSet, wantPB *PageBoundar
 		if _, found := selectedPages[i+1]; !found {
 			continue
 		}
-		ss = append(ss, fmt.Sprintf("Page %d:", i+1))
-		if wantPB.Media != nil {
-			s := ""
-			if pb.Media.Inherited {
-				s = "(inherited)"
-			}
-			ss = append(ss, fmt.Sprintf("  MediaBox (%s) %v %s", unit, pb.MediaBox().Format(ctx.Unit), s))
-		}
-		if wantPB.Crop != nil {
-			s := ""
-			if pb.Crop == nil {
-				s = "(default)"
-			} else if pb.Crop.Inherited {
-				s = "(inherited)"
-			}
-			ss = append(ss, fmt.Sprintf("   CropBox (%s) %v %s", unit, pb.CropBox().Format(ctx.Unit), s))
-		}
-		if wantPB.Trim != nil {
-			s := ""
-			if pb.Trim == nil {
-				s = "(default)"
-			}
-			ss = append(ss, fmt.Sprintf("   TrimBox (%s) %v %s", unit, pb.TrimBox().Format(ctx.Unit), s))
-		}
-		if wantPB.Bleed != nil {
-			s := ""
-			if pb.Bleed == nil {
-				s = "(default)"
-			}
-			ss = append(ss, fmt.Sprintf("  BleedBox (%s) %v %s", unit, pb.BleedBox().Format(ctx.Unit), s))
-		}
-		if wantPB.Art != nil {
-			s := ""
-			if pb.Art == nil {
-				s = "(default)"
-			}
-			ss = append(ss, fmt.Sprintf("    ArtBox (%s) %v %s", unit, pb.ArtBox().Format(ctx.Unit), s))
-		}
-		ss = append(ss, "")
+		ss = append(ss, ctx.addPageBoundaryString(i, pb, wantPB)...)
 	}
 
 	return ss, nil
@@ -911,7 +931,7 @@ func (ctx *Context) RemovePageBoundaries(selectedPages IntSet, pb *PageBoundarie
 		if !v {
 			continue
 		}
-		d, inhPAttrs, err := ctx.PageDict(k, false)
+		d, _, inhPAttrs, err := ctx.PageDict(k, false)
 		if err != nil {
 			return err
 		}
@@ -1164,7 +1184,7 @@ func (ctx *Context) AddPageBoundaries(selectedPages IntSet, pb *PageBoundaries) 
 		if !v {
 			continue
 		}
-		d, inhPAttrs, err := ctx.PageDict(k, false)
+		d, _, inhPAttrs, err := ctx.PageDict(k, false)
 		if err != nil {
 			return err
 		}
@@ -1220,7 +1240,7 @@ func (ctx *Context) Crop(selectedPages IntSet, b *Box) error {
 		if !v {
 			continue
 		}
-		d, inhPAttrs, err := ctx.PageDict(k, false)
+		d, _, inhPAttrs, err := ctx.PageDict(k, false)
 		if err != nil {
 			return err
 		}

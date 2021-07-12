@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 
+	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/phpdave11/gofpdf"
 	"github.com/phpdave11/gofpdf/contrib/gofpdi"
 	realgofpdi "github.com/phpdave11/gofpdi"
-	pdfcpuapi "github.com/vsenko/pdfcpu/pkg/api"
 )
 
 const (
@@ -770,37 +771,37 @@ func ExtractAttachments(ddcPdf io.ReadSeeker) (documentOriginal *AttachedFile, s
 		return nil, nil, err
 	}
 
-	attachmentsFileNames, err := pdfcpuapi.ListAttachmentsFileNames(ddcPdf, nil)
+	attachments, err := pdfcpuapi.ExtractAttachmentsRaw(ddcPdf, "", nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	attachmentsFileBytes, err := pdfcpuapi.ExtractAttachmentsAsBytes(ddcPdf, attachmentsFileNames, nil)
+	if len(attachments) < constMinimalAttachmentsDuringExport {
+		return nil, nil, fmt.Errorf("PDF contains less than %v attachments (%v)", len(attachments), constMinimalAttachmentsDuringExport)
+	}
+
+	documentOriginalBytes, err := ioutil.ReadAll(attachments[0].Reader)
 	if err != nil {
 		return nil, nil, err
-	}
-
-	if len(attachmentsFileNames) != len(attachmentsFileBytes) {
-		return nil, nil, fmt.Errorf("quantity of attached file names (%v) does not match contents (%v)", len(attachmentsFileNames), len(attachmentsFileBytes))
-	}
-
-	if len(attachmentsFileNames) < constMinimalAttachmentsDuringExport {
-		return nil, nil, fmt.Errorf("PDF contains less than %v attachments (%v)", len(attachmentsFileNames), constMinimalAttachmentsDuringExport)
 	}
 
 	documentOriginal = &AttachedFile{
-		Name:  attachmentsFileNames[0],
-		Bytes: attachmentsFileBytes[0],
+		Name:  attachments[0].FileName,
+		Bytes: documentOriginalBytes,
 	}
 
-	attachmentsFileNames = attachmentsFileNames[1:]
-	attachmentsFileBytes = attachmentsFileBytes[1:]
+	attachments = attachments[1:]
 
-	signatures = make([]AttachedFile, len(attachmentsFileNames))
+	signatures = make([]AttachedFile, len(attachments))
 
-	for i := 0; i < len(attachmentsFileNames); i++ {
-		signatures[i].Name = attachmentsFileNames[i]
-		signatures[i].Bytes = attachmentsFileBytes[i]
+	for i := 0; i < len(attachments); i++ {
+		signatureBytes, readErr := ioutil.ReadAll(attachments[i].Reader)
+		if readErr != nil {
+			return nil, nil, readErr
+		}
+
+		signatures[i].Name = attachments[i].FileName
+		signatures[i].Bytes = signatureBytes
 	}
 
 	return documentOriginal, signatures, nil

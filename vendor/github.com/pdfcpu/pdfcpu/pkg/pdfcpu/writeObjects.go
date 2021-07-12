@@ -50,8 +50,9 @@ func writeHeader(w *WriteContext, v Version) error {
 	return nil
 }
 
-func writeTrailer(w *WriteContext) (int, error) {
-	return w.WriteString("%%EOF")
+func writeTrailer(w *WriteContext) error {
+	_, err := w.WriteString("%%EOF" + w.Eol)
+	return err
 }
 
 func writeObjectHeader(w *WriteContext, objNumber, genNumber int) (int, error) {
@@ -731,4 +732,57 @@ func writeEntry(ctx *Context, d Dict, dictName, entryName string) (Object, error
 	log.Write.Printf("writeEntry end: dict=%s entry=%s offset=%d\n", dictName, entryName, ctx.Write.Offset)
 
 	return o, nil
+}
+
+func writeFlatObject(ctx *Context, objNr int) error {
+
+	e, ok := ctx.FindTableEntryLight(objNr)
+	if !ok {
+		return errors.Errorf("writeFlatObject: undefined PDF object #%d ", objNr)
+	}
+
+	if e.Free {
+		ctx.Write.Table[objNr] = 0
+		return nil
+	}
+
+	o := e.Object
+	genNr := *e.Generation
+	var err error
+
+	switch o := o.(type) {
+
+	case Dict:
+		err = writeDictObject(ctx, objNr, genNr, o)
+
+	case StreamDict:
+		err = writeDeepStreamDict(ctx, &o, objNr, genNr)
+
+	case Array:
+		err = writeArrayObject(ctx, objNr, genNr, o)
+
+	case Integer:
+		err = writeIntegerObject(ctx, objNr, genNr, o)
+
+	case Float:
+		err = writeFloatObject(ctx, objNr, genNr, o)
+
+	case StringLiteral:
+		err = writeStringLiteralObject(ctx, objNr, genNr, o)
+
+	case HexLiteral:
+		err = writeHexLiteralObject(ctx, objNr, genNr, o)
+
+	case Boolean:
+		err = writeBooleanObject(ctx, objNr, genNr, o)
+
+	case Name:
+		err = writeNameObject(ctx, objNr, genNr, o)
+
+	default:
+		err = errors.Errorf("writeFlatObject: unexpected PDF object #%d %T\n", objNr, o)
+
+	}
+
+	return err
 }

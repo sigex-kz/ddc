@@ -90,6 +90,7 @@ func createFlateImageObject(xRefTable *XRefTable, buf, sm []byte, w, h, bpc int,
 		}
 	}
 
+	// Create Flate stream dict.
 	sd, _ := xRefTable.NewStreamDictForBuf(buf)
 	sd.InsertName("Type", "XObject")
 	sd.InsertName("Subtype", "Image")
@@ -139,9 +140,12 @@ func createDCTImageObject(xRefTable *XRefTable, buf []byte, w, h, bpc int, cs st
 
 	sd.InsertName("Filter", filter.DCT)
 
+	// Calling Encode without FilterPipeline ensures an encoded stream in sd.Raw.
 	if err := sd.Encode(); err != nil {
 		return nil, err
 	}
+
+	sd.Content = nil
 
 	sd.FilterPipeline = []PDFFilter{{Name: filter.DCT, DecodeParms: nil}}
 
@@ -493,8 +497,53 @@ func createImageBuf(xRefTable *XRefTable, img image.Image, format string) ([]byt
 	return buf, sm, bpc, cs, nil
 }
 
+func colorSpaceForJPEGColorModel(cm color.Model) string {
+	switch cm {
+	case color.GrayModel:
+		return DeviceGrayCS
+	case color.YCbCrModel:
+		return DeviceRGBCS
+	case color.CMYKModel:
+		return DeviceCMYKCS
+	}
+	return ""
+}
+
+func createDCTImageObjectForJPEG(xRefTable *XRefTable, c image.Config, bb bytes.Buffer) (*StreamDict, int, int, error) {
+	cs := colorSpaceForJPEGColorModel(c.ColorModel)
+	if cs == "" {
+		return nil, 0, 0, errors.New("pdfcpu: unexpected color model for JPEG")
+	}
+
+	buf, err := ioutil.ReadAll(&bb)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	sd, err := createDCTImageObject(xRefTable, buf, c.Width, c.Height, 8, cs)
+
+	return sd, c.Width, c.Height, err
+}
+
 func createImageStreamDict(xRefTable *XRefTable, r io.Reader, gray, sepia bool) (*StreamDict, int, int, error) {
-	img, format, err := image.Decode(r)
+
+	var bb bytes.Buffer
+	tee := io.TeeReader(r, &bb)
+	sniff, err := ioutil.ReadAll(tee)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	c, format, err := image.DecodeConfig(bytes.NewBuffer(sniff))
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	if format == "jpeg" && !gray && !sepia {
+		return createDCTImageObjectForJPEG(xRefTable, c, bb)
+	}
+
+	img, format, err := image.Decode(&bb)
 	if err != nil {
 		return nil, 0, 0, err
 	}

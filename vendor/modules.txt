@@ -5,10 +5,10 @@ github.com/hhrutter/tiff
 # github.com/patrickmn/go-cache v2.1.0+incompatible
 ## explicit
 github.com/patrickmn/go-cache
-# github.com/pdfcpu/pdfcpu v0.3.11
+# github.com/pdfcpu/pdfcpu v0.3.12
 ## explicit
-github.com/pdfcpu/pdfcpu/internal/config
 github.com/pdfcpu/pdfcpu/internal/corefont/metrics
+github.com/pdfcpu/pdfcpu/pkg/api
 github.com/pdfcpu/pdfcpu/pkg/filter
 github.com/pdfcpu/pdfcpu/pkg/font
 github.com/pdfcpu/pdfcpu/pkg/log
@@ -24,9 +24,6 @@ github.com/phpdave11/gofpdf/contrib/gofpdi
 github.com/phpdave11/gofpdi
 # github.com/pkg/errors v0.9.1
 github.com/pkg/errors
-# github.com/vsenko/pdfcpu v0.3.15
-## explicit
-github.com/vsenko/pdfcpu/pkg/api
 # golang.org/x/image v0.0.0-20210220032944-ac19c3e999fb
 golang.org/x/image/ccitt
 golang.org/x/image/riff

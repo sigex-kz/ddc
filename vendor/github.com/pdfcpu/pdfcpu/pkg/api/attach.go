@@ -30,8 +30,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-// ListAttachments returns a list of embedded file attachments of rs.
-func ListAttachments(rs io.ReadSeeker, conf *pdfcpu.Configuration) ([]string, error) {
+func listAttachments(rs io.ReadSeeker, conf *pdfcpu.Configuration, withDesc, sorted bool) ([]string, error) {
 	if rs == nil {
 		return nil, errors.New("pdfcpu: ListAttachments: Please provide rs")
 	}
@@ -55,47 +54,13 @@ func ListAttachments(rs io.ReadSeeker, conf *pdfcpu.Configuration) ([]string, er
 	var ss []string
 	for _, a := range aa {
 		s := a.FileName
-		if a.Desc != "" {
+		if withDesc && a.Desc != "" {
 			s = fmt.Sprintf("%s (%s)", s, a.Desc)
 		}
 		ss = append(ss, s)
 	}
-	sort.Strings(ss)
-
-	durWrite := time.Since(fromWrite).Seconds()
-	durTotal := time.Since(fromStart).Seconds()
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
-	pdfcpu.TimingStats("list files", durRead, durVal, durOpt, durWrite, durTotal)
-
-	return ss, nil
-}
-
-// ListAttachmentsFileNames returns a list of embedded file attachments of rs.
-func ListAttachmentsFileNames(rs io.ReadSeeker, conf *pdfcpu.Configuration) ([]string, error) {
-	if rs == nil {
-		return nil, errors.New("pdfcpu: ListAttachments: Please provide rs")
-	}
-	if conf == nil {
-		conf = pdfcpu.NewDefaultConfiguration()
-	}
-
-	fromStart := time.Now()
-	ctx, durRead, durVal, durOpt, err := readValidateAndOptimize(rs, conf, fromStart)
-	if err != nil {
-		return nil, err
-	}
-
-	fromWrite := time.Now()
-
-	aa, err := ctx.ListAttachments()
-	if err != nil {
-		return nil, err
-	}
-
-	var ss []string
-	for _, a := range aa {
-		s := a.FileName
-		ss = append(ss, s)
+	if sorted {
+		sort.Strings(ss)
 	}
 
 	durWrite := time.Since(fromWrite).Seconds()
@@ -106,7 +71,12 @@ func ListAttachmentsFileNames(rs io.ReadSeeker, conf *pdfcpu.Configuration) ([]s
 	return ss, nil
 }
 
-// ListAttachmentsFile returns a list of embedded file attachments of inFile.
+// ListAttachments returns a list of embedded file attachments of rs with optional description.
+func ListAttachments(rs io.ReadSeeker, conf *pdfcpu.Configuration) ([]string, error) {
+	return listAttachments(rs, conf, true, true)
+}
+
+// ListAttachmentsFile returns a list of embedded file attachments of inFile with optional description.
 func ListAttachmentsFile(inFile string, conf *pdfcpu.Configuration) ([]string, error) {
 	f, err := os.Open(inFile)
 	if err != nil {
@@ -114,6 +84,21 @@ func ListAttachmentsFile(inFile string, conf *pdfcpu.Configuration) ([]string, e
 	}
 	defer f.Close()
 	return ListAttachments(f, conf)
+}
+
+// ListAttachmentsCompact returns a list of embedded file attachments of rs w/o optional description.
+func ListAttachmentsCompact(rs io.ReadSeeker, conf *pdfcpu.Configuration) ([]string, error) {
+	return listAttachments(rs, conf, false, false)
+}
+
+// ListAttachmentsCompactFile returns a list of embedded file attachments of inFile w/o optional description.
+func ListAttachmentsCompactFile(inFile string, conf *pdfcpu.Configuration) ([]string, error) {
+	f, err := os.Open(inFile)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return ListAttachmentsCompact(f, conf)
 }
 
 // AddAttachments embeds files into a PDF context read from rs and writes the result to w.
@@ -311,24 +296,26 @@ func RemoveAttachmentsFile(inFile, outFile string, files []string, conf *pdfcpu.
 	return RemoveAttachments(f1, f2, files, conf)
 }
 
-// ExtractAttachments extracts embedded files from a PDF context read from rs into outDir.
-func ExtractAttachments(rs io.ReadSeeker, outDir string, fileNames []string, conf *pdfcpu.Configuration) error {
+// ExtractAttachmentsRaw extracts embedded files from a PDF context read from rs.
+func ExtractAttachmentsRaw(rs io.ReadSeeker, outDir string, fileNames []string, conf *pdfcpu.Configuration) ([]pdfcpu.Attachment, error) {
 	if rs == nil {
-		return errors.New("pdfcpu: ExtractAttachments: Please provide rs")
+		return nil, errors.New("pdfcpu: ExtractAttachmentsRaw: Please provide rs")
 	}
 	if conf == nil {
 		conf = pdfcpu.NewDefaultConfiguration()
 	}
 
-	fromStart := time.Now()
-	ctx, durRead, durVal, durOpt, err := readValidateAndOptimize(rs, conf, fromStart)
+	ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	fromWrite := time.Now()
+	return ctx.ExtractAttachments(fileNames)
+}
 
-	aa, err := ctx.ExtractAttachments(fileNames)
+// ExtractAttachments extracts embedded files from a PDF context read from rs into outDir.
+func ExtractAttachments(rs io.ReadSeeker, outDir string, fileNames []string, conf *pdfcpu.Configuration) error {
+	aa, err := ExtractAttachmentsRaw(rs, outDir, fileNames, conf)
 	if err != nil {
 		return err
 	}
@@ -348,11 +335,6 @@ func ExtractAttachments(rs io.ReadSeeker, outDir string, fileNames []string, con
 		}
 	}
 
-	durWrite := time.Since(fromWrite).Seconds()
-	durTotal := time.Since(fromStart).Seconds()
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
-	pdfcpu.TimingStats("write files", durRead, durVal, durOpt, durWrite, durTotal)
-
 	return nil
 }
 
@@ -364,42 +346,4 @@ func ExtractAttachmentsFile(inFile, outDir string, files []string, conf *pdfcpu.
 	}
 	defer f.Close()
 	return ExtractAttachments(f, outDir, files, conf)
-}
-
-// ExtractAttachmentsAsBytes extracts embedded files from a PDF context read from rs into outDir.
-func ExtractAttachmentsAsBytes(rs io.ReadSeeker, fileNames []string, conf *pdfcpu.Configuration) ([][]byte, error) {
-	if rs == nil {
-		return nil, errors.New("pdfcpu: ExtractAttachments: Please provide rs")
-	}
-	if conf == nil {
-		conf = pdfcpu.NewDefaultConfiguration()
-	}
-
-	fromStart := time.Now()
-	ctx, durRead, durVal, durOpt, err := readValidateAndOptimize(rs, conf, fromStart)
-	if err != nil {
-		return nil, err
-	}
-
-	fromWrite := time.Now()
-
-	aa, err := ctx.ExtractAttachments(fileNames)
-	if err != nil {
-		return nil, err
-	}
-
-	ret := make([][]byte, len(aa))
-	for ai, a := range aa {
-		ret[ai], err = io.ReadAll(a)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	durWrite := time.Since(fromWrite).Seconds()
-	durTotal := time.Since(fromStart).Seconds()
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
-	pdfcpu.TimingStats("write files", durRead, durVal, durOpt, durWrite, durTotal)
-
-	return ret, nil
 }

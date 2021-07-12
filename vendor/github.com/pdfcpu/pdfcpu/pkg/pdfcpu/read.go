@@ -34,6 +34,8 @@ const (
 	defaultBufSize = 1024
 )
 
+var zero int64 = 0
+
 // ReadFile reads in a PDF file and builds an internal structure holding its cross reference table aka the Context.
 func ReadFile(inFile string, conf *Configuration) (*Context, error) {
 
@@ -206,7 +208,7 @@ func offsetLastXRefSection(ctx *Context, skip int64) (*int64, error) {
 }
 
 // Read next subsection entry and generate corresponding xref table entry.
-func parseXRefTableEntry(s *bufio.Scanner, xRefTable *XRefTable, objectNumber int) error {
+func parseXRefTableEntry(s *bufio.Scanner, xRefTable *XRefTable, objectNumber, repairOff int) error {
 
 	log.Read.Println("parseXRefTableEntry: begin")
 
@@ -230,6 +232,7 @@ func parseXRefTableEntry(s *bufio.Scanner, xRefTable *XRefTable, objectNumber in
 	if err != nil {
 		return err
 	}
+	offset += int64(repairOff)
 
 	generation, err := strconv.Atoi(fields[1])
 	if err != nil {
@@ -284,7 +287,7 @@ func parseXRefTableEntry(s *bufio.Scanner, xRefTable *XRefTable, objectNumber in
 }
 
 // Process xRef table subsection and create corrresponding xRef table entries.
-func parseXRefTableSubSection(s *bufio.Scanner, xRefTable *XRefTable, fields []string) error {
+func parseXRefTableSubSection(s *bufio.Scanner, xRefTable *XRefTable, fields []string, repairOff int) error {
 
 	log.Read.Println("parseXRefTableSubSection: begin")
 
@@ -302,7 +305,7 @@ func parseXRefTableSubSection(s *bufio.Scanner, xRefTable *XRefTable, fields []s
 
 	// Process all entries of this subsection into xRefTable entries.
 	for i := 0; i < objCount; i++ {
-		if err = parseXRefTableEntry(s, xRefTable, startObjNumber+i); err != nil {
+		if err = parseXRefTableEntry(s, xRefTable, startObjNumber+i, repairOff); err != nil {
 			return err
 		}
 	}
@@ -947,7 +950,7 @@ func processTrailer(ctx *Context, s *bufio.Scanner, line string) (*int64, error)
 }
 
 // Parse xRef section into corresponding number of xRef table entries.
-func parseXRefSection(s *bufio.Scanner, ctx *Context, ssCount *int) (*int64, error) {
+func parseXRefSection(s *bufio.Scanner, ctx *Context, ssCount *int, repairOff int) (*int64, error) {
 	log.Read.Println("parseXRefSection begin")
 
 	line, err := scanLine(s)
@@ -962,7 +965,7 @@ func parseXRefSection(s *bufio.Scanner, ctx *Context, ssCount *int) (*int64, err
 	// Process all sub sections of this xRef section.
 	for !strings.HasPrefix(line, "trailer") && len(fields) == 2 {
 
-		if err = parseXRefTableSubSection(s, ctx.XRefTable, fields); err != nil {
+		if err = parseXRefTableSubSection(s, ctx.XRefTable, fields, repairOff); err != nil {
 			return nil, err
 		}
 		*ssCount++
@@ -1163,8 +1166,7 @@ func postProcess(ctx *Context, xrefSectionCount int) {
 			// Hack for #262
 			// Create free object 0 from scratch if the free list head is missing.
 			g0 := FreeHeadGeneration
-			z := int64(0)
-			ctx.Table[0] = &XRefTableEntry{Free: true, Offset: &z, Generation: &g0}
+			ctx.Table[0] = &XRefTableEntry{Free: true, Offset: &zero, Generation: &g0}
 		} else {
 			// Hack for #250: A friendly 🤢 to the devs of the HP Scanner & Printer software utility.
 			// Create free object 0 by shifting down all objects by one.
@@ -1174,6 +1176,45 @@ func postProcess(ctx *Context, xrefSectionCount int) {
 			delete(ctx.Table, *ctx.Size)
 		}
 	}
+}
+
+func tryXRefSection(ctx *Context, rs io.ReadSeeker, offset *int64, xrefSectionCount *int) (*int64, error) {
+	rd, err := newPositionedReader(rs, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	s := bufio.NewScanner(rd)
+	s.Split(scanLines)
+
+	line, err := scanLine(s)
+	if err != nil {
+		return nil, err
+	}
+	log.Read.Printf("xref line 1: <%s>\n", line)
+	repairOff := len(line)
+
+	if strings.TrimSpace(line) == "xref" {
+		log.Read.Println("buildXRefTableStartingAt: found xref section")
+		return parseXRefSection(s, ctx, xrefSectionCount, 0)
+	}
+
+	// Retry using next line. (Repair fix for #326)
+	line, err = scanLine(s)
+	if err != nil {
+		return nil, err
+	}
+	log.Read.Printf("xref line 2: <%s>\n", line)
+
+	i := strings.Index(line, "xref")
+	if i >= 0 {
+		log.Read.Println("buildXRefTableStartingAt: found xref section")
+		repairOff += i
+		log.Read.Printf("Repair offset: %d\n", repairOff)
+		return parseXRefSection(s, ctx, xrefSectionCount, repairOff)
+	}
+
+	return &zero, nil
 }
 
 // Build XRefTable by reading XRef streams or XRef sections.
@@ -1206,39 +1247,29 @@ func buildXRefTableStartingAt(ctx *Context, offset *int64) error {
 		}
 
 		offs[*offset] = true
+
+		off, err := tryXRefSection(ctx, rs, offset, &xrefSectionCount)
+		if err != nil {
+			return err
+		}
+
+		if off == nil || *off != 0 {
+			offset = off
+			continue
+		}
+
+		log.Read.Println("buildXRefTableStartingAt: found xref stream")
+		ctx.Read.UsingXRefStreams = true
 		rd, err := newPositionedReader(rs, offset)
 		if err != nil {
 			return err
 		}
-
-		s := bufio.NewScanner(rd)
-		s.Split(scanLines)
-
-		line, err := scanLine(s)
-		if err != nil {
-			return err
+		if offset, err = parseXRefStream(rd, offset, ctx); err != nil {
+			log.Read.Printf("bypassXRefSection after %v\n", err)
+			// Try fix for corrupt single xref section.
+			return bypassXrefSection(ctx)
 		}
 
-		log.Read.Printf("line: <%s>\n", line)
-
-		if strings.TrimSpace(line) == "xref" {
-			log.Read.Println("buildXRefTableStartingAt: found xref section")
-			if offset, err = parseXRefSection(s, ctx, &xrefSectionCount); err != nil {
-				return err
-			}
-		} else {
-			log.Read.Println("buildXRefTableStartingAt: found xref stream")
-			ctx.Read.UsingXRefStreams = true
-			rd, err = newPositionedReader(rs, offset)
-			if err != nil {
-				return err
-			}
-			if offset, err = parseXRefStream(rd, offset, ctx); err != nil {
-				log.Read.Printf("bypassXRefSection after %v\n", err)
-				// Try fix for corrupt single xref section.
-				return bypassXrefSection(ctx)
-			}
-		}
 	}
 
 	postProcess(ctx, xrefSectionCount)
@@ -1261,6 +1292,8 @@ func readXRefTable(ctx *Context) (err error) {
 	if err != nil {
 		return
 	}
+
+	ctx.Write.OffsetPrevXRef = offset
 
 	err = buildXRefTableStartingAt(ctx, offset)
 	if err == io.EOF {
@@ -1438,7 +1471,7 @@ func keywordStreamRightAfterEndOfDict(buf string, streamInd int) bool {
 	return ok
 }
 
-func buildFilterPipeline(ctx *Context, filterArray, decodeParmsArr Array, decodeParms Object) ([]PDFFilter, error) {
+func buildFilterPipeline(ctx *Context, filterArray, decodeParmsArr Array) ([]PDFFilter, error) {
 
 	var filterPipeline []PDFFilter
 
@@ -1448,7 +1481,7 @@ func buildFilterPipeline(ctx *Context, filterArray, decodeParmsArr Array, decode
 		if !ok {
 			return nil, errors.New("pdfcpu: buildFilterPipeline: filterArray elements corrupt")
 		}
-		if decodeParms == nil || decodeParmsArr[i] == nil {
+		if decodeParmsArr == nil || decodeParmsArr[i] == nil {
 			filterPipeline = append(filterPipeline, PDFFilter{Name: filterName.Value(), DecodeParms: nil})
 			continue
 		}
@@ -1541,14 +1574,14 @@ func pdfFilterPipeline(ctx *Context, dict Dict) ([]PDFFilter, error) {
 	decodeParms, found := dict.Find("DecodeParms")
 	if found {
 		decodeParmsArr, ok = decodeParms.(Array)
-		if !ok {
+		if !ok || len(decodeParmsArr) != len(filterArray) {
 			return nil, errors.New("pdfcpu: pdfFilterPipeline: expected decodeParms array corrupt")
 		}
 	}
 
 	//fmt.Printf("decodeParmsArr: %s\n", decodeParmsArr)
 
-	filterPipeline, err = buildFilterPipeline(ctx, filterArray, decodeParmsArr, decodeParms)
+	filterPipeline, err = buildFilterPipeline(ctx, filterArray, decodeParmsArr)
 
 	log.Read.Println("pdfFilterPipeline: end")
 
@@ -1704,11 +1737,11 @@ func ParseObject(ctx *Context, offset int64, objNr, genNr int) (Object, error) {
 
 	case StringLiteral:
 		if ctx.EncKey != nil {
-			s1, err := decryptString(o.Value(), objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
+			bb, err := decryptString(o.Value(), objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
 			if err != nil {
 				return nil, err
 			}
-			return StringLiteral(*s1), nil
+			return NewHexLiteral(bb), nil
 		}
 		return o, nil
 
@@ -1718,7 +1751,7 @@ func ParseObject(ctx *Context, offset int64, objNr, genNr int) (Object, error) {
 			if err != nil {
 				return nil, err
 			}
-			return StringLiteral(string(bb)), nil
+			return NewHexLiteral(bb), nil
 		}
 		return o, nil
 
@@ -1960,6 +1993,11 @@ func saveDecodedStreamContent(ctx *Context, sd *StreamDict, objNr, genNr int, de
 	}
 
 	if !decode {
+		return nil
+	}
+
+	t := sd.Type()
+	if t != nil && *t == "XObject" {
 		return nil
 	}
 
@@ -2477,32 +2515,6 @@ func handleUnencryptedFile(ctx *Context) error {
 	return nil
 }
 
-func idBytes(ctx *Context) (id []byte, err error) {
-
-	if ctx.ID == nil {
-		return nil, errors.New("pdfcpu: missing ID entry")
-	}
-
-	hl, ok := ctx.ID[0].(HexLiteral)
-	if ok {
-		id, err = hl.Bytes()
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		sl, ok := ctx.ID[0].(StringLiteral)
-		if !ok {
-			return nil, errors.New("pdfcpu: ID must contain hex literals or string literals")
-		}
-		id, err = Unescape(sl.Value())
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return id, nil
-}
-
 func needsOwnerAndUserPassword(cmd CommandMode) bool {
 
 	return cmd == CHANGEOPW || cmd == CHANGEUPW || cmd == SETPERMISSIONS
@@ -2535,8 +2547,7 @@ func setupEncryptionKey(ctx *Context, d Dict) (err error) {
 		return err
 	}
 
-	ctx.E.ID, err = idBytes(ctx)
-	if err != nil {
+	if ctx.E.ID, err = ctx.IDFirstElement(); err != nil {
 		return err
 	}
 

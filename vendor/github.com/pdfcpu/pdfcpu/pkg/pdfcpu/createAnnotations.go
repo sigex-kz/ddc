@@ -31,9 +31,10 @@ func createTextAnnotation(xRefTable *XRefTable, pageIndRef IndirectRef, annotRec
 		"Contents": StringLiteral("Text Annotation"),
 		"Rect":     annotRect,
 		"P":        pageIndRef,
-		"Border":   NewIntegerArray(0, 0, 5),
-		"C":        NewNumberArray(1, 0, 0),
-		"Name":     Name("Note"),
+		//"NM": "",
+		//"Border":   NewIntegerArray(0, 0, 5),
+		//"C":        NewNumberArray(1, 0, 0),
+		//"Name":     Name("Note"),
 	})
 
 	return xRefTable.IndRefForNewObject(d)
@@ -941,7 +942,7 @@ func createRemoteGoToAction(xRefTable *XRefTable) (*IndirectRef, error) {
 		map[string]Object{
 			"Type":      Name("Action"),
 			"S":         Name("GoToR"),
-			"F":         StringLiteral(".\\/go.pdf"),
+			"F":         StringLiteral("./go.pdf"),
 			"D":         Array{Integer(0), Name("Fit")},
 			"NewWindow": Boolean(true),
 		},

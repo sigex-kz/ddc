@@ -61,7 +61,6 @@ func NewXRefTableEntryGen0(obj Object) *XRefTableEntry {
 func NewFreeHeadXRefTableEntry() *XRefTableEntry {
 
 	freeHeadGeneration := FreeHeadGeneration
-	zero := int64(0)
 
 	return &XRefTableEntry{
 		Free:       true,
@@ -117,6 +116,12 @@ type XRefTable struct {
 	OffsetOverflowHintTable *int64
 	LinearizationObjs       IntSet
 
+	// Page annotation cache
+	PageAnnots map[int]PgAnnots
+
+	// Thumbnail images
+	PageThumbs map[int]IndirectRef
+
 	// Offspec section
 	AdditionalStreams *Array // array of IndirectRef - trailer :e.g., Oasis "Open Doc"
 
@@ -144,6 +149,8 @@ func newXRefTable(validationMode int, validateLinks bool) (xRefTable *XRefTable)
 		Names:             map[string]*Node{},
 		Properties:        map[string]string{},
 		LinearizationObjs: IntSet{},
+		PageAnnots:        map[int]PgAnnots{},
+		PageThumbs:        map[int]IndirectRef{},
 		Stats:             NewPDFStats(),
 		ValidationMode:    validationMode,
 		ValidateLinks:     validateLinks,
@@ -252,7 +259,7 @@ func (xRefTable *XRefTable) FindObject(objNr int) (Object, error) {
 func (xRefTable *XRefTable) Free(objNr int) (*XRefTableEntry, error) {
 	entry, found := xRefTable.Find(objNr)
 	if !found {
-		return nil, nil //errors.Errorf("Free: object #%d not found.", objNr)
+		return nil, nil
 	}
 	if !entry.Free {
 		return nil, errors.Errorf("Free: object #%d found, but not free.", objNr)
@@ -506,11 +513,10 @@ func (xRefTable *XRefTable) NewFileSpecDict(f, uf, desc string, indRefStreamDict
 }
 
 func (xRefTable *XRefTable) freeObjects() IntSet {
-
 	m := IntSet{}
 
 	for k, v := range xRefTable.Table {
-		if v.Free && k > 0 {
+		if v != nil && v.Free && k > 0 {
 			m[k] = true
 		}
 	}
@@ -521,21 +527,15 @@ func (xRefTable *XRefTable) freeObjects() IntSet {
 // EnsureValidFreeList ensures the integrity of the free list associated with the recorded free objects.
 // See 7.5.4 Cross-Reference Table
 func (xRefTable *XRefTable) EnsureValidFreeList() error {
-
 	log.Trace.Println("EnsureValidFreeList begin")
 
 	m := xRefTable.freeObjects()
 
 	// Verify free object 0 as free list head.
-	head, err := xRefTable.Free(0)
-	if err != nil {
-		return err
-	}
-
+	head, _ := xRefTable.Find(0)
 	if head == nil {
 		g0 := FreeHeadGeneration
-		z := int64(0)
-		head = &XRefTableEntry{Free: true, Offset: &z, Generation: &g0}
+		head = &XRefTableEntry{Free: true, Offset: &zero, Generation: &g0}
 		xRefTable.Table[0] = head
 	}
 
@@ -577,7 +577,7 @@ func (xRefTable *XRefTable) EnsureValidFreeList() error {
 
 		delete(m, f)
 
-		e, err = xRefTable.Free(f)
+		e, err := xRefTable.Free(f)
 		if err != nil {
 			return err
 		}
@@ -605,7 +605,6 @@ func (xRefTable *XRefTable) EnsureValidFreeList() error {
 		}
 
 		if *entry.Generation == FreeHeadGeneration {
-			zero := int64(0)
 			entry.Offset = &zero
 			continue
 		}
@@ -634,7 +633,7 @@ func (xRefTable *XRefTable) deleteDictEntry(d Dict, key string) error {
 
 func (xRefTable *XRefTable) locateObjForIndRef(ir IndirectRef) (Object, error) {
 
-	var err error
+	//var err error
 	objNr := int(ir.ObjectNumber)
 
 	entry, found := xRefTable.FindTableEntryLight(objNr)
@@ -642,22 +641,26 @@ func (xRefTable *XRefTable) locateObjForIndRef(ir IndirectRef) (Object, error) {
 		return nil, errors.Errorf("pdfcpu: locateObjForIndRef: no xref entry found for obj #%d\n", objNr)
 	}
 
+	// Check for multiple indRefs.
 	if entry.RefCount > 1 {
 		entry.RefCount--
-		//fmt.Printf("locateObjForIndRef(%d): new refcount: %d\n", objNr, entry.RefCount)
+		// By returning nil we signal this object is still in use and can't be deleted.
 		return nil, nil
 	}
 
-	o, err := xRefTable.Dereference(ir)
-	if err != nil || o == nil {
-		return o, err
-	}
+	// Since this is the only indRef we can move on and delete the entire object graph.
+	return xRefTable.Dereference(ir)
 
-	if err = xRefTable.DeleteObject(objNr); err != nil {
-		return nil, err
-	}
+	// o, err := xRefTable.Dereference(ir)
+	// if err != nil || o == nil {
+	// 	return o, err
+	// }
 
-	return o, nil
+	// if err = xRefTable.turnEntryToFree(objNr); err != nil {
+	// 	return nil, err
+	// }
+
+	//return o, nil
 }
 
 func (xRefTable *XRefTable) deleteObject(o Object) error {
@@ -668,6 +671,9 @@ func (xRefTable *XRefTable) deleteObject(o Object) error {
 	if ok {
 		o, err = xRefTable.locateObjForIndRef(ir)
 		if err != nil || o == nil {
+			return err
+		}
+		if err = xRefTable.turnEntryToFree(ir.ObjectNumber.Value()); err != nil {
 			return err
 		}
 	}
@@ -722,12 +728,12 @@ func (xRefTable *XRefTable) DeleteObjectGraph(o Object) error {
 	return nil
 }
 
-// DeleteObject marks an object as free and inserts it into the free list right after the head.
-func (xRefTable *XRefTable) DeleteObject(objNr int) error {
+// turnEntryToFree marks an objects xref table entry as free and inserts it into the free list right after the head.
+func (xRefTable *XRefTable) turnEntryToFree(objNr int) error {
 
 	// see 7.5.4 Cross-Reference Table
 
-	log.Debug.Printf("DeleteObject: begin %d\n", objNr)
+	log.Debug.Printf("turnEntryToFree: begin %d\n", objNr)
 
 	freeListHeadEntry, err := xRefTable.Free(0)
 	if err != nil {
@@ -736,11 +742,11 @@ func (xRefTable *XRefTable) DeleteObject(objNr int) error {
 
 	entry, found := xRefTable.FindTableEntryLight(objNr)
 	if !found {
-		return errors.Errorf("pdfcpu: deleteObject: no entry for obj #%d\n", objNr)
+		return errors.Errorf("turnEntryToFree: no entry for obj #%d\n", objNr)
 	}
 
 	if entry.Free {
-		log.Debug.Printf("DeleteObject: end %d already free\n", objNr)
+		log.Debug.Printf("turnEntryToFree: end %d already free\n", objNr)
 		return nil
 	}
 
@@ -754,7 +760,7 @@ func (xRefTable *XRefTable) DeleteObject(objNr int) error {
 	next := int64(objNr)
 	freeListHeadEntry.Offset = &next
 
-	log.Debug.Printf("DeleteObject: end %d\n", objNr)
+	log.Debug.Printf("turnEntryToFree: end %d\n", objNr)
 
 	return nil
 }
@@ -798,274 +804,12 @@ func (xRefTable *XRefTable) UndeleteObject(objectNumber int) error {
 	return nil
 }
 
-// indRefToObject dereferences an indirect object from the xRefTable and returns the result.
-func (xRefTable *XRefTable) indRefToObject(ir *IndirectRef) (Object, error) {
-	if ir == nil {
-		return nil, errors.New("pdfcpu: indRefToObject: input argument is nil")
-	}
-
-	// 7.3.10
-	// An indirect reference to an undefined object shall not be considered an error by a conforming reader;
-	// it shall be treated as a reference to the null object.
-	entry, found := xRefTable.FindTableEntryForIndRef(ir)
-	if !found || entry.Free {
-		return nil, nil
-	}
-
-	xRefTable.CurObj = int(ir.ObjectNumber)
-
-	// return dereferenced object
-	return entry.Object, nil
-}
-
-// Dereference resolves an indirect object and returns the resulting PDF object.
-func (xRefTable *XRefTable) Dereference(o Object) (Object, error) {
-	ir, ok := o.(IndirectRef)
-	if !ok {
-		// Nothing do dereference.
-		return o, nil
-	}
-
-	return xRefTable.indRefToObject(&ir)
-}
-
-// DereferenceBoolean resolves and validates a boolean object, which may be an indirect reference.
-func (xRefTable *XRefTable) DereferenceBoolean(o Object, sinceVersion Version) (*Boolean, error) {
-
-	o, err := xRefTable.Dereference(o)
-	if err != nil || o == nil {
-		return nil, err
-	}
-
-	b, ok := o.(Boolean)
-	if !ok {
-		return nil, errors.Errorf("pdfcpu: dereferenceBoolean: wrong type <%v>", o)
-	}
-
-	// Version check
-	if err = xRefTable.ValidateVersion("DereferenceBoolean", sinceVersion); err != nil {
-		return nil, err
-	}
-
-	return &b, nil
-}
-
-// DereferenceInteger resolves and validates an integer object, which may be an indirect reference.
-func (xRefTable *XRefTable) DereferenceInteger(o Object) (*Integer, error) {
-
-	o, err := xRefTable.Dereference(o)
-	if err != nil || o == nil {
-		return nil, err
-	}
-
-	i, ok := o.(Integer)
-	if !ok {
-		return nil, errors.Errorf("pdfcpu: dereferenceInteger: wrong type <%v>", o)
-	}
-
-	return &i, nil
-}
-
-// DereferenceNumber resolves a number object, which may be an indirect reference and returns a float64.
-func (xRefTable *XRefTable) DereferenceNumber(o Object) (float64, error) {
-
-	var (
-		f   float64
-		err error
-	)
-
-	o, _ = xRefTable.Dereference(o)
-
-	switch o := o.(type) {
-
-	case Integer:
-		f = float64(o.Value())
-
-	case Float:
-		f = o.Value()
-
-	default:
-		err = errors.Errorf("pdfcpu: dereferenceNumber: wrong type <%v>", o)
-
-	}
-
-	return f, err
-}
-
-// DereferenceName resolves and validates a name object, which may be an indirect reference.
-func (xRefTable *XRefTable) DereferenceName(o Object, sinceVersion Version, validate func(string) bool) (n Name, err error) {
-
-	o, err = xRefTable.Dereference(o)
-	if err != nil || o == nil {
-		return n, err
-	}
-
-	n, ok := o.(Name)
-	if !ok {
-		return n, errors.Errorf("pdfcpu: dereferenceName: wrong type <%v>", o)
-	}
-
-	// Version check
-	if err = xRefTable.ValidateVersion("DereferenceName", sinceVersion); err != nil {
-		return n, err
-	}
-
-	// Validation
-	if validate != nil && !validate(n.Value()) {
-		return n, errors.Errorf("pdfcpu: dereferenceName: invalid <%s>", n.Value())
-	}
-
-	return n, nil
-}
-
-// DereferenceStringLiteral resolves and validates a string literal object, which may be an indirect reference.
-func (xRefTable *XRefTable) DereferenceStringLiteral(o Object, sinceVersion Version, validate func(string) bool) (s StringLiteral, err error) {
-
-	o, err = xRefTable.Dereference(o)
-	if err != nil || o == nil {
-		return s, err
-	}
-
-	s, ok := o.(StringLiteral)
-	if !ok {
-		return s, errors.Errorf("pdfcpu: dereferenceStringLiteral: wrong type <%v>", o)
-	}
-
-	// Ensure UTF16 correctness.
-	s1, err := StringLiteralToString(s.Value())
-	if err != nil {
-		return s, err
-	}
-
-	// Version check
-	if err = xRefTable.ValidateVersion("DereferenceStringLiteral", sinceVersion); err != nil {
-		return s, err
-	}
-
-	// Validation
-	if validate != nil && !validate(s1) {
-		return s, errors.Errorf("pdfcpu: dereferenceStringLiteral: invalid <%s>", s1)
-	}
-
-	return s, nil
-}
-
-// DereferenceStringOrHexLiteral resolves and validates a string or hex literal object, which may be an indirect reference.
-func (xRefTable *XRefTable) DereferenceStringOrHexLiteral(obj Object, sinceVersion Version, validate func(string) bool) (s string, err error) {
-
-	o, err := xRefTable.Dereference(obj)
-	if err != nil || o == nil {
-		return "", err
-	}
-
-	switch str := o.(type) {
-
-	case StringLiteral:
-		// Ensure UTF16 correctness.
-		if s, err = StringLiteralToString(str.Value()); err != nil {
-			return "", err
-		}
-
-	case HexLiteral:
-		// Ensure UTF16 correctness.
-		if s, err = HexLiteralToString(str.Value()); err != nil {
-			return "", err
-		}
-
-	default:
-		return "", errors.Errorf("pdfcpu: dereferenceStringOrHexLiteral: wrong type <%v>", obj)
-
-	}
-
-	// Version check
-	if err = xRefTable.ValidateVersion("DereferenceStringOrHexLiteral", sinceVersion); err != nil {
-		return "", err
-	}
-
-	// Validation
-	if validate != nil && !validate(s) {
-		return "", errors.Errorf("pdfcpu: dereferenceStringOrHexLiteral: invalid <%s>", s)
-	}
-
-	return s, nil
-}
-
-// Text returns a string based representation for String and Hexliterals.
-func Text(o Object) (string, error) {
-	switch obj := o.(type) {
-	case StringLiteral:
-		return StringLiteralToString(obj.Value())
-	case HexLiteral:
-		return HexLiteralToString(obj.Value())
-	default:
-		return "", errors.Errorf("pdfcpu: text: corrupt -  %v\n", obj)
-	}
-}
-
-// DereferenceText resolves and validates a string or hex literal object to a string.
-func (xRefTable *XRefTable) DereferenceText(o Object) (string, error) {
-	o, err := xRefTable.Dereference(o)
-	if err != nil {
-		return "", err
-	}
-	return Text(o)
-}
-
-// DereferenceCSVSafeText resolves and validates a string or hex literal object to a string.
-func (xRefTable *XRefTable) DereferenceCSVSafeText(o Object) (string, error) {
-	s, err := xRefTable.DereferenceText(o)
-	if err != nil {
-		return "", err
-	}
-	return csvSafeString(s), nil
-}
-
-// DereferenceArray resolves and validates an array object, which may be an indirect reference.
-func (xRefTable *XRefTable) DereferenceArray(o Object) (Array, error) {
-
-	o, err := xRefTable.Dereference(o)
-	if err != nil || o == nil {
-		return nil, err
-	}
-
-	a, ok := o.(Array)
-	if ok {
-		return a, nil
-	}
-
-	d, ok := o.(Dict)
-	if !ok {
-		return nil, errors.Errorf("pdfcpu: dereferenceArray: dest of wrong type <%v>", o)
-	}
-
-	return d["D"].(Array), nil
-}
-
-// DereferenceDict resolves and validates a dictionary object, which may be an indirect reference.
-func (xRefTable *XRefTable) DereferenceDict(o Object) (Dict, error) {
-
-	o, err := xRefTable.Dereference(o)
-	if err != nil || o == nil {
-		return nil, err
-	}
-
-	d, ok := o.(Dict)
-	if !ok {
-		return nil, errors.Errorf("pdfcpu: dereferenceDict: wrong type %T <%v>", o, o)
-	}
-
-	return d, nil
-}
-
 // IsValid returns true if the object referenced by ir has already been validated.
 func (xRefTable *XRefTable) IsValid(ir IndirectRef) (bool, error) {
 	entry, found := xRefTable.FindTableEntry(ir.ObjectNumber.Value(), ir.GenerationNumber.Value())
 	if !found {
 		return false, errors.Errorf("pdfcpu: IsValid: no entry for obj#%d\n", ir.ObjectNumber.Value())
 	}
-	// if entry.Object == nil {
-	// 	return false, errors.Errorf("pdfcpu: IsValid: no entry for obj#%d\n", ir.ObjectNumber.Value())
-	// }
 	if entry.Free {
 		return false, errors.Errorf("pdfcpu: IsValid: unexpected free entry for obj#%d\n", ir.ObjectNumber.Value())
 	}
@@ -1078,9 +822,6 @@ func (xRefTable *XRefTable) SetValid(ir IndirectRef) error {
 	if !found {
 		return errors.Errorf("pdfcpu: SetValid: no entry for obj#%d\n", ir.ObjectNumber.Value())
 	}
-	// if entry.Object == nil {
-	// 	return errors.Errorf("pdfcpu: SetValid: no entry for obj#%d\n", ir.ObjectNumber.Value())
-	// }
 	if entry.Free {
 		return errors.Errorf("pdfcpu: SetValid: unexpected free entry for obj#%d\n", ir.ObjectNumber.Value())
 	}
@@ -1116,17 +857,6 @@ func (xRefTable *XRefTable) DereferenceStreamDict(o Object) (*StreamDict, bool, 
 	}
 
 	return &sd, ev, nil
-}
-
-// DereferenceDictEntry returns a dereferenced dict entry.
-func (xRefTable *XRefTable) DereferenceDictEntry(d Dict, entryName string) (Object, error) {
-
-	o, found := d.Find(entryName)
-	if !found || o == nil {
-		return nil, errors.Errorf("pdfcpu: dict=%s entry=%s missing.", d, entryName)
-	}
-
-	return xRefTable.Dereference(o)
 }
 
 // Catalog returns a pointer to the root object / catalog.
@@ -1640,7 +1370,8 @@ func (xRefTable *XRefTable) IDFirstElement() (id []byte, err error) {
 		return nil, errors.New("pdfcpu: ID must contain hex literals or string literals")
 	}
 
-	return Unescape(sl.Value())
+	//return Unescape(sl.Value())
+	return []byte(sl), nil
 }
 
 // InheritedPageAttrs represents all inherited page attributes.
@@ -1774,19 +1505,17 @@ func (xRefTable *XRefTable) checkInheritedPageAttrs(pageDict Dict, pAttrs *Inher
 		pAttrs.rotate = i.Value()
 	}
 
-	if !consolidateRes {
-		obj, found := pageDict.Find("Resources")
-		if found {
-			var err error
-			if pAttrs.resources, err = xRefTable.DereferenceDict(obj); err != nil {
-				return err
-			}
-		}
+	// Accumulate all inherited resources.
+	if obj, found = pageDict.Find("Resources"); !found {
 		return nil
 	}
 
-	// Accumulate all inherited resources.
-	if obj, found = pageDict.Find("Resources"); !found {
+	if !consolidateRes {
+		d, err := xRefTable.DereferenceDict(obj)
+		if err != nil {
+			return err
+		}
+		pAttrs.resources = d
 		return nil
 	}
 
@@ -1862,14 +1591,14 @@ func consolidateResources(consolidateRes bool, xRefTable *XRefTable, pageDict, r
 	return consolidateResourceDict(resDict, prn, page)
 }
 
-func (xRefTable *XRefTable) processPageTreeForPageDict(root *IndirectRef, pAttrs *InheritedPageAttrs, p *int, page int, consolidateRes bool) (Dict, error) {
+func (xRefTable *XRefTable) processPageTreeForPageDict(root *IndirectRef, pAttrs *InheritedPageAttrs, p *int, page int, consolidateRes bool) (Dict, *IndirectRef, error) {
 	// Walk this page tree all the way down to the leave node representing page.
 
 	//fmt.Printf("entering processPageTreeForPageDict: p=%d obj#%d\n", *p, root.ObjectNumber.Value())
 
 	d, err := xRefTable.DereferenceDict(*root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	pageCount := d.IntEntry("Count")
@@ -1877,19 +1606,19 @@ func (xRefTable *XRefTable) processPageTreeForPageDict(root *IndirectRef, pAttrs
 		if *p+*pageCount < page {
 			// Skip sub pagetree.
 			*p += *pageCount
-			return nil, nil
+			return nil, nil, nil
 		}
 	}
 
 	// Return the current state of all page attributes that may be inherited.
 	if err = xRefTable.checkInheritedPageAttrs(d, pAttrs, consolidateRes); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Iterate over page tree.
 	kids := d.ArrayEntry("Kids")
 	if kids == nil {
-		return d, consolidateResources(consolidateRes, xRefTable, d, pAttrs.resources, page)
+		return d, root, consolidateResources(consolidateRes, xRefTable, d, pAttrs.resources, page)
 	}
 
 	for _, o := range kids {
@@ -1901,24 +1630,24 @@ func (xRefTable *XRefTable) processPageTreeForPageDict(root *IndirectRef, pAttrs
 		// Dereference next page node dict.
 		ir, ok := o.(IndirectRef)
 		if !ok {
-			return nil, errors.Errorf("pdfcpu: processPageTreeForPageDict: corrupt page node dict")
+			return nil, nil, errors.Errorf("pdfcpu: processPageTreeForPageDict: corrupt page node dict")
 		}
 
 		pageNodeDict, err := xRefTable.DereferenceDict(ir)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		switch *pageNodeDict.Type() {
 
 		case "Pages":
 			// Recurse over sub pagetree.
-			pageNodeDict, err = xRefTable.processPageTreeForPageDict(&ir, pAttrs, p, page, consolidateRes)
+			pageDict, pageDictIndRef, err := xRefTable.processPageTreeForPageDict(&ir, pAttrs, p, page, consolidateRes)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			if pageNodeDict != nil {
-				return pageNodeDict, nil
+			if pageDict != nil {
+				return pageDict, pageDictIndRef, nil
 			}
 
 		case "Page":
@@ -1931,30 +1660,56 @@ func (xRefTable *XRefTable) processPageTreeForPageDict(root *IndirectRef, pAttrs
 
 	}
 
-	return nil, nil
+	return nil, nil, nil
 }
 
 // PageDict returns a specific page dict along with the resources, mediaBox and CropBox in effect.
-func (xRefTable *XRefTable) PageDict(page int, consolidateRes bool) (Dict, *InheritedPageAttrs, error) {
-
-	// Get an indirect reference to the page tree root dict.
-	pageRootDictIndRef, _ := xRefTable.Pages()
+func (xRefTable *XRefTable) PageDict(pageNr int, consolidateRes bool) (Dict, *IndirectRef, *InheritedPageAttrs, error) {
 
 	var (
 		inhPAttrs InheritedPageAttrs
 		pageCount int
 	)
 
-	// Calculate and return only resources that are really needed by
-	// any content stream of this page and any possible forms or type 3 fonts referenced.
-	pageDict, err := xRefTable.processPageTreeForPageDict(pageRootDictIndRef, &inhPAttrs, &pageCount, page, consolidateRes)
+	// Get an indirect reference to the page tree root dict.
+	pageRootDictIndRef, err := xRefTable.Pages()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return pageDict, &inhPAttrs, nil
+	// Calculate and return only resources that are really needed by
+	// any content stream of this page and any possible forms or type 3 fonts referenced.
+	pageDict, pageDictindRef, err := xRefTable.processPageTreeForPageDict(pageRootDictIndRef, &inhPAttrs, &pageCount, pageNr, consolidateRes)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return pageDict, pageDictindRef, &inhPAttrs, nil
 }
 
+// PageDictIndRef returns the pageDict IndRef for a logical page number.
+func (xRefTable *XRefTable) PageDictIndRef(page int) (*IndirectRef, error) {
+
+	var (
+		inhPAttrs InheritedPageAttrs
+		pageCount int
+	)
+
+	// Get an indirect reference to the page tree root dict.
+	pageRootDictIndRef, err := xRefTable.Pages()
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate and return only resources that are really needed by
+	// any content stream of this page and any possible forms or type 3 fonts referenced.
+	consolidateRes := false
+	_, ir, err := xRefTable.processPageTreeForPageDict(pageRootDictIndRef, &inhPAttrs, &pageCount, page, consolidateRes)
+
+	return ir, err
+}
+
+// Calculate logical page number for page dict object number.
 func (xRefTable *XRefTable) processPageTreeForPageNumber(root *IndirectRef, pageCount *int, pageObjNr int) (int, error) {
 
 	//fmt.Printf("entering processPageTreeForPageNumber: p=%d obj#%d\n", *p, root.ObjectNumber.Value())
@@ -2056,7 +1811,7 @@ func (xRefTable *XRefTable) resolvePageBoundary(d Dict, boxName string) (*Rectan
 	return rect(xRefTable, a)
 }
 
-func (xRefTable *XRefTable) collectPageBoundariesForPage(d Dict, pb []PageBoundaries, inhMediaBox, inhCropBox *Rectangle, p int) error {
+func (xRefTable *XRefTable) collectPageBoundariesForPage(d Dict, pb []PageBoundaries, inhMediaBox, inhCropBox *Rectangle, rot, p int) error {
 	if inhMediaBox != nil {
 		pb[p].Media = &Box{Rect: inhMediaBox, Inherited: true}
 	}
@@ -2106,6 +1861,8 @@ func (xRefTable *XRefTable) collectPageBoundariesForPage(d Dict, pb []PageBounda
 		pb[p].Art = &Box{Rect: r}
 	}
 
+	pb[p].Rot = rot
+
 	return nil
 }
 
@@ -2120,9 +1877,6 @@ func (xRefTable *XRefTable) collectMediaBoxAndCropBox(d Dict, inhMediaBox, inhCr
 			return err
 		}
 		*inhCropBox = nil
-		//if kids == nil {
-		//	pb[*p].Media = &Box{Rect: *inhMediaBox}
-		//}
 	}
 
 	obj, found = d.Find("CropBox")
@@ -2138,15 +1892,23 @@ func (xRefTable *XRefTable) collectMediaBoxAndCropBox(d Dict, inhMediaBox, inhCr
 	return nil
 }
 
-func (xRefTable *XRefTable) collectPageBoundariesForPageTree(root *IndirectRef, inhMediaBox, inhCropBox **Rectangle, pb []PageBoundaries, p *int) error {
+func (xRefTable *XRefTable) collectPageBoundariesForPageTree(root *IndirectRef, inhMediaBox, inhCropBox **Rectangle, pb []PageBoundaries, r int, p *int) error {
 	d, err := xRefTable.DereferenceDict(*root)
 	if err != nil {
 		return err
 	}
 
+	if obj, found := d.Find("Rotate"); found {
+		i, err := xRefTable.DereferenceInteger(obj)
+		if err != nil {
+			return err
+		}
+		r = i.Value()
+	}
+
 	kids := d.ArrayEntry("Kids")
 	if kids == nil {
-		return xRefTable.collectPageBoundariesForPage(d, pb, *inhMediaBox, *inhCropBox, *p)
+		return xRefTable.collectPageBoundariesForPage(d, pb, *inhMediaBox, *inhCropBox, r, *p)
 	}
 
 	if err := xRefTable.collectMediaBoxAndCropBox(d, inhMediaBox, inhCropBox); err != nil {
@@ -2174,12 +1936,12 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(root *IndirectRef, 
 		switch *pageNodeDict.Type() {
 
 		case "Pages":
-			if err = xRefTable.collectPageBoundariesForPageTree(&ir, inhMediaBox, inhCropBox, pb, p); err != nil {
+			if err = xRefTable.collectPageBoundariesForPageTree(&ir, inhMediaBox, inhCropBox, pb, r, p); err != nil {
 				return err
 			}
 
 		case "Page":
-			if err = xRefTable.collectPageBoundariesForPageTree(&ir, inhMediaBox, inhCropBox, pb, p); err != nil {
+			if err = xRefTable.collectPageBoundariesForPageTree(&ir, inhMediaBox, inhCropBox, pb, r, p); err != nil {
 				return err
 			}
 			*p++
@@ -2207,13 +1969,13 @@ func (xRefTable *XRefTable) PageBoundaries() ([]PageBoundaries, error) {
 	mb := &Rectangle{}
 	cb := &Rectangle{}
 	pbs := make([]PageBoundaries, xRefTable.PageCount)
-	if err := xRefTable.collectPageBoundariesForPageTree(root, &mb, &cb, pbs, &i); err != nil {
+	if err := xRefTable.collectPageBoundariesForPageTree(root, &mb, &cb, pbs, 0, &i); err != nil {
 		return nil, err
 	}
 	return pbs, nil
 }
 
-// PageDims returns a sorted slice with media box dimensions
+// PageDims returns a sorted slice with effective media box dimensions
 // for all pages sorted ascending by page number.
 func (xRefTable *XRefTable) PageDims() ([]Dim, error) {
 	pbs, err := xRefTable.PageBoundaries()
@@ -2223,7 +1985,11 @@ func (xRefTable *XRefTable) PageDims() ([]Dim, error) {
 
 	dims := make([]Dim, len(pbs))
 	for i, pb := range pbs {
-		dims[i] = pb.MediaBox().Dimensions()
+		d := pb.CropBox().Dimensions()
+		if pb.Rot%180 != 0 {
+			d.Width, d.Height = d.Height, d.Width
+		}
+		dims[i] = d
 	}
 
 	return dims, nil
@@ -2374,4 +2140,18 @@ func (xRefTable *XRefTable) InsertBlankPages(pages IntSet, before bool) error {
 	_, err = xRefTable.insertBlankPagesIntoPageTree(root, &inhPAttrs, &p, pages, before)
 
 	return err
+}
+
+// ???
+func (xRefTable *XRefTable) markAsFree(ir IndirectRef) error {
+	objNr := ir.ObjectNumber.Value()
+	genNr := ir.GenerationNumber.Value()
+	entry, ok := xRefTable.FindTableEntry(objNr, genNr)
+	if !ok {
+		return errors.Errorf("unknown xreftable entry for obj#%d\n", objNr)
+	}
+	i := int(zero)
+	entry.Generation = &i
+	entry.Free = true
+	return nil
 }

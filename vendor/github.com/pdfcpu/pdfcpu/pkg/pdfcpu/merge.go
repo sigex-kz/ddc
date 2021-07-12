@@ -189,6 +189,7 @@ func patchSourceObjectNumbers(ctxSource, ctxDest *Context) {
 	m := make(map[int]*XRefTableEntry, *ctxSource.Size)
 	for k, v := range lookup {
 		m[v] = ctxSource.Table[k]
+		*ctxSource.Size++
 	}
 	m[0] = ctxSource.Table[0]
 	ctxSource.Table = m
@@ -294,6 +295,8 @@ func MergeXRefTables(ctxSource, ctxDest *Context) (err error) {
 	// Sweep over ctxSource cross ref table and ensure valid object numbers in ctxDest's space.
 	patchSourceObjectNumbers(ctxSource, ctxDest)
 
+	mergeAcroForms(ctxSource, ctxDest)
+
 	// Append ctxSource pageTree to ctxDest pageTree.
 	log.Debug.Println("appendSourcePageTreeToDestPageTree")
 	err = appendSourcePageTreeToDestPageTree(ctxSource, ctxDest)
@@ -306,7 +309,7 @@ func MergeXRefTables(ctxSource, ctxDest *Context) (err error) {
 	appendSourceObjectsToDest(ctxSource, ctxDest)
 
 	// Mark source's root object as free.
-	err = ctxDest.DeleteObject(int(ctxSource.Root.ObjectNumber))
+	err = ctxDest.turnEntryToFree(int(ctxSource.Root.ObjectNumber))
 	if err != nil {
 		return
 	}
@@ -314,7 +317,7 @@ func MergeXRefTables(ctxSource, ctxDest *Context) (err error) {
 	// Mark source's info object as free.
 	// Note: Any indRefs this info object depends on are missed.
 	if ctxSource.Info != nil {
-		err = ctxDest.DeleteObject(int(ctxSource.Info.ObjectNumber))
+		err = ctxDest.turnEntryToFree(int(ctxSource.Info.ObjectNumber))
 		if err != nil {
 			return
 		}

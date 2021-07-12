@@ -21,6 +21,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,8 +31,54 @@ import (
 	"github.com/pkg/errors"
 )
 
-// ExtractImages dumps embedded image resources from rs into outDir for selected pages.
-func ExtractImages(rs io.ReadSeeker, outDir, fileName string, selectedPages []string, conf *pdfcpu.Configuration) error {
+// ExtractImagesRaw returns []pdfcpu.Image containing io.Readers for images contained in selectedPages.
+func ExtractImagesRaw(rs io.ReadSeeker, selectedPages []string, conf *pdfcpu.Configuration) ([]pdfcpu.Image, error) {
+	if rs == nil {
+		return nil, errors.New("pdfcpu: ExtractImages: Please provide rs")
+	}
+	if conf == nil {
+		conf = pdfcpu.NewDefaultConfiguration()
+	}
+
+	var images []pdfcpu.Image
+
+	fromStart := time.Now()
+	ctx, durRead, durVal, durOpt, err := readValidateAndOptimize(rs, conf, fromStart)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ctx.EnsurePageCount(); err != nil {
+		return nil, err
+	}
+
+	fromWrite := time.Now()
+	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true)
+	if err != nil {
+		return nil, err
+	}
+
+	for i, v := range pages {
+		if !v {
+			continue
+		}
+		ii, err := ctx.ExtractPageImages(i, false)
+		if err != nil {
+			return nil, err
+		}
+		images = append(images, ii...)
+	}
+
+	durWrite := time.Since(fromWrite).Seconds()
+	durTotal := time.Since(fromStart).Seconds()
+	log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	pdfcpu.TimingStats("write images", durRead, durVal, durOpt, durWrite, durTotal)
+
+	return images, nil
+}
+
+// ExtractImages extracts and digests embedded image resources from rs for selected pages.
+func ExtractImages(rs io.ReadSeeker, selectedPages []string, digestImage func(pdfcpu.Image, bool, int) error, conf *pdfcpu.Configuration) error {
 	if rs == nil {
 		return errors.New("pdfcpu: ExtractImages: Please provide rs")
 	}
@@ -38,8 +86,7 @@ func ExtractImages(rs io.ReadSeeker, outDir, fileName string, selectedPages []st
 		conf = pdfcpu.NewDefaultConfiguration()
 	}
 
-	fromStart := time.Now()
-	ctx, durRead, durVal, durOpt, err := readValidateAndOptimize(rs, conf, fromStart)
+	ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
 	if err != nil {
 		return err
 	}
@@ -48,42 +95,34 @@ func ExtractImages(rs io.ReadSeeker, outDir, fileName string, selectedPages []st
 		return err
 	}
 
-	fromWrite := time.Now()
 	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true)
 	if err != nil {
 		return err
 	}
 
-	fileName = strings.TrimSuffix(filepath.Base(fileName), ".pdf")
-
-	for i, v := range pages {
+	pageNrs := []int{}
+	for k, v := range pages {
 		if !v {
 			continue
 		}
-		ii, err := ctx.ExtractPageImages(i)
+		pageNrs = append(pageNrs, k)
+	}
+
+	sort.Ints(pageNrs)
+	maxPageDigits := len(strconv.Itoa(pageNrs[len(pageNrs)-1]))
+
+	for _, i := range pageNrs {
+		ii, err := ctx.ExtractPageImages(i, false)
 		if err != nil {
 			return err
 		}
+		singleImgPerPage := len(ii) == 1
 		for _, img := range ii {
-			outFile := filepath.Join(outDir, fmt.Sprintf("%s_%d_%s.%s", fileName, i, img.Name, img.Type))
-			log.CLI.Printf("writing %s\n", outFile)
-			w, err := os.Create(outFile)
-			if err != nil {
-				return err
-			}
-			if _, err = io.Copy(w, img); err != nil {
-				return err
-			}
-			if err := w.Close(); err != nil {
+			if err := digestImage(img, singleImgPerPage, maxPageDigits); err != nil {
 				return err
 			}
 		}
 	}
-
-	durWrite := time.Since(fromWrite).Seconds()
-	durTotal := time.Since(fromStart).Seconds()
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
-	pdfcpu.TimingStats("write images", durRead, durVal, durOpt, durWrite, durTotal)
 
 	return nil
 }
@@ -96,7 +135,8 @@ func ExtractImagesFile(inFile, outDir string, selectedPages []string, conf *pdfc
 	}
 	defer f.Close()
 	log.CLI.Printf("extracting images from %s into %s/ ...\n", inFile, outDir)
-	return ExtractImages(f, outDir, filepath.Base(inFile), selectedPages, conf)
+	fileName := strings.TrimSuffix(filepath.Base(inFile), ".pdf")
+	return ExtractImages(f, selectedPages, pdfcpu.WriteImageToDisk(outDir, fileName), conf)
 }
 
 // ExtractFonts dumps embedded fontfiles from rs into outDir for selected pages.
