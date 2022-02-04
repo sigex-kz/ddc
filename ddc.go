@@ -430,8 +430,9 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 	ddc.pdf.SetFont(constFontBold, "", 14)
 	ddc.pdf.CellFormat(constContentMaxWidth, 10, "КАРТОЧКА ЭЛЕКТРОННОГО ДОКУМЕНТА", "", 1, "CB", false, 0, "")
 
+	ddc.pdf.SetY(ddc.pdf.GetY() + 10)
 	ddc.pdf.SetFont(constFontBold, "", 14)
-	ddc.pdf.CellFormat(constContentMaxWidth, 15, ddc.di.Description, "", 1, "CB", false, 0, "")
+	ddc.pdf.MultiCell(constContentMaxWidth, 5, ddc.di.Description, "", "CB", false)
 
 	ddc.pdf.SetFont(constFontBold, "", 12)
 	ddc.pdf.CellFormat(constContentMaxWidth/constTwo, 10, "Дата и время формирования", "", 0, "LB", false, 0, "")
