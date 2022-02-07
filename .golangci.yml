@@ -167,6 +167,9 @@ linters-settings:
         checks: argument,case,condition,return
         ignored-functions:
           - 'gofpdf.Fpdf.*'
+          - 'ddc.go'
+          - 'github.com/phpdave11/gofpdf.*'
+          - 'github.com/phpdave11/gofpdf.Fpdf.*'
   #gomodguard:
     #allowed:
       #modules:                                                        # List of allowed modules
