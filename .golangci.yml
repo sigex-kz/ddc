@@ -159,10 +159,7 @@ linters-settings:
   golint:
     # minimal confidence for issues, default is 0.8
     min-confidence: 0
-  gomnd:
-    ignored-functions:
-      - 'ParseInt'
-      - 'SetFont'
+  # gomnd:
   #gomodguard:
     #allowed:
       #modules:                                                        # List of allowed modules
@@ -320,7 +317,7 @@ linters:
     - gosec
 
     - godox
-    - gomnd
+    # - gomnd
     - asciicheck
     - misspell
     - nakedret
