@@ -6,6 +6,8 @@ import (
 	"io/ioutil"
 	"os"
 	"testing"
+
+	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
 )
 
 const (
@@ -43,6 +45,11 @@ func TestPingPongFullFeatured(t *testing.T) {
 
 	var b bytes.Buffer
 	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +130,11 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	err = os.WriteFile("./tests-output/only-doc-vis.pdf", b.Bytes(), 0600)
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +147,11 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	err = os.WriteFile("./tests-output/only-sig-vis.pdf", b.Bytes(), 0600)
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +160,11 @@ func TestBuildPartialVisualizations(t *testing.T) {
 	// No visualizations
 	b.Reset()
 	err = ddc.Build(false, false, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +214,11 @@ func TestBuildNoQRCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	err = os.WriteFile("./tests-output/no-qr-codes.pdf", b.Bytes(), 0600)
 	if err != nil {
 		t.Fatal(err)
@@ -229,6 +256,11 @@ func TestBuildLongStrings(t *testing.T) {
 
 	var b bytes.Buffer
 	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", consthowToVerifyString, &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
