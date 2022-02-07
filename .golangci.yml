@@ -162,6 +162,8 @@ linters-settings:
   gomnd:
     ignored-functions:
       - 'strconv.ParseInt'
+      - 'ddc.pdf.SetFont'
+      - 'pdf.*'
       - 'ddc.pdf.*'
   #gomodguard:
     #allowed:
