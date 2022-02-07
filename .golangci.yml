@@ -165,6 +165,8 @@ linters-settings:
       mnd:
         # don't include the "operation" and "assign"
         checks: argument,case,condition,return
+        ignored-functions:
+          - 'ddc.pdf.*'
   #gomodguard:
     #allowed:
       #modules:                                                        # List of allowed modules
