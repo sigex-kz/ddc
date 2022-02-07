@@ -242,6 +242,10 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 func (ddc *Builder) initPdf() (pdf *gofpdf.Fpdf, err error) {
 	pdf = gofpdf.New(constPageOrientation, constPageUnits, constPageType, "")
 
+	// Fpdf by default sets PDF version to "1.3" and not always bumps it when uses newer features.
+	// Adding an empty layer bumps the version to "1.5" thus increasing compliance with the standard.
+	pdf.AddLayer("Empty", false)
+
 	pdf.AddUTF8FontFromBytes(constFontRegular, "", embeddedFontRegular)
 	pdf.AddUTF8FontFromBytes(constFontBold, "", embeddedFontBold)
 	pdf.AddUTF8FontFromBytes(constFontItalic, "", embeddedFontItalic)
