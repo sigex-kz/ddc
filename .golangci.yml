@@ -164,6 +164,8 @@ linters-settings:
       - 'strconv.ParseInt'
       - 'pdf.SetFont'
       - 'pdf.*'
+      - 'Fpdf.SetFont'
+      - 'Fpdf.*'
   #gomodguard:
     #allowed:
       #modules:                                                        # List of allowed modules
