@@ -3,7 +3,7 @@ package rpcsrv
 import (
 	"encoding/binary"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 )
 
@@ -71,7 +71,7 @@ func clamAVScan(data []byte) error {
 		return err
 	}
 
-	responseBytes, err := ioutil.ReadAll(conn)
+	responseBytes, err := io.ReadAll(conn)
 	if err != nil {
 		return err
 	}

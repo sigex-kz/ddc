@@ -3,7 +3,7 @@ package ddc
 import (
 	"bytes"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"os"
 	"testing"
 
@@ -54,7 +54,7 @@ func TestPingPongFullFeatured(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = os.WriteFile("./tests-output/fullfeatured.pdf", b.Bytes(), 0600)
+	err = os.WriteFile("./tests-output/fullfeatured.pdf", b.Bytes(), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestPingPongFullFeatured(t *testing.T) {
 		t.Fatalf("unexpected document file name (%v)", doc.Name)
 	}
 
-	pdfBytes, err := ioutil.ReadAll(pdf)
+	pdfBytes, err := io.ReadAll(pdf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = os.WriteFile("./tests-output/only-doc-vis.pdf", b.Bytes(), 0600)
+	err = os.WriteFile("./tests-output/only-doc-vis.pdf", b.Bytes(), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = os.WriteFile("./tests-output/only-sig-vis.pdf", b.Bytes(), 0600)
+	err = os.WriteFile("./tests-output/only-sig-vis.pdf", b.Bytes(), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = os.WriteFile("./tests-output/no-vis.pdf", b.Bytes(), 0600)
+	err = os.WriteFile("./tests-output/no-vis.pdf", b.Bytes(), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestBuildNoQRCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = os.WriteFile("./tests-output/no-qr-codes.pdf", b.Bytes(), 0600)
+	err = os.WriteFile("./tests-output/no-qr-codes.pdf", b.Bytes(), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestBuildLongStrings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = os.WriteFile("./tests-output/longnames.pdf", b.Bytes(), 0600)
+	err = os.WriteFile("./tests-output/longnames.pdf", b.Bytes(), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}

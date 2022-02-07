@@ -194,7 +194,7 @@ func TestPingPong(t *testing.T) {
 
 	// Save DDC as file
 
-	err = os.WriteFile("../tests-output/rpcsrv-fullfeatured.pdf", ddcPDFBuffer.Bytes(), 0600)
+	err = os.WriteFile("../tests-output/rpcsrv-fullfeatured.pdf", ddcPDFBuffer.Bytes(), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}

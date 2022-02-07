@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 
 	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/phpdave11/gofpdf"
@@ -785,7 +784,7 @@ func ExtractAttachments(ddcPdf io.ReadSeeker) (documentOriginal *AttachedFile, s
 		return nil, nil, fmt.Errorf("PDF contains less than %v attachments (%v)", len(attachments), constMinimalAttachmentsDuringExport)
 	}
 
-	documentOriginalBytes, err := ioutil.ReadAll(attachments[0].Reader)
+	documentOriginalBytes, err := io.ReadAll(attachments[0].Reader)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -800,7 +799,7 @@ func ExtractAttachments(ddcPdf io.ReadSeeker) (documentOriginal *AttachedFile, s
 	signatures = make([]AttachedFile, len(attachments))
 
 	for i := 0; i < len(attachments); i++ {
-		signatureBytes, readErr := ioutil.ReadAll(attachments[i].Reader)
+		signatureBytes, readErr := io.ReadAll(attachments[i].Reader)
 		if readErr != nil {
 			return nil, nil, readErr
 		}
