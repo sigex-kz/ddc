@@ -161,7 +161,7 @@ linters-settings:
     min-confidence: 0
   gomnd:
     ignored-functions:
-      - 'strconv.ParseInt'
+      - 'ParseInt'
       - 'SetFont'
   #gomodguard:
     #allowed:
