@@ -162,10 +162,7 @@ linters-settings:
   gomnd:
     ignored-functions:
       - 'strconv.ParseInt'
-      - '.*SetFont.*'
-    #   - 'pdf.*'
-    #   - 'Fpdf.SetFont'
-    #   - 'Fpdf.*'
+      - 'SetFont'
   #gomodguard:
     #allowed:
       #modules:                                                        # List of allowed modules
