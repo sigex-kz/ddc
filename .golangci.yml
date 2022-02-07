@@ -162,10 +162,10 @@ linters-settings:
   gomnd:
     ignored-functions:
       - 'strconv.ParseInt'
-      - 'ddc.pdf.SetFont'
-      - 'SetFont'
-      - 'pdf.*'
-      - 'ddc.pdf.*'
+      - '*gofpdf.Fpdf.*'
+      - 'gofpdf.Fpdf.*'
+      - 'gofpdf.Fpdf.SetFont'
+      - '*gofpdf.Fpdf.SetFont'
   #gomodguard:
     #allowed:
       #modules:                                                        # List of allowed modules
