@@ -1,7 +1,7 @@
 # options for analysis running
 run:
   # default concurrency is a available CPU number
-  concurrency: 4
+  # concurrency: 4
 
   # timeout for analysis, e.g. 30s, 5m, default is 1m
   timeout: 15m
@@ -156,14 +156,12 @@ linters-settings:
   #goimports:
     # put imports beginning with prefix after 3rd-party packages;
     # it's a comma-separated list of prefixes
-    #local-prefixes: dfi/sigex
   golint:
     # minimal confidence for issues, default is 0.8
     min-confidence: 0
   gomnd:
-    mnd:
-      ignored-functions:
-        - 'ddc.pdf.*'
+    ignored-functions:
+      - 'ddc.pdf.*'
   #gomodguard:
     #allowed:
       #modules:                                                        # List of allowed modules
@@ -189,11 +187,6 @@ linters-settings:
       printf: # analyzer name, run `go tool vet help` to see all analyzers
         funcs: # run `go tool vet help printf` to see available settings for `printf` analyzer
           #- (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
-          - (dfi/sigex/logger).Debugf
-          - (dfi/sigex/logger).Infof
-          - (dfi/sigex/logger).Warnf
-          - (dfi/sigex/logger).Errorf
-          - (dfi/sigex/logger).Logf
 
     # enable or disable analyzers by name
     #enable:
