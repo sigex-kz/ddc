@@ -182,7 +182,7 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 		return nil
 	}
 
-	ddcBuilder, err := ddc.NewBuilder(e.be.di)
+	ddcBuilder, err := ddc.NewBuilder(&e.be.di)
 	if err != nil {
 		resp.Error = err.Error()
 		return nil

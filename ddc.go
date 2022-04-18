@@ -185,7 +185,7 @@ type DocumentInfo struct {
 type Builder struct {
 	pdf          *gofpdf.Fpdf
 	imageOptions gofpdf.ImageOptions
-	di           DocumentInfo
+	di           *DocumentInfo
 
 	attachments []gofpdf.Attachment
 
@@ -200,7 +200,7 @@ type Builder struct {
 }
 
 // NewBuilder creates a new DDC Builder
-func NewBuilder(di DocumentInfo) (*Builder, error) {
+func NewBuilder(di *DocumentInfo) (*Builder, error) {
 	ddc := Builder{
 		imageOptions: gofpdf.ImageOptions{
 			ReadDpi:   true,

@@ -28,7 +28,7 @@ func TestPingPongFullFeatured(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ddc, err := NewBuilder(di)
+	ddc, err := NewBuilder(&di)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ddc, err := NewBuilder(di)
+	ddc, err := NewBuilder(&di)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestBuildNoQRCodes(t *testing.T) {
 		di.Signatures[i].SignatureVisualization.QRCodes = nil
 	}
 
-	ddc, err := NewBuilder(di)
+	ddc, err := NewBuilder(&di)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestBuildLongStrings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ddc, err := NewBuilder(di)
+	ddc, err := NewBuilder(&di)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestBuildNoID(t *testing.T) {
 	di.ID = ""
 	di.IDQRCode = nil
 
-	ddc, err := NewBuilder(di)
+	ddc, err := NewBuilder(&di)
 	if err != nil {
 		t.Fatal(err)
 	}
