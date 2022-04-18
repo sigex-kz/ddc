@@ -74,6 +74,8 @@ func TestPingPong(t *testing.T) {
 	brArgs := BuilderRegisterArgs{
 		Title:       di.Title,
 		Description: di.Description,
+		ID:          di.ID,
+		IDQRCode:    di.IDQRCode,
 		FileName:    "embed.pdf",
 	}
 	brResp := BuilderRegisterResp{}

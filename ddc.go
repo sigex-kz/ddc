@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/phpdave11/gofpdf"
@@ -13,25 +14,27 @@ import (
 )
 
 const (
-	constPageType                = "A4"
-	constPageOrientation         = "P"
-	constPageUnits               = "mm"
-	constPageWidth               = 210
-	constPageHeight              = 297
-	constPageTopMargin           = 10
-	constPageBottomMargin        = 10
-	constPageLeftMargin          = 30
-	constPageRightMargin         = 10
-	constContentMaxWidth         = constPageWidth - constPageLeftMargin - constPageRightMargin
-	constContentMaxHeight        = constPageHeight - constPageTopMargin - constPageBottomMargin
-	constHeaderHeight            = 10
-	constFooterHeight            = 10
-	constEmbeddedPageMaxWidth    = constContentMaxWidth
-	constEmbeddedPageMaxHeight   = constContentMaxHeight - constHeaderHeight - constFooterHeight
-	constContentTop              = constPageTopMargin + constHeaderHeight + 10
-	constContentLeftColumnWidth  = constContentMaxWidth / 3 * 2
-	constContentRightColumnWidth = constContentMaxWidth / 3
-	constContentRightColumnX     = constPageLeftMargin + constContentLeftColumnWidth
+	constPageType                   = "A4"
+	constPageOrientation            = "P"
+	constPageUnits                  = "mm"
+	constPageWidth                  = 210
+	constPageHeight                 = 297
+	constPageTopMargin              = 10
+	constPageBottomMargin           = 10
+	constPageLeftMargin             = 30
+	constPageRightMargin            = 10
+	constContentMaxWidth            = constPageWidth - constPageLeftMargin - constPageRightMargin
+	constContentMaxHeight           = constPageHeight - constPageTopMargin - constPageBottomMargin
+	constHeaderHeight               = 10
+	constIDQRSize                   = constHeaderHeight + 2
+	constFooterHeight               = 10
+	constFooterDescriptionMaxLength = 90
+	constEmbeddedPageMaxWidth       = constContentMaxWidth
+	constEmbeddedPageMaxHeight      = constContentMaxHeight - constHeaderHeight - constFooterHeight
+	constContentTop                 = constPageTopMargin + constHeaderHeight + 10
+	constContentLeftColumnWidth     = constContentMaxWidth / 3 * 2
+	constContentRightColumnWidth    = constContentMaxWidth / 3
+	constContentRightColumnX        = constPageLeftMargin + constContentLeftColumnWidth
 
 	constSignatureQRCodeImageSize = 42
 	constSignatureQRCodesInARow   = 4
@@ -168,6 +171,12 @@ type DocumentInfo struct {
 	// Optional description of the document
 	Description string `json:"description"`
 
+	// Optional id of the document
+	ID string `json:"id"`
+
+	// Optional qr code with the id of the document, should be set if id is set
+	IDQRCode []byte `json:"idQRCode"`
+
 	// Signatures information
 	Signatures []SignatureInfo `json:"signatures"`
 }
@@ -262,20 +271,54 @@ func (ddc *Builder) initPdf() (pdf *gofpdf.Fpdf, err error) {
 }
 
 func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText string, addPageNumber bool) error {
-	ddc.pdf.Line(constPageLeftMargin, constPageTopMargin+constHeaderHeight, constPageLeftMargin+constContentMaxWidth, constPageTopMargin+constHeaderHeight)
-
 	if headerText != "" {
 		ddc.pdf.SetXY(constPageLeftMargin, constPageTopMargin)
 		ddc.pdf.SetFont(constFontRegular, "", 11)
-		ddc.pdf.CellFormat(constContentMaxWidth, constHeaderHeight, headerText, "", 1, "CM", false, 0, "")
+		ddc.pdf.CellFormat(constContentMaxWidth, constHeaderHeight, headerText, "", 1, "LM", false, 0, "")
+	}
+
+	if ddc.di.ID != "" {
+		ddc.pdf.SetXY(constPageLeftMargin, constPageTopMargin)
+		ddc.pdf.SetFont(constFontRegular, "", 8)
+		ddc.pdf.CellFormat(constContentMaxWidth-constIDQRSize, constHeaderHeight-1, ddc.di.ID, "", 1, "RB", false, 0, "")
+
+		imgOptions := gofpdf.ImageOptions{
+			ReadDpi:   true,
+			ImageType: "png",
+		}
+		ddc.pdf.RegisterImageOptionsReader("id-qr-code.png", imgOptions, bytes.NewReader(ddc.di.IDQRCode))
+		ddc.pdf.ImageOptions("id-qr-code.png", constPageLeftMargin+constContentMaxWidth-constIDQRSize, constPageTopMargin, constIDQRSize, constIDQRSize, false, imgOptions, 0, "")
+
+		ddc.pdf.Line(constPageLeftMargin, constPageTopMargin+constHeaderHeight, constPageLeftMargin+constContentMaxWidth-constIDQRSize, constPageTopMargin+constHeaderHeight)
+	} else {
+		ddc.pdf.Line(constPageLeftMargin, constPageTopMargin+constHeaderHeight, constPageLeftMargin+constContentMaxWidth, constPageTopMargin+constHeaderHeight)
 	}
 
 	ddc.pdf.Line(constPageLeftMargin, constPageHeight-constPageBottomMargin-constFooterHeight, constPageLeftMargin+constContentMaxWidth, constPageHeight-constPageBottomMargin-constFooterHeight)
 
 	if footerText != "" {
 		ddc.pdf.SetXY(constPageLeftMargin, constPageHeight-constPageBottomMargin-constFooterHeight)
-		ddc.pdf.SetFont(constFontRegular, "", 11)
-		ddc.pdf.CellFormat(constContentMaxWidth, constFooterHeight, footerText, "", 1, "LM", false, 0, "")
+		ddc.pdf.SetFont(constFontRegular, "", 8)
+		ddc.pdf.CellFormat(constContentMaxWidth, constFooterHeight/2, footerText, "", 1, "LB", false, 0, "")
+
+		var descriptionBuilder strings.Builder
+		descriptionLength := 0
+		for _, runeValue := range ddc.di.Description {
+			if descriptionLength == constFooterDescriptionMaxLength-3 {
+				if _, err := descriptionBuilder.WriteString("..."); err != nil {
+					return err
+				}
+				break
+			}
+
+			if _, err := descriptionBuilder.WriteRune(runeValue); err != nil {
+				return err
+			}
+
+			descriptionLength++
+		}
+		ddc.pdf.SetFont(constFontBold, "", 8)
+		ddc.pdf.CellFormat(constContentMaxWidth, constFooterHeight/2, descriptionBuilder.String(), "", 1, "LT", false, 0, "")
 	}
 
 	if addPageNumber {

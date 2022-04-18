@@ -17,6 +17,12 @@ type BuilderRegisterArgs struct {
 	// Description of the document
 	Description string
 
+	// Optional id of the document
+	ID string
+
+	// Optional qr code with the id of the document, should be set if id is set
+	IDQRCode []byte
+
 	// FileName of the original document
 	FileName string
 }
@@ -36,6 +42,8 @@ func (t *Builder) Register(args *BuilderRegisterArgs, resp *BuilderRegisterResp)
 		di: ddc.DocumentInfo{
 			Title:       args.Title,
 			Description: args.Description,
+			ID:          args.ID,
+			IDQRCode:    args.IDQRCode,
 			Signatures:  []ddc.SignatureInfo{},
 		},
 
