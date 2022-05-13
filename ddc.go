@@ -153,10 +153,10 @@ type SignatureInfo struct {
 	// Signature body bytes
 	Body []byte `json:"body"`
 
-	// File name for attachement
+	// File name for attachment
 	FileName string `json:"fileName"`
 
-	// Signer name to build attachement description (optional, required if SignatureVisualization is not provided)
+	// Signer name to build attachment description (optional, required if SignatureVisualization is not provided)
 	SignerName string `json:"signerName"`
 
 	// Signature visualization information (optional, required for signatures visualization)
