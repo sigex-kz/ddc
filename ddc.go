@@ -10,7 +10,7 @@ import (
 	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/phpdave11/gofpdf"
 	"github.com/phpdave11/gofpdf/contrib/gofpdi"
-	realgofpdi "github.com/phpdave11/gofpdi"
+	realgofpdi "github.com/vsenko/gofpdi"
 )
 
 const (
