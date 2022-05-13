@@ -80,8 +80,11 @@ type SignatureVisualization struct {
 	// In case if the subject signed as an employee, identification number of the employer, such as BIN or tax number
 	SubjectOrgID string `json:"subjectOrgID"`
 
-	// Subjects full RDN in RFC 4514 format (optional)
+	// Subjects full RDN in RFC 4514 format
 	Subject string `json:"subject"`
+
+	// Subjects alternative names from subjectAltName certificate extension
+	SubjectAltName string `json:"subjectAltName"`
 
 	// Serial number of the signers certificate
 	SerialNumber string `json:"serialNumber"`
@@ -737,10 +740,11 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 		r, g, b := ddc.pdf.GetDrawColor()
 		ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
 		certificateDetailsText := fmt.Sprintf(`Субъект: %v
+Альтернативные имена: %v
 Серийный номер: %v
 С: %v
 По: %v
-Издатель: %v`, signature.Subject, signature.SerialNumber, signature.From, signature.Until, signature.Issuer)
+Издатель: %v`, signature.Subject, signature.SubjectAltName, signature.SerialNumber, signature.From, signature.Until, signature.Issuer)
 		ddc.pdf.MultiCell(constContentRightColumnWidth, 3, certificateDetailsText, "1", "LM", false)
 		ddc.pdf.SetDrawColor(r, g, b)
 		ddc.pdf.SetY(ddc.pdf.GetY() + 1)

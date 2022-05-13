@@ -11,7 +11,8 @@
         "subjectID": "009988776655",
         "subjectOrgName": "\"COMPANY NAME CAN BE A BIT TOO LONG SOMETIMES\", WESHOULDBEPREPAREDFORSUCHSTUFF LLP",
         "subjectOrgID": "112233445566",
-        "subject": "CN=НЕГІЗГІ КУӘЛАНДЫРУШЫ ОРТАЛЫҚ (RSA), O=РМК «МЕМЛЕКЕТТІК ТЕХНИКАЛЫҚ ҚЫЗМЕТ», C=KZ",
+        "subject": "CN=БЕРИКОВ АЛИМЖАН,SURNAME=БЕРИКОВ,SERIALNUMBER=IIN009988776655,C=KZ,L=АЛМАТЫ,ST=АЛМАТЫ,O=ТОВАРИЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"Коипания\",OU=BIN112233445566,GIVENNAME=СЕРИКОВИЧ,E=SUBJECT@MAIL.KZ",
+        "subjectAltName": "rfc822Name=ytresdfvbhjhgtrewscfv@example.org",
         "serialNumber": "35:76:f5:b3:1b:5a:68:21:a1:6f:ef:ab:12:12:c9:4d:93:8d:c7:ee",
         "policies": [
           "Юридическое лицо (1.2.398.3.3.2.1)"
