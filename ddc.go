@@ -230,24 +230,28 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 	if err != nil {
 		return err
 	}
-
-	ddc.embeddedPDF = pdf
-	ddc.embeddedOptimizedPDF = bytes.NewReader(b.Bytes())
+	var optimizedPDF io.ReadSeeker = bytes.NewReader(b.Bytes())
 
 	imp := realgofpdi.NewImporter()
-	imp.SetSourceStream(&ddc.embeddedOptimizedPDF)
+	imp.SetSourceStream(&optimizedPDF)
 	numPages := imp.GetNumPages()
-	pageSizes := imp.GetPageSizes()
+	pagesSizes := imp.GetPageSizes()
 
 	if numPages < 1 {
 		return errors.New("document is empty")
 	}
 
-	ddc.embeddedPDFFileName = fileName
-	ddc.embeddedPDFNumPages = numPages
-	ddc.embeddedPDFPagesSizes = pageSizes
+	ddc.embedPDF(pdf, optimizedPDF, numPages, pagesSizes, fileName)
 
 	return nil
+}
+
+func (ddc *Builder) embedPDF(pdf io.ReadSeeker, optimizedPDF io.ReadSeeker, numPages int, pagesSizes map[int]map[string]map[string]float64, fileName string) {
+	ddc.embeddedPDF = pdf
+	ddc.embeddedOptimizedPDF = optimizedPDF
+	ddc.embeddedPDFFileName = fileName
+	ddc.embeddedPDFNumPages = numPages
+	ddc.embeddedPDFPagesSizes = pagesSizes
 }
 
 func (ddc *Builder) initPdf() (pdf *gofpdf.Fpdf, err error) {
@@ -355,34 +359,29 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	}
 
 	// Simulate Info Block to find out how many pages it'll take
-	{
-		tempDDC, err := NewBuilder(ddc.di)
-		if err != nil {
-			return err
-		}
-
-		err = tempDDC.EmbedPDF(ddc.embeddedOptimizedPDF, ddc.embeddedPDFFileName)
-		if err != nil {
-			return err
-		}
-
-		tempDDC.pdf, err = tempDDC.initPdf()
-		if err != nil {
-			return err
-		}
-
-		err = tempDDC.attachFiles()
-		if err != nil {
-			return err
-		}
-
-		err = tempDDC.constructInfoBlock(visualizeDocument, visualizeSignatures, creationDate, builderName, howToVerify)
-		if err != nil {
-			return err
-		}
-
-		ddc.infoBlockNumPages = tempDDC.pdf.PageCount()
+	tempDDC, err := NewBuilder(ddc.di)
+	if err != nil {
+		return err
 	}
+
+	tempDDC.embedPDF(ddc.embeddedPDF, ddc.embeddedOptimizedPDF, ddc.embeddedPDFNumPages, ddc.embeddedPDFPagesSizes, ddc.embeddedPDFFileName)
+
+	tempDDC.pdf, err = tempDDC.initPdf()
+	if err != nil {
+		return err
+	}
+
+	err = tempDDC.attachFiles()
+	if err != nil {
+		return err
+	}
+
+	err = tempDDC.constructInfoBlock(visualizeDocument, visualizeSignatures, creationDate, builderName, howToVerify)
+	if err != nil {
+		return err
+	}
+
+	ddc.infoBlockNumPages = tempDDC.pdf.PageCount()
 
 	// Visualization
 	ddc.totalPages = ddc.infoBlockNumPages
