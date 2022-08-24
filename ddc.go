@@ -246,7 +246,7 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 	return nil
 }
 
-func (ddc *Builder) embedPDF(pdf io.ReadSeeker, optimizedPDF io.ReadSeeker, numPages int, pagesSizes map[int]map[string]map[string]float64, fileName string) {
+func (ddc *Builder) embedPDF(pdf, optimizedPDF io.ReadSeeker, numPages int, pagesSizes map[int]map[string]map[string]float64, fileName string) {
 	ddc.embeddedPDF = pdf
 	ddc.embeddedOptimizedPDF = optimizedPDF
 	ddc.embeddedPDFFileName = fileName
