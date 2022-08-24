@@ -70,13 +70,17 @@ func TestPingPongFullFeatured(t *testing.T) {
 		t.Fatalf("unexpected document file name (%v)", doc.Name)
 	}
 
+	_, err = pdf.Seek(0, io.SeekStart)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pdfBytes, err := io.ReadAll(pdf)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if !bytes.Equal(doc.Bytes, pdfBytes) {
-		t.Fatalf("unexpected document contents")
+		t.Fatalf("unexpected document contents (%v) (%v)", len(doc.Bytes), len(pdfBytes))
 	}
 
 	if len(signatures) != len(di.Signatures) {

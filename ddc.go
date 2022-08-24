@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/phpdave11/gofpdf"
 	"github.com/phpdave11/gofpdf/contrib/gofpdi"
 	realgofpdi "github.com/vsenko/gofpdi"
@@ -198,6 +199,7 @@ type Builder struct {
 	embeddedPDFFileName   string
 	embeddedPDFNumPages   int
 	embeddedPDFPagesSizes map[int]map[string]map[string]float64
+	embeddedOptimizedPDF  io.ReadSeeker
 
 	totalPages int
 }
@@ -217,19 +219,23 @@ func NewBuilder(di *DocumentInfo) (*Builder, error) {
 
 // EmbedPDF registers a digital document original in PDF format that should be embedded into DDC
 func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
-	// Validate PDF via pdfcpu because gopdfi Importer does not return errors and panics
-	err := pdfcpuapi.Validate(pdf, nil)
+	// Optimize PDF via pdfcpu because gopdfi Importer is fragile, does not return errors and panics
+	config := pdfcpu.NewDefaultConfiguration()
+	config.DecodeAllStreams = true
+	config.WriteObjectStream = false
+	config.WriteXRefStream = false
+
+	var b bytes.Buffer
+	err := pdfcpuapi.Optimize(pdf, &b, config)
 	if err != nil {
 		return err
 	}
 
-	_, err = pdf.Seek(0, io.SeekStart)
-	if err != nil {
-		return err
-	}
+	ddc.embeddedPDF = pdf
+	ddc.embeddedOptimizedPDF = bytes.NewReader(b.Bytes())
 
 	imp := realgofpdi.NewImporter()
-	imp.SetSourceStream(&pdf)
+	imp.SetSourceStream(&ddc.embeddedOptimizedPDF)
 	numPages := imp.GetNumPages()
 	pageSizes := imp.GetPageSizes()
 
@@ -237,12 +243,6 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 		return errors.New("document is empty")
 	}
 
-	_, err = pdf.Seek(0, io.SeekStart)
-	if err != nil {
-		return err
-	}
-
-	ddc.embeddedPDF = pdf
 	ddc.embeddedPDFFileName = fileName
 	ddc.embeddedPDFNumPages = numPages
 	ddc.embeddedPDFPagesSizes = pageSizes
@@ -355,32 +355,34 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	}
 
 	// Simulate Info Block to find out how many pages it'll take
-	tempDDC, err := NewBuilder(ddc.di)
-	if err != nil {
-		return err
-	}
+	{
+		tempDDC, err := NewBuilder(ddc.di)
+		if err != nil {
+			return err
+		}
 
-	err = tempDDC.EmbedPDF(ddc.embeddedPDF, ddc.embeddedPDFFileName)
-	if err != nil {
-		return err
-	}
+		err = tempDDC.EmbedPDF(ddc.embeddedOptimizedPDF, ddc.embeddedPDFFileName)
+		if err != nil {
+			return err
+		}
 
-	tempDDC.pdf, err = tempDDC.initPdf()
-	if err != nil {
-		return err
-	}
+		tempDDC.pdf, err = tempDDC.initPdf()
+		if err != nil {
+			return err
+		}
 
-	err = tempDDC.attachFiles()
-	if err != nil {
-		return err
-	}
+		err = tempDDC.attachFiles()
+		if err != nil {
+			return err
+		}
 
-	err = tempDDC.constructInfoBlock(visualizeDocument, visualizeSignatures, creationDate, builderName, howToVerify)
-	if err != nil {
-		return err
-	}
+		err = tempDDC.constructInfoBlock(visualizeDocument, visualizeSignatures, creationDate, builderName, howToVerify)
+		if err != nil {
+			return err
+		}
 
-	ddc.infoBlockNumPages = tempDDC.pdf.PageCount()
+		ddc.infoBlockNumPages = tempDDC.pdf.PageCount()
+	}
 
 	// Visualization
 	ddc.totalPages = ddc.infoBlockNumPages
@@ -411,7 +413,14 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	}
 
 	// Build output
-	err = ddc.pdf.Output(w)
+	var b bytes.Buffer
+	err = ddc.pdf.Output(&b)
+	if err != nil {
+		return err
+	}
+
+	// Optimize output
+	err = pdfcpuapi.Optimize(bytes.NewReader(b.Bytes()), w, pdfcpu.NewDefaultConfiguration())
 	if err != nil {
 		return err
 	}
@@ -644,12 +653,12 @@ func (ddc *Builder) constructDocumentVisualization() error {
 		ddc.pdf.Rect(x, y, w, h, "D")
 		ddc.pdf.SetDrawColor(r, g, b)
 
-		_, err = ddc.embeddedPDF.Seek(0, io.SeekStart)
+		_, err = ddc.embeddedOptimizedPDF.Seek(0, io.SeekStart)
 		if err != nil {
 			return err
 		}
 
-		tpl := imp.ImportPageFromStream(ddc.pdf, &ddc.embeddedPDF, pageNum, constPDFBoxType)
+		tpl := imp.ImportPageFromStream(ddc.pdf, &ddc.embeddedOptimizedPDF, pageNum, constPDFBoxType)
 		imp.UseImportedTemplate(ddc.pdf, tpl, x, y, w, h)
 
 		// Watermark
