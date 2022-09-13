@@ -98,6 +98,97 @@ func TestPingPongFullFeatured(t *testing.T) {
 	}
 }
 
+func TestPingPongNonPDFDocument(t *testing.T) {
+	// Build
+
+	jsonBytes, err := os.ReadFile("./tests-data/fullfeatured-di.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	di := DocumentInfo{}
+	err = json.Unmarshal(jsonBytes, &di)
+	if err != nil {
+		t.Fatal(err)
+	}
+	di.Title = "embed.txt"
+
+	ddc, err := NewBuilder(&di)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, err := os.Open("./tests-data/embed.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = ddc.EmbedDoc(doc, di.Title)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var b bytes.Buffer
+
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	if err == nil {
+		t.Fatal("should fail")
+	}
+
+	err = ddc.Build(false, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile("./tests-output/non-pdf.pdf", b.Bytes(), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Extract and check
+
+	docExtracted, signatures, err := ExtractAttachments(bytes.NewReader(b.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if docExtracted.Name != di.Title {
+		t.Fatalf("unexpected document file name (%v)", docExtracted.Name)
+	}
+
+	_, err = doc.Seek(0, io.SeekStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdfBytes, err := io.ReadAll(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(docExtracted.Bytes, pdfBytes) {
+		t.Fatalf("unexpected document contents (%v) (%v)", len(docExtracted.Bytes), len(pdfBytes))
+	}
+
+	if len(signatures) != len(di.Signatures) {
+		t.Fatalf("quantity of extracted signatures (%v) does not match the original (%v)", len(signatures), len(di.Signatures))
+	}
+
+	for i := 0; i < len(signatures); i++ {
+		if signatures[i].Name != di.Signatures[i].FileName {
+			t.Fatalf("unexpected signature file name (%v), expected (%v)", signatures[i].Name, di.Signatures[i].FileName)
+		}
+
+		if !bytes.Equal(signatures[i].Bytes, di.Signatures[i].Body) {
+			t.Fatalf("unexpected signature contents (%v)", signatures[i].Name)
+		}
+	}
+}
+
 func TestBuildPartialVisualizations(t *testing.T) {
 	// Build
 

@@ -195,11 +195,14 @@ type Builder struct {
 
 	infoBlockNumPages int
 
+	// For any embedded document type
+	embeddedDoc         io.ReadSeeker
+	embeddedDocFileName string
+
+	// For embedded PDFs
 	embeddedPDF           io.ReadSeeker
-	embeddedPDFFileName   string
 	embeddedPDFNumPages   int
 	embeddedPDFPagesSizes map[int]map[string]map[string]float64
-	embeddedOptimizedPDF  io.ReadSeeker
 
 	totalPages int
 }
@@ -241,15 +244,22 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 		return errors.New("document is empty")
 	}
 
-	ddc.embedPDF(pdf, optimizedPDF, numPages, pagesSizes, fileName)
+	ddc.embedDoc(pdf, optimizedPDF, numPages, pagesSizes, fileName)
 
 	return nil
 }
 
-func (ddc *Builder) embedPDF(pdf, optimizedPDF io.ReadSeeker, numPages int, pagesSizes map[int]map[string]map[string]float64, fileName string) {
-	ddc.embeddedPDF = pdf
-	ddc.embeddedOptimizedPDF = optimizedPDF
-	ddc.embeddedPDFFileName = fileName
+// EmbedDoc registers a digital document original in any format that should be embedded into DDC
+func (ddc *Builder) EmbedDoc(pdf io.ReadSeeker, fileName string) error {
+	ddc.embedDoc(pdf, nil, 0, nil, fileName)
+	return nil
+}
+
+func (ddc *Builder) embedDoc(doc, optimizedPDF io.ReadSeeker, numPages int, pagesSizes map[int]map[string]map[string]float64, fileName string) {
+	ddc.embeddedDoc = doc
+	ddc.embeddedDocFileName = fileName
+
+	ddc.embeddedPDF = optimizedPDF
 	ddc.embeddedPDFNumPages = numPages
 	ddc.embeddedPDFPagesSizes = pagesSizes
 }
@@ -346,6 +356,10 @@ func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText strin
 func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationDate, builderName, howToVerify string, w io.Writer) error {
 	var err error
 
+	if visualizeDocument && ddc.embeddedPDF == nil {
+		return errors.New("visualization of non-PDF files is not available")
+	}
+
 	// PDF init
 	ddc.pdf, err = ddc.initPdf()
 	if err != nil {
@@ -364,7 +378,7 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		return err
 	}
 
-	tempDDC.embedPDF(ddc.embeddedPDF, ddc.embeddedOptimizedPDF, ddc.embeddedPDFNumPages, ddc.embeddedPDFPagesSizes, ddc.embeddedPDFFileName)
+	tempDDC.embedDoc(ddc.embeddedDoc, ddc.embeddedPDF, ddc.embeddedPDFNumPages, ddc.embeddedPDFPagesSizes, ddc.embeddedDocFileName)
 
 	tempDDC.pdf, err = tempDDC.initPdf()
 	if err != nil {
@@ -435,19 +449,19 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 func (ddc *Builder) attachFiles() error {
 	ddc.attachments = make([]gofpdf.Attachment, len(ddc.di.Signatures)+1)
 
-	_, err := ddc.embeddedPDF.Seek(0, io.SeekStart)
+	_, err := ddc.embeddedDoc.Seek(0, io.SeekStart)
 	if err != nil {
 		return err
 	}
 
-	pdfBytes, err := io.ReadAll(ddc.embeddedPDF)
+	pdfBytes, err := io.ReadAll(ddc.embeddedDoc)
 	if err != nil {
 		return err
 	}
 
 	ddc.attachments[0] = gofpdf.Attachment{
 		Content:     pdfBytes,
-		Filename:    ddc.embeddedPDFFileName,
+		Filename:    ddc.embeddedDocFileName,
 		Description: "Подлинник электронного документа",
 	}
 
@@ -652,12 +666,12 @@ func (ddc *Builder) constructDocumentVisualization() error {
 		ddc.pdf.Rect(x, y, w, h, "D")
 		ddc.pdf.SetDrawColor(r, g, b)
 
-		_, err = ddc.embeddedOptimizedPDF.Seek(0, io.SeekStart)
+		_, err = ddc.embeddedPDF.Seek(0, io.SeekStart)
 		if err != nil {
 			return err
 		}
 
-		tpl := imp.ImportPageFromStream(ddc.pdf, &ddc.embeddedOptimizedPDF, pageNum, constPDFBoxType)
+		tpl := imp.ImportPageFromStream(ddc.pdf, &ddc.embeddedPDF, pageNum, constPDFBoxType)
 		imp.UseImportedTemplate(ddc.pdf, tpl, x, y, w, h)
 
 		// Watermark
