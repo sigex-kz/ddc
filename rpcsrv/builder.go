@@ -151,6 +151,12 @@ type BuilderBuildArgs struct {
 
 	// HowToVerify should provide instructions to verify DDC
 	HowToVerify string
+
+	// WithoutDocumentVisualization builds a DDC without document visualization, should be set to `true` for non-PDF documents
+	WithoutDocumentVisualization bool
+
+	// WithoutSignaturesVisualization builds a DDC without signatures visualization
+	WithoutSignaturesVisualization bool
 }
 
 // BuilderBuildResp used to retrieve data from Builder.Build
@@ -188,13 +194,17 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 		return nil
 	}
 
-	err = ddcBuilder.EmbedPDF(bytes.NewReader(e.be.embeddedFileBuffer.Bytes()), e.be.embeddedFileName)
+	if args.WithoutDocumentVisualization {
+		err = ddcBuilder.EmbedDoc(bytes.NewReader(e.be.embeddedFileBuffer.Bytes()), e.be.embeddedFileName)
+	} else {
+		err = ddcBuilder.EmbedPDF(bytes.NewReader(e.be.embeddedFileBuffer.Bytes()), e.be.embeddedFileName)
+	}
 	if err != nil {
 		resp.Error = err.Error()
 		return nil
 	}
 
-	err = ddcBuilder.Build(true, true, args.CreationDate, args.BuilderName, args.HowToVerify, &e.be.ddcFileBuffer)
+	err = ddcBuilder.Build(!args.WithoutDocumentVisualization, !args.WithoutSignaturesVisualization, args.CreationDate, args.BuilderName, args.HowToVerify, &e.be.ddcFileBuffer)
 	if err != nil {
 		resp.Error = err.Error()
 		return nil
