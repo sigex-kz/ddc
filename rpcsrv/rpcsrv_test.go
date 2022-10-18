@@ -824,3 +824,188 @@ func TestClamAV(t *testing.T) {
 		}
 	})
 }
+
+func TestKK(t *testing.T) {
+
+	// Configure ClamAV
+
+	ClamAVConfigure("unix", "/var/run/clamav/clamd.ctl")
+
+	// Start server
+
+	errChan := make(chan error)
+	go func(errChan chan error) {
+		srvErr := <-errChan
+		t.Log(srvErr)
+	}(errChan)
+
+	err := Start(network, address, errChan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() {
+		stopErr := Stop()
+		if stopErr != nil {
+			t.Fatal(stopErr)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}()
+
+	client, err := jsonrpc.Dial(network, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Load test data
+
+	jsonBytes, err := os.ReadFile("../tests-data/fullfeatured-di.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	di := ddc.DocumentInfo{}
+	err = json.Unmarshal(jsonBytes, &di)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	embeddedPdfBytes, err := os.ReadFile("../tests-data/embed.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Register builder id
+
+	brArgs := BuilderRegisterArgs{
+		Title:       di.Title,
+		Description: di.Description,
+		ID:          di.ID,
+		IDQRCode:    di.IDQRCode,
+		FileName:    "embed.pdf",
+		Language:    "kk",
+	}
+	brResp := BuilderRegisterResp{}
+
+	err = client.Call("Builder.Register", &brArgs, &brResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if brResp.Error != "" {
+		t.Fatal(brResp.Error)
+	}
+
+	if brResp.ID == "" {
+		t.Fatal("received bad id")
+	}
+
+	// Send PDF to embed
+
+	badpArgs := BuilderAppendDocumentPartArgs{
+		ID:    brResp.ID,
+		Bytes: embeddedPdfBytes[:len(embeddedPdfBytes)/2],
+	}
+	badpResp := BuilderAppendDocumentPartResp{}
+
+	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if badpResp.Error != "" {
+		t.Fatal(badpResp.Error)
+	}
+
+	badpArgs.Bytes = embeddedPdfBytes[len(embeddedPdfBytes)/2:]
+
+	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if badpResp.Error != "" {
+		t.Fatal(badpResp.Error)
+	}
+
+	// Send signatures
+
+	for _, s := range di.Signatures {
+		basArgs := BuilderAppendSignatureArgs{
+			ID:            brResp.ID,
+			SignatureInfo: s,
+		}
+		basResp := BuilderAppendSignatureResp{}
+
+		err = client.Call("Builder.AppendSignature", &basArgs, &basResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if basResp.Error != "" {
+			t.Fatal(basResp.Error)
+		}
+	}
+
+	// Build
+
+	bbArgs := BuilderBuildArgs{
+		ID:           brResp.ID,
+		CreationDate: "2021.01.31 13:45:00 UTC+6",
+		BuilderName:  "RPC builder",
+		HowToVerify:  "Somehow",
+	}
+	bbResp := BuilderBuildResp{}
+
+	err = client.Call("Builder.Build", &bbArgs, &bbResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bbResp.Error != "" {
+		t.Fatal(bbResp.Error)
+	}
+
+	// Retrieve
+
+	bgddcpArgs := BuilderGetDDCPartArgs{
+		ID:          brResp.ID,
+		MaxPartSize: 10,
+	}
+	bgddcpResp := BuilderGetDDCPartResp{}
+
+	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bgddcpResp.Error != "" {
+		t.Fatal(bgddcpResp.Error)
+	}
+
+	if bgddcpResp.IsFinal {
+		t.Fatal("should not be final")
+	}
+
+	ddcPDFBuffer := bytes.Buffer{}
+	ddcPDFBuffer.Write(bgddcpResp.Part)
+
+	bgddcpArgs.MaxPartSize = 100 * 1024 * 1024
+	bgddcpResp = BuilderGetDDCPartResp{}
+
+	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bgddcpResp.Error != "" {
+		t.Fatal(bgddcpResp.Error)
+	}
+
+	if !bgddcpResp.IsFinal {
+		t.Fatal("should be final")
+	}
+
+	ddcPDFBuffer.Write(bgddcpResp.Part)
+
+	// Save DDC as file
+
+	err = os.WriteFile("../tests-output/rpcsrv-kk.pdf", ddcPDFBuffer.Bytes(), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+}

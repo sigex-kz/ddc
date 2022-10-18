@@ -25,6 +25,9 @@ type BuilderRegisterArgs struct {
 
 	// FileName of the original document
 	FileName string
+
+	// Set language
+	Language string
 }
 
 // BuilderRegisterResp used to retrieve data from Builder.Register
@@ -45,6 +48,7 @@ func (t *Builder) Register(args *BuilderRegisterArgs, resp *BuilderRegisterResp)
 			ID:          args.ID,
 			IDQRCode:    args.IDQRCode,
 			Signatures:  []ddc.SignatureInfo{},
+			Language:    args.Language,
 		},
 
 		embeddedFileName: args.FileName,

@@ -183,6 +183,9 @@ type DocumentInfo struct {
 
 	// Signatures information
 	Signatures []SignatureInfo `json:"signatures"`
+
+	// The language to build DDC in
+	Language string `json:"language"`
 }
 
 // Builder builds Digital Document Card
@@ -341,7 +344,7 @@ func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText strin
 	if addPageNumber {
 		ddc.pdf.SetXY(constPageLeftMargin, constPageHeight-constPageBottomMargin-constFooterHeight)
 		ddc.pdf.SetFont(constFontRegular, "", 11)
-		pageNumberText := fmt.Sprintf("стр. %v из %v", ddc.pdf.PageNo(), ddc.totalPages)
+		pageNumberText := fmt.Sprintf(ddc.t("стр. %v из %v"), ddc.pdf.PageNo(), ddc.totalPages)
 		ddc.pdf.CellFormat(constContentMaxWidth, constFooterHeight, pageNumberText, "", 1, "RM", false, 0, "")
 	}
 
@@ -462,7 +465,7 @@ func (ddc *Builder) attachFiles() error {
 	ddc.attachments[0] = gofpdf.Attachment{
 		Content:     pdfBytes,
 		Filename:    ddc.embeddedDocFileName,
-		Description: "Подлинник электронного документа",
+		Description: ddc.t("Подлинник электронного документа"),
 	}
 
 	for si, signtaure := range ddc.di.Signatures {
@@ -482,7 +485,7 @@ func (ddc *Builder) attachFiles() error {
 		ddc.attachments[1+si] = gofpdf.Attachment{
 			Content:     signtaure.Body,
 			Filename:    signtaure.FileName,
-			Description: fmt.Sprintf("ЭЦП, %v", signer),
+			Description: fmt.Sprintf(ddc.t("ЭЦП, %v"), signer),
 		}
 	}
 
@@ -499,15 +502,15 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 	ddc.pdf.AddPage()
 
 	ddc.pdf.SetFont(constFontBold, "", 14)
-	ddc.pdf.CellFormat(constContentMaxWidth, 10, "КАРТОЧКА ЭЛЕКТРОННОГО ДОКУМЕНТА", "", 1, "CB", false, 0, "")
+	ddc.pdf.CellFormat(constContentMaxWidth, 10, ddc.t("КАРТОЧКА ЭЛЕКТРОННОГО ДОКУМЕНТА"), "", 1, "CB", false, 0, "")
 
 	ddc.pdf.SetY(ddc.pdf.GetY() + constPageTopMargin)
 	ddc.pdf.SetFont(constFontBold, "", 14)
 	ddc.pdf.MultiCell(constContentMaxWidth, 5, ddc.di.Description, "", "CB", false)
 
 	ddc.pdf.SetFont(constFontBold, "", 12)
-	ddc.pdf.CellFormat(constContentMaxWidth/constTwo, 10, "Дата и время формирования", "", 0, "LB", false, 0, "")
-	ddc.pdf.CellFormat(constContentMaxWidth/constTwo, 10, "Информационная система или сервис", "", 1, "LB", false, 0, "")
+	ddc.pdf.CellFormat(constContentMaxWidth/constTwo, 10, ddc.t("Дата и время формирования"), "", 0, "LB", false, 0, "")
+	ddc.pdf.CellFormat(constContentMaxWidth/constTwo, 10, ddc.t("Информационная система или сервис"), "", 1, "LB", false, 0, "")
 
 	ddc.pdf.SetFont(constFontRegular, "", 12)
 	{
@@ -528,7 +531,7 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 	// Contents
 
 	ddc.pdf.SetFont(constFontBold, "", 12)
-	ddc.pdf.CellFormat(constContentMaxWidth, 10, "Содержание:", "", 1, "LB", false, 0, "")
+	ddc.pdf.CellFormat(constContentMaxWidth, 10, ddc.t("Содержание:"), "", 1, "LB", false, 0, "")
 
 	startPage := ddc.infoBlockNumPages + 1
 	documentVisualizationPages := "-"
@@ -543,17 +546,17 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 	}
 
 	ddc.pdf.SetFont(constFontRegular, "", 12)
-	ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, "Информационный блок", "", 0, "LM", false, 0, "")
+	ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Информационный блок"), "", 0, "LM", false, 0, "")
 	ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, "1", "", 1, "LM", false, 0, "")
-	ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, "Визуализация электронного документа", "", 0, "LM", false, 0, "")
+	ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация электронного документа"), "", 0, "LM", false, 0, "")
 	ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, documentVisualizationPages, "", 1, "LM", false, 0, "")
-	ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, "Визуализация подписей под электронным документом", "", 0, "LM", false, 0, "")
+	ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация подписей под электронным документом"), "", 0, "LM", false, 0, "")
 	ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, signaturesVisualizationPages, "", 1, "LM", false, 0, "")
 
 	// Attachments
 
 	ddc.pdf.SetFont(constFontBold, "", 12)
-	ddc.pdf.CellFormat(constContentMaxWidth, 10, "Перечень вложенных файлов:", "", 1, "LB", false, 0, "")
+	ddc.pdf.CellFormat(constContentMaxWidth, 10, ddc.t("Перечень вложенных файлов:"), "", 1, "LB", false, 0, "")
 
 	ddc.pdf.SetFont(constFontRegular, "", 12)
 	for i, a := range ddc.attachments {
@@ -581,7 +584,7 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 
 	// Comments
 
-	infoText := fmt.Sprintf(`
+	infoText := fmt.Sprintf(ddc.t(`
 При формировании карточки электронного документа была автоматически выполнена процедура проверки ЭЦП в соответствии с положениями Приказа Министра по инвестициям и развитию Республики Казахстан «Об утверждении Правил проверки подлинности электронной цифровой подписи».
 
 Карточка электронного документа — это файл в формате PDF, состоящий из визуально отображаемой части и вложенных файлов.
@@ -594,7 +597,7 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 
 %v
 
-ВНИМАНИЕ! Остерегайтесь мошенников! При получении электронных документов, обязательно выполняйте проверку подписей! Злоумышленники могут пробовать подделывать или менять визуально отображаемую часть карточки,  так как она не защищена от изменения цифровой подписью.`,
+ВНИМАНИЕ! Остерегайтесь мошенников! При получении электронных документов, обязательно выполняйте проверку подписей! Злоумышленники могут пробовать подделывать или менять визуально отображаемую часть карточки,  так как она не защищена от изменения цифровой подписью.`),
 		howToVerify)
 	ddc.pdf.SetFont(constFontItalic, "", 10)
 	ddc.pdf.MultiCell(constContentMaxWidth, 4, infoText, "", "LT", false)
@@ -612,7 +615,7 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 				return err
 			}
 		} else {
-			err := ddc.addHeaderAndFooterToCurrentPage("", "Карточка электронного документа", true)
+			err := ddc.addHeaderAndFooterToCurrentPage("", ddc.t("Карточка электронного документа"), true)
 			if err != nil {
 				return err
 			}
@@ -631,7 +634,7 @@ func (ddc *Builder) constructDocumentVisualization() error {
 	for pageNum := 1; pageNum <= ddc.embeddedPDFNumPages; pageNum++ {
 		ddc.pdf.AddPage()
 
-		err := ddc.addHeaderAndFooterToCurrentPage("Визуализация электронного документа", "Карточка электронного документа", true)
+		err := ddc.addHeaderAndFooterToCurrentPage(ddc.t("Визуализация электронного документа"), ddc.t("Карточка электронного документа"), true)
 		if err != nil {
 			return err
 		}
@@ -682,7 +685,7 @@ func (ddc *Builder) constructDocumentVisualization() error {
 		ddc.pdf.SetTextColor(constGrayR, constGrayG, constGrayB)
 		ddc.pdf.SetFont(constFontRegular, "", 40)
 		ddc.pdf.SetAlpha(constSemiTransparent, "Normal")
-		ddc.pdf.CellFormat(w, h, "Копия электронного документа", "", 1, "CM", false, 0, "")
+		ddc.pdf.CellFormat(w, h, ddc.t("Копия электронного документа"), "", 1, "CM", false, 0, "")
 		ddc.pdf.TransformEnd()
 		ddc.pdf.SetTextColor(r, g, b)
 
@@ -703,7 +706,7 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 
 		ddc.pdf.AddPage()
 
-		err := ddc.addHeaderAndFooterToCurrentPage("Визуализация электронной цифровой подписи", "Карточка электронного документа", true)
+		err := ddc.addHeaderAndFooterToCurrentPage(ddc.t("Визуализация электронной цифровой подписи"), ddc.t("Карточка электронного документа"), true)
 		if err != nil {
 			return err
 		}
@@ -712,37 +715,37 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 		ddc.pdf.SetY(constContentTop)
 
 		ddc.pdf.SetFont(constFontBold, "", 10)
-		ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, fmt.Sprintf("Подпись №%v", sIndex+1), "", 1, "LB", false, 0, "")
+		ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, fmt.Sprintf(ddc.t("Подпись №%v"), sIndex+1), "", 1, "LB", false, 0, "")
 
 		ddc.pdf.SetFont(constFontRegular, "", 8)
-		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, "Дата формирования подписи:", "", 1, "LB", false, 0, "")
+		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Дата формирования подписи:"), "", 1, "LB", false, 0, "")
 		ddc.pdf.SetFont(constFontBold, "", 10)
 		ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, signature.TSP.GeneratedAt, "", 1, "LB", false, 0, "")
 
-		name := fmt.Sprintf("%v, ИИН %v", signature.SubjectName, signature.SubjectID)
+		name := fmt.Sprintf(ddc.t("%v, ИИН %v"), signature.SubjectName, signature.SubjectID)
 		ddc.pdf.SetFont(constFontRegular, "", 8)
-		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, "Подписал(а):", "", 1, "LB", false, 0, "")
+		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Подписал(а):"), "", 1, "LB", false, 0, "")
 		ddc.pdf.SetFont(constFontBold, "", 10)
 		ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, name, "", "LB", false)
 
 		ddc.pdf.SetFont(constFontRegular, "", 8)
-		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, "Шаблон:", "", 1, "LB", false, 0, "")
+		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Шаблон:"), "", 1, "LB", false, 0, "")
 		for _, policyString := range signature.Policies {
 			ddc.pdf.SetFont(constFontBold, "", 10)
 			ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, policyString, "", 1, "LB", false, 0, "")
 		}
 
 		if signature.SubjectOrgID != "" {
-			orgName := fmt.Sprintf("%v, БИН %v", signature.SubjectOrgName, signature.SubjectOrgID)
+			orgName := fmt.Sprintf(ddc.t("%v, БИН %v"), signature.SubjectOrgName, signature.SubjectOrgID)
 			ddc.pdf.SetFont(constFontRegular, "", 8)
-			ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, "Представляет организацию:", "", 1, "LB", false, 0, "")
+			ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Представляет организацию:"), "", 1, "LB", false, 0, "")
 			ddc.pdf.SetFont(constFontBold, "", 10)
 			ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, orgName, "", "LB", false)
 		}
 
 		if len(signature.ExtKeyUsage) > 0 || len(signature.KeyUsage) > 0 {
 			ddc.pdf.SetFont(constFontRegular, "", 8)
-			ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, "Допустимое использование:", "", 1, "LB", false, 0, "")
+			ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Допустимое использование:"), "", 1, "LB", false, 0, "")
 			ddc.pdf.SetFont(constFontBold, "", 10)
 			for _, keyUsage := range signature.KeyUsage {
 				ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, keyUsage, "", 1, "LB", false, 0, "")
@@ -761,12 +764,12 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 		ddc.pdf.SetFont(constFontRegular, "", 6)
 		r, g, b := ddc.pdf.GetDrawColor()
 		ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
-		certificateDetailsText := fmt.Sprintf(`Субъект: %v
+		certificateDetailsText := fmt.Sprintf(ddc.t(`Субъект: %v
 Альтернативные имена: %v
 Серийный номер: %v
 С: %v
 По: %v
-Издатель: %v`, signature.Subject, signature.SubjectAltName, signature.SerialNumber, signature.From, signature.Until, signature.Issuer)
+Издатель: %v`), signature.Subject, signature.SubjectAltName, signature.SerialNumber, signature.From, signature.Until, signature.Issuer)
 		ddc.pdf.MultiCell(constContentRightColumnWidth, 3, certificateDetailsText, "1", "LM", false)
 		ddc.pdf.SetDrawColor(r, g, b)
 		ddc.pdf.SetY(ddc.pdf.GetY() + 1)
@@ -775,10 +778,10 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 		ddc.pdf.SetFont(constFontRegular, "", 6)
 		r, g, b = ddc.pdf.GetDrawColor()
 		ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
-		tspDetailsText := fmt.Sprintf(`Метка времени: %v
+		tspDetailsText := fmt.Sprintf(ddc.t(`Метка времени: %v
 Субъект: %v
 Серийный номер: %v
-Издатель: %v`, signature.TSP.GeneratedAt, signature.TSP.Subject, signature.TSP.SerialNumber, signature.TSP.Issuer)
+Издатель: %v`), signature.TSP.GeneratedAt, signature.TSP.Subject, signature.TSP.SerialNumber, signature.TSP.Issuer)
 		ddc.pdf.MultiCell(constContentRightColumnWidth, 3, tspDetailsText, "1", "LM", false)
 		ddc.pdf.SetDrawColor(r, g, b)
 		ddc.pdf.SetY(ddc.pdf.GetY() + 1)
@@ -787,11 +790,11 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 		ddc.pdf.SetFont(constFontRegular, "", 6)
 		r, g, b = ddc.pdf.GetDrawColor()
 		ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
-		ocspDetailsText := fmt.Sprintf(`OCSP: %v
+		ocspDetailsText := fmt.Sprintf(ddc.t(`OCSP: %v
 Сформирован: %v
 Субъект: %v
 Серийный номер: %v
-Издатель: %v`, signature.OCSP.CertStatus, signature.OCSP.GeneratedAt, signature.OCSP.Subject, signature.OCSP.SerialNumber, signature.OCSP.Issuer)
+Издатель: %v`), signature.OCSP.CertStatus, signature.OCSP.GeneratedAt, signature.OCSP.Subject, signature.OCSP.SerialNumber, signature.OCSP.Issuer)
 		ddc.pdf.MultiCell(constContentRightColumnWidth, 3, ocspDetailsText, "1", "LM", false)
 		ddc.pdf.SetDrawColor(r, g, b)
 		ddc.pdf.SetY(ddc.pdf.GetY() + 1)
@@ -829,6 +832,17 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 	}
 
 	return nil
+}
+
+func (ddc *Builder) t(input string) string {
+	if ddc.di.Language == "kk" {
+		output, ok := kk[input]
+		if ok {
+			return output
+		}
+	}
+
+	return input
 }
 
 // AttachedFile information
