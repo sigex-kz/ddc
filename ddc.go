@@ -732,7 +732,7 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Шаблон:"), "", 1, "LB", false, 0, "")
 		for _, policyString := range signature.Policies {
 			ddc.pdf.SetFont(constFontBold, "", 10)
-			ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, policyString, "", 1, "LB", false, 0, "")
+			ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, policyString, "", "LB", false)
 		}
 
 		if signature.SubjectOrgID != "" {
@@ -748,10 +748,10 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 			ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Допустимое использование:"), "", 1, "LB", false, 0, "")
 			ddc.pdf.SetFont(constFontBold, "", 10)
 			for _, keyUsage := range signature.KeyUsage {
-				ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, keyUsage, "", 1, "LB", false, 0, "")
+				ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, keyUsage, "", "LB", false)
 			}
 			for _, extKeyUsage := range signature.ExtKeyUsage {
-				ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, extKeyUsage, "", 1, "LB", false, 0, "")
+				ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, extKeyUsage, "", "LB", false)
 			}
 		}
 
