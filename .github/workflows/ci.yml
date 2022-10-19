@@ -5,14 +5,14 @@ jobs:
     runs-on: ubuntu-latest
     container: golangci/golangci-lint:v1.44.0
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - run: golangci-lint run -v ./...
 
   test:
     runs-on: ubuntu-latest
     container: golang:1.18.1-bullseye
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - run: |
           apt -qy update
           apt -qy install clamav clamav-daemon
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     container: golang:1.18.1-bullseye
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
       - run: |
           cd rpcsrv/cmd/
