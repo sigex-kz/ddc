@@ -39,7 +39,7 @@ jobs:
           GOOS=windows GOARCH=amd64 go build -mod vendor -ldflags "-X 'main.BuildTimeStamp=$(date +%s)' -X 'main.AppVersion=${{ env.RELEASE_VERSION }}'" -o ddcrpcsrv.exe .
           GOOS=darwin GOARCH=amd64 go build -mod vendor -ldflags "-X 'main.BuildTimeStamp=$(date +%s)' -X 'main.AppVersion=${{ env.RELEASE_VERSION }}'" -o ddcrpcsrv-darwin .
       - name: Archive rpcsrv builds
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: rpcsrv-build
           path: rpcsrv/cmd/ddcrpcsrv*
