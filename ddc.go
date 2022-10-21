@@ -582,13 +582,6 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 		ddc.pdf.SetY(lowestY)
 	}
 
-	// ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Информационный блок"), "", 0, "LM", false, 0, "")
-	// ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, "1", "", 1, "LM", false, 0, "")
-	// ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация электронного документа"), "", 0, "LM", false, 0, "")
-	// ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, documentVisualizationPages, "", 1, "LM", false, 0, "")
-	// ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация подписей под электронным документом"), "", 0, "LM", false, 0, "")
-	// ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, signaturesVisualizationPages, "", 1, "LM", false, 0, "")
-
 	// Attachments
 
 	ddc.pdf.SetFont(constFontBold, "", 12)
