@@ -26,7 +26,7 @@ type BuilderRegisterArgs struct {
 	// FileName of the original document
 	FileName string
 
-	// Set language
+	// Set language ["ru", "kk", "kk/ru"]
 	Language string
 }
 

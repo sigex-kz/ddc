@@ -462,3 +462,51 @@ func TestBuildKK(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBuildKKRU(t *testing.T) {
+	// Build
+
+	jsonBytes, err := os.ReadFile("./tests-data/fullfeatured-di.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	di := DocumentInfo{}
+	err = json.Unmarshal(jsonBytes, &di)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	di.Language = "kk/ru"
+
+	ddc, err := NewBuilder(&di)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pdf, err := os.Open("./tests-data/embed.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = ddc.EmbedPDF(pdf, di.Title)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var b bytes.Buffer
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.WriteFile("./tests-output/kkRU.pdf", b.Bytes(), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+}

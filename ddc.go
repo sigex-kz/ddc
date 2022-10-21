@@ -184,7 +184,7 @@ type DocumentInfo struct {
 	// Signatures information
 	Signatures []SignatureInfo `json:"signatures"`
 
-	// The language to build DDC in
+	// The language to build DDC in ["ru", "kk", "kk/ru"]
 	Language string `json:"language"`
 }
 
@@ -502,15 +502,21 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 	ddc.pdf.AddPage()
 
 	ddc.pdf.SetFont(constFontBold, "", 14)
-	ddc.pdf.CellFormat(constContentMaxWidth, 10, ddc.t("КАРТОЧКА ЭЛЕКТРОННОГО ДОКУМЕНТА"), "", 1, "CB", false, 0, "")
+	ddc.pdf.MultiCell(constContentMaxWidth, 10, ddc.t("КАРТОЧКА ЭЛЕКТРОННОГО ДОКУМЕНТА"), "", "CB", false)
 
 	ddc.pdf.SetY(ddc.pdf.GetY() + constPageTopMargin)
 	ddc.pdf.SetFont(constFontBold, "", 14)
 	ddc.pdf.MultiCell(constContentMaxWidth, 5, ddc.di.Description, "", "CB", false)
 
 	ddc.pdf.SetFont(constFontBold, "", 12)
-	ddc.pdf.CellFormat(constContentMaxWidth/constTwo, 10, ddc.t("Дата и время формирования"), "", 0, "LB", false, 0, "")
-	ddc.pdf.CellFormat(constContentMaxWidth/constTwo, 10, ddc.t("Информационная система или сервис"), "", 1, "LB", false, 0, "")
+	{
+		ddc.pdf.SetY(ddc.pdf.GetY() + 5)
+		y := ddc.pdf.GetY()
+		ddc.pdf.MultiCell(constContentMaxWidth/constTwo, 5, ddc.t("Дата и время формирования"), "", "LB", false)
+		ddc.pdf.SetY(y)
+		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth/2)
+		ddc.pdf.MultiCell(constContentMaxWidth/constTwo, 5, ddc.t("Информационная система или сервис"), "", "LB", false)
+	}
 
 	ddc.pdf.SetFont(constFontRegular, "", 12)
 	{
@@ -531,7 +537,8 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 	// Contents
 
 	ddc.pdf.SetFont(constFontBold, "", 12)
-	ddc.pdf.CellFormat(constContentMaxWidth, 10, ddc.t("Содержание:"), "", 1, "LB", false, 0, "")
+	ddc.pdf.SetY(ddc.pdf.GetY() + 5)
+	ddc.pdf.MultiCell(constContentMaxWidth, 5, ddc.t("Содержание:"), "", "LB", false)
 
 	startPage := ddc.infoBlockNumPages + 1
 	documentVisualizationPages := "-"
@@ -546,12 +553,41 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 	}
 
 	ddc.pdf.SetFont(constFontRegular, "", 12)
-	ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Информационный блок"), "", 0, "LM", false, 0, "")
-	ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, "1", "", 1, "LM", false, 0, "")
-	ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация электронного документа"), "", 0, "LM", false, 0, "")
-	ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, documentVisualizationPages, "", 1, "LM", false, 0, "")
-	ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация подписей под электронным документом"), "", 0, "LM", false, 0, "")
-	ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, signaturesVisualizationPages, "", 1, "LM", false, 0, "")
+	{
+		y := ddc.pdf.GetY()
+		ddc.pdf.MultiCell(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Информационный блок"), "", "LM", false)
+		lowestY := ddc.pdf.GetY()
+
+		ddc.pdf.SetY(y)
+		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth)
+		ddc.pdf.MultiCell(constContentMaxWidth, 5, "1", "", "LM", false)
+		ddc.pdf.SetY(lowestY)
+
+		y = ddc.pdf.GetY()
+		ddc.pdf.MultiCell(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация электронного документа"), "", "LM", false)
+		lowestY = ddc.pdf.GetY()
+
+		ddc.pdf.SetY(y)
+		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth)
+		ddc.pdf.MultiCell(constContentMaxWidth, 5, documentVisualizationPages, "", "LM", false)
+		ddc.pdf.SetY(lowestY)
+
+		y = ddc.pdf.GetY()
+		ddc.pdf.MultiCell(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация подписей под электронным документом"), "", "LM", false)
+		lowestY = ddc.pdf.GetY()
+
+		ddc.pdf.SetY(y)
+		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth)
+		ddc.pdf.MultiCell(constContentMaxWidth, 5, signaturesVisualizationPages, "", "LM", false)
+		ddc.pdf.SetY(lowestY)
+	}
+
+	// ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Информационный блок"), "", 0, "LM", false, 0, "")
+	// ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, "1", "", 1, "LM", false, 0, "")
+	// ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация электронного документа"), "", 0, "LM", false, 0, "")
+	// ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, documentVisualizationPages, "", 1, "LM", false, 0, "")
+	// ddc.pdf.CellFormat(constContentMaxWidth-constInfoBlockContentsPageNumColWidth, 5, ddc.t("Визуализация подписей под электронным документом"), "", 0, "LM", false, 0, "")
+	// ddc.pdf.CellFormat(constInfoBlockContentsPageNumColWidth, 5, signaturesVisualizationPages, "", 1, "LM", false, 0, "")
 
 	// Attachments
 
@@ -718,40 +754,38 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 		ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, fmt.Sprintf(ddc.t("Подпись №%v"), sIndex+1), "", 1, "LB", false, 0, "")
 
 		ddc.pdf.SetFont(constFontRegular, "", 8)
-		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Дата формирования подписи:"), "", 1, "LB", false, 0, "")
-		ddc.pdf.SetFont(constFontBold, "", 10)
+		ddc.pdf.CellFormat(constContentLeftColumnWidth, 7, ddc.t("Дата формирования подписи:"), "", 1, "LB", false, 0, "")
+		ddc.pdf.SetFont(constFontBold, "", 8)
 		ddc.pdf.CellFormat(constContentLeftColumnWidth, 5, signature.TSP.GeneratedAt, "", 1, "LB", false, 0, "")
 
-		name := fmt.Sprintf(ddc.t("%v, ИИН %v"), signature.SubjectName, signature.SubjectID)
 		ddc.pdf.SetFont(constFontRegular, "", 8)
-		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Подписал(а):"), "", 1, "LB", false, 0, "")
-		ddc.pdf.SetFont(constFontBold, "", 10)
-		ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, name, "", "LB", false)
-
-		ddc.pdf.SetFont(constFontRegular, "", 8)
-		ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Шаблон:"), "", 1, "LB", false, 0, "")
-		for _, policyString := range signature.Policies {
-			ddc.pdf.SetFont(constFontBold, "", 10)
-			ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, policyString, "", "LB", false)
+		ddc.pdf.CellFormat(constContentLeftColumnWidth, 7, ddc.t("Подписал(а):"), "", 1, "LB", false, 0, "")
+		if signature.SubjectOrgID == "" {
+			name := fmt.Sprintf(ddc.t("%v, ИИН %v"), signature.SubjectName, signature.SubjectID)
+			ddc.pdf.SetFont(constFontBold, "", 8)
+			ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, name, "", "LB", false)
+		} else {
+			name := fmt.Sprintf(ddc.t("%v, ИИН %v\n%v, БИН %v"), signature.SubjectName, signature.SubjectID, signature.SubjectOrgName, signature.SubjectOrgID)
+			ddc.pdf.SetFont(constFontBold, "", 8)
+			ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, name, "", "LB", false)
 		}
 
-		if signature.SubjectOrgID != "" {
-			orgName := fmt.Sprintf(ddc.t("%v, БИН %v"), signature.SubjectOrgName, signature.SubjectOrgID)
-			ddc.pdf.SetFont(constFontRegular, "", 8)
-			ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Представляет организацию:"), "", 1, "LB", false, 0, "")
-			ddc.pdf.SetFont(constFontBold, "", 10)
-			ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, orgName, "", "LB", false)
+		ddc.pdf.SetFont(constFontRegular, "", 8)
+		ddc.pdf.CellFormat(constContentLeftColumnWidth, 7, ddc.t("Шаблон:"), "", 1, "LB", false, 0, "")
+		for _, policyString := range signature.Policies {
+			ddc.pdf.SetFont(constFontBold, "", 8)
+			ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, fmt.Sprintf("- %v", policyString), "", "LB", false)
 		}
 
 		if len(signature.ExtKeyUsage) > 0 || len(signature.KeyUsage) > 0 {
 			ddc.pdf.SetFont(constFontRegular, "", 8)
-			ddc.pdf.CellFormat(constContentLeftColumnWidth, 8, ddc.t("Допустимое использование:"), "", 1, "LB", false, 0, "")
-			ddc.pdf.SetFont(constFontBold, "", 10)
+			ddc.pdf.CellFormat(constContentLeftColumnWidth, 7, ddc.t("Допустимое использование:"), "", 1, "LB", false, 0, "")
+			ddc.pdf.SetFont(constFontBold, "", 8)
 			for _, keyUsage := range signature.KeyUsage {
-				ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, keyUsage, "", "LB", false)
+				ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, fmt.Sprintf("- %v", keyUsage), "", "LB", false)
 			}
 			for _, extKeyUsage := range signature.ExtKeyUsage {
-				ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, extKeyUsage, "", "LB", false)
+				ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, fmt.Sprintf("- %v", extKeyUsage), "", "LB", false)
 			}
 		}
 
@@ -837,6 +871,13 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 func (ddc *Builder) t(input string) string {
 	if ddc.di.Language == "kk" {
 		output, ok := kk[input]
+		if ok {
+			return output
+		}
+	}
+
+	if ddc.di.Language == "kk/ru" {
+		output, ok := kkRU[input]
 		if ok {
 			return output
 		}
