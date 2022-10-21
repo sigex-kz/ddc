@@ -1734,7 +1734,11 @@ func (f *Fpdf) addFont(familyStr, styleStr, fileStr string, isUTF8 bool) {
 			File:      fileStr,
 			utf8File:  utf8File,
 		}
-		def.i, _ = generateFontID(def)
+		def.i, err = generateFontID(def)
+		if err != nil {
+			f.SetError(err)
+			return
+		}
 		f.fonts[fontKey] = def
 		f.fontFiles[fontKey] = fontFileType{
 			length1:  originalSize,
@@ -1870,7 +1874,11 @@ func (f *Fpdf) addFontFromBytes(familyStr, styleStr string, jsonFileBytes, zFile
 			utf8File:  utf8File,
 			usedRunes: sbarr,
 		}
-		def.i, _ = generateFontID(def)
+		def.i, err = generateFontID(def)
+		if err != nil {
+			f.SetError(err)
+			return
+		}
 		f.fonts[fontkey] = def
 	} else {
 		// load font definitions

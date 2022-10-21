@@ -9,8 +9,8 @@ import (
 
 	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	"github.com/phpdave11/gofpdf"
-	"github.com/phpdave11/gofpdf/contrib/gofpdi"
+	"github.com/vsenko/gofpdf"
+	"github.com/vsenko/gofpdf/contrib/gofpdi"
 	realgofpdi "github.com/vsenko/gofpdi"
 )
 

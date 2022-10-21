@@ -15,14 +15,12 @@ github.com/pdfcpu/pdfcpu/pkg/log
 github.com/pdfcpu/pdfcpu/pkg/pdfcpu
 github.com/pdfcpu/pdfcpu/pkg/pdfcpu/validate
 github.com/pdfcpu/pdfcpu/pkg/types
-# github.com/phpdave11/gofpdf v1.4.2
-## explicit
-github.com/phpdave11/gofpdf
-github.com/phpdave11/gofpdf/contrib/gofpdi
-# github.com/phpdave11/gofpdi v1.0.12
-github.com/phpdave11/gofpdi
 # github.com/pkg/errors v0.9.1
 github.com/pkg/errors
+# github.com/vsenko/gofpdf v1.5.0
+## explicit
+github.com/vsenko/gofpdf
+github.com/vsenko/gofpdf/contrib/gofpdi
 # github.com/vsenko/gofpdi v1.0.16
 ## explicit
 github.com/vsenko/gofpdi
