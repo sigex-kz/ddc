@@ -712,9 +712,9 @@ func (ddc *Builder) constructDocumentVisualization() error {
 		ddc.pdf.TransformRotate(const45ccv, x+w/2, y+h/2)
 		ddc.pdf.SetXY(x, y+h/2)
 		ddc.pdf.SetTextColor(constGrayR, constGrayG, constGrayB)
-		ddc.pdf.SetFont(constFontRegular, "", 30)
+		ddc.pdf.SetFont(constFontRegular, "", 20)
 		ddc.pdf.SetAlpha(constSemiTransparent, "Normal")
-		ddc.pdf.MultiCell(w, 10, ddc.t("Копия электронного документа"), "", "CM", false)
+		ddc.pdf.MultiCell(w, 10, ddc.t("ВИЗУАЛИЗАЦИЯ ЭЛЕКТРОННОГО ДОКУМЕНТА"), "", "CM", false)
 		ddc.pdf.TransformEnd()
 		ddc.pdf.SetTextColor(r, g, b)
 
