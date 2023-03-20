@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	pdfcpumodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/vsenko/gofpdf"
 	"github.com/vsenko/gofpdf/contrib/gofpdi"
 	realgofpdi "github.com/vsenko/gofpdi"
@@ -226,7 +226,7 @@ func NewBuilder(di *DocumentInfo) (*Builder, error) {
 // EmbedPDF registers a digital document original in PDF format that should be embedded into DDC
 func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 	// Optimize PDF via pdfcpu because gopdfi Importer is fragile, does not return errors and panics
-	config := pdfcpu.NewDefaultConfiguration()
+	config := pdfcpumodel.NewDefaultConfiguration()
 	config.DecodeAllStreams = true
 	config.WriteObjectStream = false
 	config.WriteXRefStream = false
@@ -436,7 +436,7 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	}
 
 	// Optimize output
-	err = pdfcpuapi.Optimize(bytes.NewReader(b.Bytes()), w, pdfcpu.NewDefaultConfiguration())
+	err = pdfcpuapi.Optimize(bytes.NewReader(b.Bytes()), w, pdfcpumodel.NewDefaultConfiguration())
 	if err != nil {
 		return err
 	}
