@@ -474,8 +474,12 @@ func (ddc *Builder) attachFiles() error {
 			signer = signtaure.SignatureVisualization.SubjectName
 		}
 
+		if signer == "" && signtaure.SignatureVisualization.SubjectID != "" {
+			signer = fmt.Sprintf(ddc.t("ИИН %v"), signtaure.SignatureVisualization.SubjectID)
+		}
+
 		if signer == "" {
-			return errors.New("signer name not provided")
+			return errors.New("subject ID not provided")
 		}
 
 		if signtaure.FileName == "" {
@@ -753,15 +757,15 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 
 		ddc.pdf.SetFont(constFontRegular, "", 8)
 		ddc.pdf.CellFormat(constContentLeftColumnWidth, 7, ddc.t("Подписал(а):"), "", 1, "LB", false, 0, "")
-		if signature.SubjectOrgID == "" {
-			name := fmt.Sprintf(ddc.t("%v, ИИН %v"), signature.SubjectName, signature.SubjectID)
-			ddc.pdf.SetFont(constFontBold, "", 8)
-			ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, name, "", "LB", false)
-		} else {
-			name := fmt.Sprintf(ddc.t("%v, ИИН %v\n%v, БИН %v"), signature.SubjectName, signature.SubjectID, signature.SubjectOrgName, signature.SubjectOrgID)
-			ddc.pdf.SetFont(constFontBold, "", 8)
-			ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, name, "", "LB", false)
+		name := fmt.Sprintf(ddc.t("ИИН %v"), signature.SubjectID)
+		if signature.SubjectName != "" {
+			name = signature.SubjectName + ", " + name
 		}
+		if signature.SubjectOrgID != "" {
+			name = fmt.Sprintf(ddc.t("%v\n%v, БИН %v"), name, signature.SubjectOrgName, signature.SubjectOrgID)
+		}
+		ddc.pdf.SetFont(constFontBold, "", 8)
+		ddc.pdf.MultiCell(constContentLeftColumnWidth, 5, name, "", "LB", false)
 
 		ddc.pdf.SetFont(constFontRegular, "", 8)
 		ddc.pdf.CellFormat(constContentLeftColumnWidth, 7, ddc.t("Шаблон:"), "", 1, "LB", false, 0, "")
