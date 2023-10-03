@@ -47,12 +47,16 @@ run:
   # If invoked with -mod=vendor, the go command assumes that the vendor
   # directory holds the correct copies of dependencies and ignores
   # the dependency descriptions in go.mod.
-  # modules-download-mode: vendor
+  modules-download-mode: vendor
 
   # Allow multiple parallel golangci-lint instances running.
   # If false (default) - golangci-lint acquires file lock on start.
   allow-parallel-runners: false
 
+  # Define the Go version limit.
+  # Mainly related to generics support since go1.18.
+  # Default: use Go version from the go.mod file, fallback on the env var `GOVERSION`, fallback on 1.20
+  go: '1.21'
 
 # output configuration options
 output:
@@ -71,6 +75,21 @@ output:
 
 # all available settings of specific linters
 linters-settings:
+  asasalint:
+    # To specify a set of function names to exclude.
+    # The values are merged with the builtin exclusions.
+    # The builtin exclusions can be disabled by setting `use-builtin-exclusions` to `false`.
+    # Default: ["^(fmt|log|logger|t|)\.(Print|Fprint|Sprint|Fatal|Panic|Error|Warn|Warning|Info|Debug|Log)(|f|ln)$"]
+    exclude:
+      - Append
+      - \.Wrapf
+    # To enable/disable the asasalint builtin exclusions of function names.
+    # See the default value of `exclude` to get the builtin exclusions.
+    # Default: true
+    use-builtin-exclusions: true
+    # Ignore *_test.go files.
+    # Default: false
+    ignore-test: false
   #dogsled:
     # checks assignments with too many blank identifiers; default is 2
     #max-blank-identifiers: 2
@@ -89,7 +108,7 @@ linters-settings:
     # [deprecated] comma-separated list of pairs of the form pkg:regex
     # the regex is used to ignore names within pkg. (default "fmt:.*").
     # see https://github.com/kisielk/errcheck#the-deprecated-method for details
-    # ignore: fmt:.*,io/ioutil:^Read.*
+    # ignore: fmt:.*,io:^Read.*,os:^Read.*
 
     # path to a file containing a list of functions to exclude from checking
     # see https://github.com/kisielk/errcheck#excluding-functions for details
@@ -124,6 +143,9 @@ linters-settings:
     # Which checks should be disabled; can't be combined with 'enabled-checks'; default is empty
     disabled-checks:
       - dupImport # https://github.com/go-critic/go-critic/issues/845
+      - timeCmpSimplify # https://github.com/go-critic/go-critic/issues/1257
+      - uncheckedInlineErr # false positives on if checked errors
+
     # Enable multiple checks by tags, run `GL_DEBUG=gocritic golangci-lint run` to see all tags and checks.
     # Empty list by default. See https://github.com/go-critic/go-critic#usage -> section "Tags".
     enabled-tags:
@@ -132,6 +154,7 @@ linters-settings:
       - opinionated
       - performance
       - style
+
     #disabled-tags:
       #- experimental
 
@@ -139,13 +162,14 @@ linters-settings:
         #paramsOnly: true
       #rangeValCopy:
         #sizeThreshold: 128
+
   #gocyclo:
     # minimal code complexity to report, 30 by default (but we recommend 10-20)
     #min-complexity: 15
   #godot:
     # check all top-level comments, not only declarations
     #check-all: false
-  godox:
+  #godox:
     # report any comments starting with keywords, this is useful for TODO or FIXME comments that
     # might be left in the code accidentally and should be resolved before merging
     #keywords: # default keywords are TODO, BUG, and FIXME, these can be overwritten by this setting
@@ -156,10 +180,15 @@ linters-settings:
   #goimports:
     # put imports beginning with prefix after 3rd-party packages;
     # it's a comma-separated list of prefixes
-  golint:
+  #golint:
     # minimal confidence for issues, default is 0.8
-    min-confidence: 0
-  # gomnd:
+    #min-confidence: 0
+  gomnd:
+    settings:
+      mnd:
+        # don't include the "operation" and "assign"
+        checks: [argument,case,condition,return]
+        ignored-functions: strconv.ParseInt,strconv.FormatInt,os.MkdirAll,os.OpenFile
   #gomodguard:
     #allowed:
       #modules:                                                        # List of allowed modules
@@ -176,6 +205,140 @@ linters-settings:
         # - github.com/mitchellh/go-homedir:                          # Blocked module with version constraint
         #     version: "< 1.1.0"                                      # Version constraint, see https://github.com/Masterminds/semver#basic-comparisons
         #     reason: "testing if blocked version constraint works."  # Reason why the version constraint exists. (Optional)
+  gosec:
+    # To select a subset of rules to run.
+    # Available rules: https://github.com/securego/gosec#available-rules
+    # Default: [] - means include all rules
+    #includes:
+      # - G101 # Look for hard coded credentials
+      # - G102 # Bind to all interfaces
+      # - G103 # Audit the use of unsafe block
+      # - G104 # Audit errors not checked
+      # - G106 # Audit the use of ssh.InsecureIgnoreHostKey
+      # - G107 # Url provided to HTTP request as taint input
+      # - G108 # Profiling endpoint automatically exposed on /debug/pprof
+      # - G109 # Potential Integer overflow made by strconv.Atoi result conversion to int16/32
+      # - G110 # Potential DoS vulnerability via decompression bomb
+      # - G111 # Potential directory traversal
+      # - G112 # Potential slowloris attack
+      # - G113 # Usage of Rat.SetString in math/big with an overflow (CVE-2022-23772)
+      # - G114 # Use of net/http serve function that has no support for setting timeouts
+      # - G201 # SQL query construction using format string
+      # - G202 # SQL query construction using string concatenation
+      # - G203 # Use of unescaped data in HTML templates
+      # - G204 # Audit use of command execution
+      # - G301 # Poor file permissions used when creating a directory
+      # - G302 # Poor file permissions used with chmod
+      # - G303 # Creating tempfile using a predictable path
+      # - G304 # File path provided as taint input
+      # - G305 # File traversal when extracting zip/tar archive
+      # - G306 # Poor file permissions used when writing to a new file
+      # - G307 # Deferring a method which returns an error
+      # - G401 # Detect the usage of DES, RC4, MD5 or SHA1
+      # - G402 # Look for bad TLS connection settings
+      # - G403 # Ensure minimum RSA key length of 2048 bits
+      # - G404 # Insecure random number source (rand)
+      # - G501 # Import blocklist: crypto/md5
+      # - G502 # Import blocklist: crypto/des
+      # - G503 # Import blocklist: crypto/rc4
+      # - G504 # Import blocklist: net/http/cgi
+      # - G505 # Import blocklist: crypto/sha1
+      # - G601 # Implicit memory aliasing of items from a range statement
+      # - G602 # Slice access out of bounds
+    # To specify a set of rules to explicitly exclude.
+    # Available rules: https://github.com/securego/gosec#available-rules
+    # Default: []
+    excludes:
+      - G602 # Slice access out of bounds # Performance issues in version 1.54.2
+    # Exclude generated files
+    # Default: false
+    exclude-generated: true
+    # Filter out the issues with a lower severity than the given value.
+    # Valid options are: low, medium, high.
+    # Default: low
+    #severity: medium
+    # Filter out the issues with a lower confidence than the given value.
+    # Valid options are: low, medium, high.
+    # Default: low
+    #confidence: medium
+    # Concurrency value.
+    # Default: the number of logical CPUs usable by the current process.
+    #concurrency: 12
+    # To specify the configuration of rules.
+    #config:
+      # Globals are applicable to all rules.
+      #global:
+        # If true, ignore #nosec in comments (and an alternative as well).
+        # Default: false
+        #nosec: true
+        # Add an alternative comment prefix to #nosec (both will work at the same time).
+        # Default: ""
+        #"#nosec": "#my-custom-nosec"
+        # Define whether nosec issues are counted as finding or not.
+        # Default: false
+        #show-ignored: true
+        # Audit mode enables addition checks that for normal code analysis might be too nosy.
+        # Default: false
+        #audit: true
+      #G101:
+        # Regexp pattern for variables and constants to find.
+        # Default: "(?i)passwd|pass|password|pwd|secret|token|pw|apiKey|bearer|cred"
+        #pattern: "(?i)example"
+        # If true, complain about all cases (even with low entropy).
+        # Default: false
+        #ignore_entropy: false
+        # Maximum allowed entropy of the string.
+        # Default: "80.0"
+        #entropy_threshold: "80.0"
+        # Maximum allowed value of entropy/string length.
+        # Is taken into account if entropy >= entropy_threshold/2.
+        # Default: "3.0"
+        #per_char_threshold: "3.0"
+        # Calculate entropy for first N chars of the string.
+        # Default: "16"
+        #truncate: "32"
+      # Additional functions to ignore while checking unhandled errors.
+      # Following functions always ignored:
+      #   bytes.Buffer:
+      #     - Write
+      #     - WriteByte
+      #     - WriteRune
+      #     - WriteString
+      #   fmt:
+      #     - Print
+      #     - Printf
+      #     - Println
+      #     - Fprint
+      #     - Fprintf
+      #     - Fprintln
+      #   strings.Builder:
+      #     - Write
+      #     - WriteByte
+      #     - WriteRune
+      #     - WriteString
+      #   io.PipeWriter:
+      #     - CloseWithError
+      #   hash.Hash:
+      #     - Write
+      #   os:
+      #     - Unsetenv
+      # Default: {}
+      #G104:
+        #fmt:
+          #- Fscanf
+      #G111:
+        # Regexp pattern to find potential directory traversal.
+        # Default: "http\\.Dir\\(\"\\/\"\\)|http\\.Dir\\('\\/'\\)"
+        #pattern: "custom\\.Dir\\(\\)"
+      # Maximum allowed permissions mode for os.Mkdir and os.MkdirAll
+      # Default: "0750"
+      #G301: "0750"
+      # Maximum allowed permissions mode for os.OpenFile and os.Chmod
+      # Default: "0600"
+      #G302: "0600"
+      # Maximum allowed permissions mode for os.WriteFile and ioutil.WriteFile
+      # Default: "0600"
+      #G306: "0600"
   govet:
     # report about shadowed variables
     check-shadowing: true
@@ -188,6 +351,7 @@ linters-settings:
 
     # enable or disable analyzers by name
     #enable:
+      #- fieldalignment
       #- atomicalign
     #enable-all: false
     #disable:
@@ -210,7 +374,7 @@ linters-settings:
   # maligned:
     # print struct with more effective memory layout or not, false by default
     # suggest-new: true
-  misspell:
+  #misspell:
     # Correct spellings using locale preferences for US or UK.
     # Default is to use a neutral variety of English.
     # Setting locale to US will correct the British spelling of 'colour' to 'color'.
@@ -220,15 +384,42 @@ linters-settings:
   nakedret:
     # make an issue if func has more lines of code than this setting and it has naked returns; default is 30
     max-func-lines: 30
-  #prealloc:
+  prealloc:
     # XXX: we don't recommend using this linter before doing performance profiling.
     # For most programs usage of prealloc will be a premature optimization.
 
-    # Report preallocation suggestions only on simple loops that have no returns/breaks/continues/gotos in them.
-    # True by default.
-    #simple: true
-    #range-loops: true # Report preallocation suggestions on range loops, true by default
-    #for-loops: false # Report preallocation suggestions on for loops, false by default
+    # Report pre-allocation suggestions only on simple loops that have no returns/breaks/continues/gotos in them.
+    # Default: true
+    simple: true
+    # Report pre-allocation suggestions on range loops.
+    # Default: true
+    range-loops: true
+    # Report pre-allocation suggestions on for loops.
+    # Default: false
+    for-loops: true
+  predeclared:
+    # Comma-separated list of predeclared identifiers to not report on.
+    # Default: ""
+    ignore: "new,int"
+    # Include method names and field names (i.e., qualified names) in checks.
+    # Default: false
+    q: true
+  promlinter:
+    # Promlinter cannot infer all metrics name in static analysis.
+    # Enable strict mode will also include the errors caused by failing to parse the args.
+    # Default: false
+    strict: true
+    # Please refer to https://github.com/yeya24/promlinter#usage for detailed usage.
+    # Default: []
+    disabled-linters:
+      - Help
+      #- MetricUnits
+      - Counter
+      - HistogramSummaryReserved
+      - MetricTypeInName
+      - ReservedChars
+      - CamelCase
+      - UnitAbbreviations
   nolintlint:
     # Enable to ensure that nolint directives are all used. Default is true.
     allow-unused: false
@@ -240,13 +431,90 @@ linters-settings:
     require-explanation: true
     # Enable to require nolint directives to mention the specific linter being suppressed. Default is false.
     require-specific: true
+  revive:
+    # see https://github.com/mgechev/revive#available-rules for details.
+    ignore-generated-header: false
+    severity: warning
+    confidence: 0.8
+    errorCode: 0
+    warningCode: 0
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: dot-imports
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: exported
+      - name: if-return
+      - name: increment-decrement
+      - name: var-naming
+      - name: var-declaration
+      - name: package-comments
+      - name: range
+      - name: receiver-naming
+      - name: time-naming
+      - name: unexported-return
+      - name: indent-error-flow
+      - name: errorf
+      - name: empty-block
+      - name: superfluous-else
+      - name: unused-parameter
+      - name: unreachable-code
+      - name: redefines-builtin-id
+      #- name: indent-error-flow
+        #severity: warning
+      #- name: add-constant
+        #severity: warning
+        #arguments:
+          #- maxLitCount: "3"
+            #allowStrs: '""'
+            #allowInts: "0,1,2"
+            #allowFloats: "0.0,0.,1.0,1.,2.0,2."
   rowserrcheck:
     packages:
       - github.com/jmoiron/sqlx
+  tagalign:
+    # Align and sort can be used together or separately.
+    #
+    # Whether enable align. If true, the struct tags will be aligned.
+    # eg:
+    # type FooBar struct {
+    #     Bar    string `json:"bar" validate:"required"`
+    #     FooFoo int8   `json:"foo_foo" validate:"required"`
+    # }
+    # will be formatted to:
+    # type FooBar struct {
+    #     Bar    string `json:"bar"     validate:"required"`
+    #     FooFoo int8   `json:"foo_foo" validate:"required"`
+    # }
+    # Default: true.
+    align: true
+    # Whether enable tags sort.
+    # If true, the tags will be sorted by name in ascending order.
+    # eg: `xml:"bar" json:"bar" validate:"required"` -> `json:"bar" validate:"required" xml:"bar"`
+    # Default: true
+    sort: true
+    # Specify the order of tags, the other tags will be sorted by name.
+    # This option will be ignored if `sort` is false.
+    # Default: []
+    order:
+      - default
+      - yaml
+      - json
+      - koanf
+      - validate
+    # Whether enable strict style.
+    # In this style, the tags will be sorted and aligned in the dictionary order,
+    # and the tags with the same name will be aligned together.
+    # Note: This option will be ignored if 'align' or 'sort' is false.
+    # Default: false
+    strict: true
   #testpackage:
     # regexp pattern to skip files
     #skip-regexp: (export|internal)_test\.go
-  unparam:
+  #unparam:
     # Inspect exported functions, default is false. Set to true if no external program/library imports your code.
     # XXX: if you enable this setting, unparam will report a lot of false-positives in text editors:
     # if it's called for subdir of a project it can't find external interfaces. All text editor integrations
@@ -261,7 +529,8 @@ linters-settings:
   #whitespace:
     #multi-if: false   # Enforces newlines (or comments) after every multi-line if statement
     #multi-func: false # Enforces newlines (or comments) after every multi-line function signature
-  #wsl:
+
+  wsl:
     # If true append is only allowed to be cuddled if appending value is
     # matching variables, fields or types on line above. Default is true.
     #strict-append: true
@@ -273,13 +542,13 @@ linters-settings:
     # Allow declarations (var) to be cuddled.
     #allow-cuddle-declarations: false
     # Allow trailing comments in ending of blocks
-    #allow-trailing-comment: false
+    allow-trailing-comment: true
     # Force newlines in end of case at this limit (0 = never).
     #force-case-trailing-whitespace: 0
     # Force cuddling of err checks with err var assignment
     #force-err-cuddling: false
-    # Allow leading comments to be separated with empty liens
-    #allow-separated-leading-comment: false
+    # Allow leading comments to be separated with empty lines
+    allow-separated-leading-comment: true
 
   # The custom section can be used to define linter plugins to be loaded at runtime. See README doc
   #  for more info.
@@ -293,50 +562,95 @@ linters-settings:
       # Intended to point to the repo location of the linter. Optional, just for documentation purposes.
       #original-url: github.com/golangci/example-linter
 
+  nilnil:
+    # Checks that there is no simultaneous return of `nil` error and an invalid value.
+    # Default: ptr, func, iface, map, chan
+    checked-types:
+      - ptr
+      - func
+      - iface
+      - map
+      - chan
+
+  errorlint:
+    # Check whether fmt.Errorf uses the %w verb for formatting errors.
+    # See the https://github.com/polyfloyd/go-errorlint for caveats.
+    # Default: true
+    errorf: true
+    # Permit more than 1 %w verb, valid per Go 1.20 (Requires errorf:true)
+    # Default: true
+    errorf-multi: true
+    # Check for plain type assertions and type switches.
+    # Default: true
+    asserts: true
+    # Check for plain error comparisons.
+    # Default: true
+    comparison: true
+
+  thelper:
+    # The following configurations enable all checks.
+    # All checks are enabled by default.
+    test:
+      first: false
+      name: false
+      begin: false
+    benchmark:
+      first: false
+      name: false
+      begin: false
+    tb:
+      first: false
+      name: false
+      begin: false
+
 linters:
   enable:
     - govet
     - errcheck
     - staticcheck
-    - structcheck
     - typecheck
-    - varcheck
     - ineffassign
     - gosimple
-    - deadcode
     - unused
-
     - nolintlint
-    - golint
     - gofmt
     - gocritic
-    - goimports
+
     - rowserrcheck
     - unparam
     - unconvert
     - gosec
-
+    - revive
     - godox
-    # - gomnd
+    - gomnd
     - asciicheck
     - misspell
     - nakedret
-    #- lll
-    #- goconst
-    #- stylecheck
-    #- gocyclo
-    #- funlen
 
-    #- dupl
-    #- whitespace
+    - nilerr
+    - nilnil
+    - thelper
+    - errorlint
+    - durationcheck
+    - asasalint
+    - gocheckcompilerdirectives
+    - mirror
+    - musttag
+    - goerr113
 
-    #- wsl
-    #- bodyclose # working bad with defer + error check
-    #- scopelint # enable later and use exportloopref
+    - makezero
+    - zerologlint
+    - bidichk
+    - tagalign
+    - wastedassign
+    - wsl
+    - prealloc
+    - predeclared
+    - promlinter
+    #- godot
 
 #  disable:
 #    - maligned
-#    - prealloc
   disable-all: true
 #  presets:
 #    - bugs
@@ -358,6 +672,7 @@ issues:
     - path: _test\.go
       linters:
         - funlen # often test files  holds test data inside function
+        #- wsl
         #- lll
         #- errcheck
         #- dupl
@@ -376,9 +691,9 @@ issues:
       #text: "SA9003:"
 
     # Exclude golint package comments
-    - linters:
-        - golint
-      text: "should have a package comment"
+    #- linters:
+        #- golint
+      #text: "should have a package comment"
 
     # Exclude lll issues for long lines with go:generate
     #- linters:
