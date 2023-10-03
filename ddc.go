@@ -563,8 +563,8 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 		lowestY := ddc.pdf.GetY()
 
 		ddc.pdf.SetY(y)
-		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth)
-		ddc.pdf.MultiCell(constContentMaxWidth, 5, "1", "", "LM", false)
+		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth - constInfoBlockContentsPageNumColWidth)
+		ddc.pdf.MultiCell(constInfoBlockContentsPageNumColWidth, 5, "1", "", "RM", false)
 		ddc.pdf.SetY(lowestY)
 
 		y = ddc.pdf.GetY()
@@ -572,8 +572,8 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 		lowestY = ddc.pdf.GetY()
 
 		ddc.pdf.SetY(y)
-		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth)
-		ddc.pdf.MultiCell(constContentMaxWidth, 5, documentVisualizationPages, "", "LM", false)
+		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth - constInfoBlockContentsPageNumColWidth)
+		ddc.pdf.MultiCell(constInfoBlockContentsPageNumColWidth, 5, documentVisualizationPages, "", "RM", false)
 		ddc.pdf.SetY(lowestY)
 
 		y = ddc.pdf.GetY()
@@ -581,8 +581,8 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 		lowestY = ddc.pdf.GetY()
 
 		ddc.pdf.SetY(y)
-		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth)
-		ddc.pdf.MultiCell(constContentMaxWidth, 5, signaturesVisualizationPages, "", "LM", false)
+		ddc.pdf.SetX(constPageLeftMargin + constContentMaxWidth - constInfoBlockContentsPageNumColWidth)
+		ddc.pdf.MultiCell(constInfoBlockContentsPageNumColWidth, 5, signaturesVisualizationPages, "", "RM", false)
 		ddc.pdf.SetY(lowestY)
 	}
 
