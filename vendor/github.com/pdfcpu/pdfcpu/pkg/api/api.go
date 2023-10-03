@@ -37,17 +37,21 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/validate"
+	"github.com/pkg/errors"
 )
 
 // ReadContext uses an io.ReadSeeker to build an internal structure holding its cross reference table aka the Context.
 func ReadContext(rs io.ReadSeeker, conf *model.Configuration) (*model.Context, error) {
+	if rs == nil {
+		return nil, errors.New("pdfcpu: ReadContext: missing rs")
+	}
 	return pdfcpu.Read(rs, conf)
 }
 
@@ -58,13 +62,16 @@ func ReadContextFile(inFile string) (*model.Context, error) {
 		return nil, err
 	}
 	defer f.Close()
+
 	ctx, err := ReadContext(f, model.NewDefaultConfiguration())
 	if err != nil {
 		return nil, err
 	}
+
 	if err = validate.XRefTable(ctx.XRefTable); err != nil {
 		return nil, err
 	}
+
 	return ctx, err
 }
 
@@ -129,7 +136,7 @@ func readAndValidate(rs io.ReadSeeker, conf *model.Configuration, from1 time.Tim
 	return ctx, dur1, dur2, nil
 }
 
-func readValidateAndOptimize(rs io.ReadSeeker, conf *model.Configuration, from1 time.Time) (ctx *model.Context, dur1, dur2, dur3 float64, err error) {
+func ReadValidateAndOptimize(rs io.ReadSeeker, conf *model.Configuration, from1 time.Time) (ctx *model.Context, dur1, dur2, dur3 float64, err error) {
 	ctx, dur1, dur2, err = readAndValidate(rs, conf, from1)
 	if err != nil {
 		return nil, 0, 0, 0, err
@@ -161,11 +168,19 @@ func EnsureDefaultConfigAt(path string) error {
 	return model.EnsureDefaultConfigAt(path)
 }
 
+var (
+	// mutexDisableConfigDir protects DisableConfigDir from concurrent access.
+	// NOTE Not a guard for model.ConfigPath!
+	mutexDisableConfigDir sync.Mutex
+)
+
 // DisableConfigDir disables the configuration directory.
 // Any needed default configuration will be loaded from configuration.go
 // Since the config dir also contains the user font dir, this also limits font usage to the default core font set
 // No user fonts will be available.
 func DisableConfigDir() {
+	mutexDisableConfigDir.Lock()
+	defer mutexDisableConfigDir.Unlock()
 	// Call if you don't want to use a specific configuration
 	// and also do not need to use user fonts.
 	model.ConfigPath = "disable"

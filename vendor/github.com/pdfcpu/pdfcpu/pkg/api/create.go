@@ -26,6 +26,7 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/create"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/pkg/errors"
 )
 
 // CreatePDFFile creates a PDF file for an xRefTable and writes it to outFile.
@@ -43,6 +44,10 @@ func CreatePDFFile(xRefTable *model.XRefTable, outFile string, conf *model.Confi
 // If rs is present, new PDF content will be appended including any empty pages needed.
 // rd is a JSON representation of PDF page content which may include form data.
 func Create(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configuration) error {
+	if rd == nil {
+		return errors.New("pdfcpu: Create: missing rd")
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
 	}
@@ -54,7 +59,7 @@ func Create(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configurati
 	)
 
 	if rs != nil {
-		ctx, _, _, _, err = readValidateAndOptimize(rs, conf, time.Now())
+		ctx, _, _, _, err = ReadValidateAndOptimize(rs, conf, time.Now())
 	} else {
 		ctx, err = pdfcpu.CreateContextWithXRefTable(conf, types.PaperSize["A4"])
 	}
@@ -79,6 +84,15 @@ func Create(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configurati
 	return WriteContext(ctx, w)
 }
 
+func handleOutFilePDF(inFilePDF, outFilePDF string, tmpFile *string) {
+	if outFilePDF != "" && inFilePDF != outFilePDF {
+		*tmpFile = outFilePDF
+		log.CLI.Printf("writing %s...\n", outFilePDF)
+	} else {
+		log.CLI.Printf("writing %s...\n", inFilePDF)
+	}
+}
+
 // CreateFile renders the PDF structure represented by inFileJSON into outFilePDF.
 // If inFilePDF is present, new PDF content will be appended including any empty pages needed.
 // inFileJSON represents PDF page content which may include form data.
@@ -96,16 +110,13 @@ func CreateFile(inFilePDF, inFileJSON, outFilePDF string, conf *model.Configurat
 		if f1, err = os.Open(inFilePDF); err != nil {
 			return err
 		}
+		log.CLI.Printf("reading %s...\n", inFilePDF)
 		rs = f1
 	}
 
 	tmpFile := inFilePDF + ".tmp"
-	if outFilePDF != "" && inFilePDF != outFilePDF {
-		tmpFile = outFilePDF
-		log.CLI.Printf("writing %s...\n", outFilePDF)
-	} else {
-		log.CLI.Printf("writing %s...\n", inFilePDF)
-	}
+	handleOutFilePDF(inFilePDF, outFilePDF, &tmpFile)
+
 	if f2, err = os.Create(tmpFile); err != nil {
 		return err
 	}

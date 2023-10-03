@@ -475,6 +475,10 @@ func validatePageEntryTabs(xRefTable *model.XRefTable, d types.Dict, required bo
 	}
 	_, err := validateNameEntry(xRefTable, d, "pagesDict", "Tabs", required, sinceVersion, validateTabs)
 
+	if err != nil && xRefTable.ValidationMode == model.ValidationRelaxed {
+		_, err = validateStringEntry(xRefTable, d, "pagesDict", "Tabs", required, sinceVersion, validateTabs)
+	}
+
 	return err
 }
 
@@ -783,23 +787,26 @@ func validatePageDict(xRefTable *model.XRefTable, d types.Dict, objNumber, genNu
 	}
 
 	// PieceInfo
-	sinceVersion := model.V13
-	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		sinceVersion = model.V10
-	}
-	hasPieceInfo, err := validatePieceInfo(xRefTable, d, dictName, "PieceInfo", OPTIONAL, sinceVersion)
-	if err != nil {
-		return err
-	}
+	if xRefTable.ValidationMode != model.ValidationRelaxed {
+		sinceVersion := model.V13
+		if xRefTable.ValidationMode == model.ValidationRelaxed {
+			sinceVersion = model.V10
+		}
 
-	// LastModified
-	lm, err := validateDateEntry(xRefTable, d, dictName, "LastModified", OPTIONAL, model.V13)
-	if err != nil {
-		return err
-	}
+		hasPieceInfo, err := validatePieceInfo(xRefTable, d, dictName, "PieceInfo", OPTIONAL, sinceVersion)
+		if err != nil {
+			return err
+		}
 
-	if hasPieceInfo && lm == nil && xRefTable.ValidationMode == model.ValidationStrict {
-		return errors.New("pdfcpu: validatePageDict: missing \"LastModified\" (required by \"PieceInfo\")")
+		// LastModified
+		lm, err := validateDateEntry(xRefTable, d, dictName, "LastModified", OPTIONAL, model.V13)
+		if err != nil {
+			return err
+		}
+
+		if hasPieceInfo && lm == nil && xRefTable.ValidationMode == model.ValidationStrict {
+			return errors.New("pdfcpu: validatePageDict: missing \"LastModified\" (required by \"PieceInfo\")")
+		}
 	}
 
 	// AA

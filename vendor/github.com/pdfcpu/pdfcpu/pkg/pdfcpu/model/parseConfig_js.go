@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
 )
 
@@ -73,11 +74,11 @@ func handleConfEol(v string, c *Configuration) error {
 	v1 := strings.ToLower(v)
 	switch v1 {
 	case "eollf":
-		c.Eol = EolLF
+		c.Eol = types.EolLF
 	case "eolcr":
-		c.Eol = EolCR
+		c.Eol = types.EolCR
 	case "eolcrlf":
-		c.Eol = EolCRLF
+		c.Eol = types.EolCRLF
 	default:
 		return errors.Errorf("invalid eol: %s", v)
 	}
@@ -116,7 +117,7 @@ func handleConfEncryptKeyLength(v string, c *Configuration) error {
 	if err != nil {
 		return errors.Errorf("encryptKeyLength is numeric, got: %s", v)
 	}
-	if !IntMemberOf(i, []int{40, 128, 256}) {
+	if !types.IntMemberOf(i, []int{40, 128, 256}) {
 		return errors.Errorf("encryptKeyLength possible values: 40, 128, 256, got: %s", v)
 	}
 	c.EncryptKeyLength = i
@@ -136,13 +137,13 @@ func handleConfUnit(v string, c *Configuration) error {
 	v1 := v
 	switch v1 {
 	case "points":
-		c.Unit = POINTS
+		c.Unit = types.POINTS
 	case "inches":
-		c.Unit = INCHES
+		c.Unit = types.INCHES
 	case "cm":
-		c.Unit = CENTIMETRES
+		c.Unit = types.CENTIMETRES
 	case "mm":
-		c.Unit = MILLIMETRES
+		c.Unit = types.MILLIMETRES
 	default:
 		return errors.Errorf("invalid unit: %s", v)
 	}
@@ -180,57 +181,87 @@ func handleOptimizeDuplicateContentStreams(k, v string, c *Configuration) error 
 	return nil
 }
 
-func parseKeyValue(k, v string, c *Configuration) error {
-	var err error
+func handleCreateBookmarks(k, v string, c *Configuration) error {
+	v = strings.ToLower(v)
+	if v != "true" && v != "false" {
+		return errors.Errorf("config key %s is boolean", k)
+	}
+	c.CreateBookmarks = v == "true"
+	return nil
+}
+
+func parseKeysPart1(k, v string, c *Configuration) (bool, error) {
 	switch k {
 
 	case "checkFileNameExt":
-		err = handleCheckFileNameExt(k, v, c)
+		return true, handleCheckFileNameExt(k, v, c)
 
 	case "reader15":
-		err = handleConfReader15(k, v, c)
+		return true, handleConfReader15(k, v, c)
 
 	case "decodeAllStreams":
-		err = handleConfDecodeAllStreams(k, v, c)
+		return true, handleConfDecodeAllStreams(k, v, c)
 
 	case "validationMode":
-		err = handleConfValidationMode(v, c)
+		return true, handleConfValidationMode(v, c)
 
 	case "eol":
-		err = handleConfEol(v, c)
+		return true, handleConfEol(v, c)
 
 	case "writeObjectStream":
-		err = handleConfWriteObjectStream(k, v, c)
+		return true, handleConfWriteObjectStream(k, v, c)
 
 	case "writeXRefStream":
-		err = handleConfWriteXRefStream(k, v, c)
+		return true, handleConfWriteXRefStream(k, v, c)
 
-	case "encryptUsingAES":
-		err = handleConfEncryptUsingAES(k, v, c)
-
-	case "encryptKeyLength":
-		err = handleConfEncryptKeyLength(v, c)
-
-	case "permissions":
-		err = handleConfPermissions(v, c)
-
-	case "unit", "units":
-		err = handleConfUnit(v, c)
-
-	case "timestampFormat":
-		err = handleTimestampFormat(v, c)
-
-	case "dateFormat":
-		err = handleDateFormat(v, c)
-
-	case "headerBufSize":
-		err = handleHeaderBufSize(k, v, c)
-
-	case "optimizeDuplicateContentStreams":
-		err = handleOptimizeDuplicateContentStreams(k, v, c)
 	}
 
-	return err
+	return false, nil
+}
+
+func parseKeysPart2(k, v string, c *Configuration) error {
+	switch k {
+
+	case "encryptUsingAES":
+		return handleConfEncryptUsingAES(k, v, c)
+
+	case "encryptKeyLength":
+		return handleConfEncryptKeyLength(v, c)
+
+	case "permissions":
+		return handleConfPermissions(v, c)
+
+	case "unit", "units":
+		return handleConfUnit(v, c)
+
+	case "timestampFormat":
+		return handleTimestampFormat(v, c)
+
+	case "dateFormat":
+		return handleDateFormat(v, c)
+
+	case "headerBufSize":
+		return handleHeaderBufSize(k, v, c)
+
+	case "optimizeDuplicateContentStreams":
+		return handleOptimizeDuplicateContentStreams(k, v, c)
+
+	case "createBookmarks":
+		return handleCreateBookmarks(k, v, c)
+	}
+
+	return nil
+}
+
+func parseKeyValue(k, v string, c *Configuration) error {
+	ok, err := parseKeysPart1(k, v, c)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	return parseKeysPart2(k, v, c)
 }
 
 func parseConfigFile(r io.Reader, configPath string) error {

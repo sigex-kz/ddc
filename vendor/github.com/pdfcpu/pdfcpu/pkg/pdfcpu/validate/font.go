@@ -147,6 +147,8 @@ func validateFontDescriptorPart1(xRefTable *model.XRefTable, d types.Dict, dictN
 	}
 	_, err = validateStringEntry(xRefTable, d, dictName, "FontFamily", OPTIONAL, sinceVersion, nil)
 	if err != nil {
+		// Repair
+		_, err = validateNameEntry(xRefTable, d, dictName, "FontFamily", OPTIONAL, sinceVersion, nil)
 		return err
 	}
 
@@ -664,6 +666,9 @@ func validateType0FontDict(xRefTable *model.XRefTable, d types.Dict) error {
 
 	// ToUnicode, optional, CMap stream dict
 	_, err = validateStreamDictEntry(xRefTable, d, dictName, "ToUnicode", OPTIONAL, model.V12, nil)
+	if err != nil && xRefTable.ValidationMode == model.ValidationRelaxed {
+		_, err = validateNameEntry(xRefTable, d, dictName, "ToUnicode", REQUIRED, model.V12, func(s string) bool { return s == "Identity-H" })
+	}
 
 	return err
 }
@@ -685,7 +690,7 @@ func validateType1FontDict(xRefTable *model.XRefTable, d types.Dict) error {
 	fn := (*fontName).Value()
 	required := xRefTable.Version() >= model.V15 || !validateStandardType1Font(fn)
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		required = !validateStandardType1Font(fn) && fn != "Arial"
+		required = false
 	}
 	// FirstChar,  required except for standard 14 fonts. since 1.5 always required, integer
 	fc, err := validateIntegerEntry(xRefTable, d, dictName, "FirstChar", required, model.V10, nil)

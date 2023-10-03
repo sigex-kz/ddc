@@ -1174,7 +1174,7 @@ func headerVersion(rs io.ReadSeeker, headerBufSize int) (v *model.Version, eolCo
 		eolCount = 1
 	} else if s[i] == 0x0D {
 		eolCount = 1
-		if s[i+1] == 0x0A {
+		if (len(s) > i+1) && (s[i+1] == 0x0A) {
 			eolCount = 2
 		}
 	}
@@ -1456,7 +1456,7 @@ func nextStreamOffset(line string, streamInd int) (off int) {
 	off = streamInd + len("stream")
 
 	// Skip optional blanks.
-	// TODO Should be skip optional whitespace instead?
+	// TODO Should we skip optional whitespace instead?
 	for ; line[off] == 0x20; off++ {
 	}
 

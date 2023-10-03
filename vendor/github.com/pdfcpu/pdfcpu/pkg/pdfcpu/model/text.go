@@ -28,7 +28,6 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/matrix"
-
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
@@ -191,7 +190,11 @@ func PrepBytes(xRefTable *XRefTable, s, fontName string, cjk, rtl bool) string {
 				xRefTable.UsedGIDs[fontName] = map[uint16]bool{}
 				usedGIDs = xRefTable.UsedGIDs[fontName]
 			}
+
+			font.UserFontMetricsLock.RLock()
 			ttf := font.UserFontMetrics[fontName]
+			font.UserFontMetricsLock.RUnlock()
+
 			for _, r := range s {
 				gid, ok := ttf.Chars[uint32(r)]
 				if ok {
@@ -689,7 +692,7 @@ func WriteColumn(xRefTable *XRefTable, w io.Writer, mediaBox, region *types.Rect
 
 	setFont(w, td.FontKey, float32(fontSize))
 	m := matrix.CalcRotateTransformMatrix(td.Rotation, colBB)
-	fmt.Fprintf(w, "%.2f %.2f %.2f %.2f %.2f %.2f cm ", m[0][0], m[0][1], m[1][0], m[1][1], m[2][0], m[2][1])
+	fmt.Fprintf(w, "%.5f %.5f %.5f %.5f %.5f %.5f cm ", m[0][0], m[0][1], m[1][0], m[1][1], m[2][0], m[2][1])
 
 	x -= colBB.LL.X
 	y -= colBB.LL.Y

@@ -30,7 +30,8 @@ func validateDestsNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinc
 		return err
 	}
 
-	return validateDestination(xRefTable, o)
+	_, err = validateDestination(xRefTable, o, false)
+	return err
 }
 
 func validateAPNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
@@ -549,7 +550,6 @@ func validateIDTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersio
 
 func validateNameTreeValue(name string, xRefTable *model.XRefTable, o types.Object) (err error) {
 
-	// TODO
 	// The values associated with the keys may be objects of any type.
 	// Stream objects shall be specified by indirect object references.
 	// Dictionary, array, and string objects should be specified by indirect object references.
@@ -579,7 +579,9 @@ func validateNameTreeValue(name string, xRefTable *model.XRefTable, o types.Obje
 	return errors.Errorf("pdfcpu: validateNameTreeDictNamesEntry: unknown dict name: %s", name)
 }
 
-func validateNameTreeDictNamesEntry(xRefTable *model.XRefTable, d types.Dict, name string, node *model.Node) (firstKey, lastKey string, err error) {
+func validateNameTreeDictNamesEntry(xRefTable *model.XRefTable, d types.Dict, name string, node *model.Node) (string, string, error) {
+
+	//fmt.Printf("validateNameTreeDictNamesEntry begin %s\n", d)
 
 	// Names: array of the form [key1 value1 key2 value2 ... key n value n]
 	o, found := d.Find("Names")
@@ -600,26 +602,25 @@ func validateNameTreeDictNamesEntry(xRefTable *model.XRefTable, d types.Dict, na
 		return "", "", errors.Errorf("pdfcpu: validateNameTreeDictNamesEntry: Names array entry length needs to be even, length=%d\n", len(a))
 	}
 
-	var key string
-	for i, o := range a {
+	var key, firstKey, lastKey string
+
+	for i := 0; i < len(a); i++ {
+		o := a[i]
 
 		if i%2 == 0 {
 
+			// TODO Do we really need to process indRefs here?
 			o, err = xRefTable.Dereference(o)
 			if err != nil {
 				return "", "", err
 			}
 
-			s, ok := o.(types.StringLiteral)
-			if !ok {
-				s, ok := o.(types.HexLiteral)
-				if !ok {
-					return "", "", errors.Errorf("pdfcpu: validateNameTreeDictNamesEntry: corrupt key <%v>\n", o)
-				}
-				key = s.Value()
-			} else {
-				key = s.Value()
+			k, err := types.StringOrHexLiteral(o)
+			if err != nil {
+				return "", "", err
 			}
+
+			key = *k
 
 			if firstKey == "" {
 				firstKey = key
@@ -635,7 +636,8 @@ func validateNameTreeDictNamesEntry(xRefTable *model.XRefTable, d types.Dict, na
 			return "", "", err
 		}
 
-		node.AddToLeaf(key, o)
+		node.AppendToNames(key, o)
+
 	}
 
 	return firstKey, lastKey, nil
@@ -648,29 +650,28 @@ func validateNameTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, f
 		return err
 	}
 
-	//fmt.Printf("validateNameTreeDictLimitsEntry: firstKey=%s lastKey=%s limits:%v\n", firstKey, lastKey, a)
-
 	var fkv, lkv string
 
-	fk, ok := a[0].(types.StringLiteral)
-	if !ok {
-		fk, _ := a[0].(types.HexLiteral)
-		//bb, _ := fk.Bytes()
-		//fmt.Printf("fk: %v %s\n", bb, string(bb))
-		fkv = fk.Value()
-	} else {
-		fkv = fk.Value()
+	o, err := xRefTable.Dereference(a[0])
+	if err != nil {
+		return err
 	}
 
-	lk, ok := a[1].(types.StringLiteral)
-	if !ok {
-		lk, _ := a[1].(types.HexLiteral)
-		//bb, _ := lk.Bytes()
-		//fmt.Printf("lk: %v %s\n", bb, string(bb))
-		lkv = lk.Value()
-	} else {
-		lkv = lk.Value()
+	s, err := types.StringOrHexLiteral(o)
+	if err != nil {
+		return err
 	}
+	fkv = *s
+
+	if o, err = xRefTable.Dereference(a[1]); err != nil {
+		return err
+	}
+
+	s, err = types.StringOrHexLiteral(o)
+	if err != nil {
+		return err
+	}
+	lkv = *s
 
 	if firstKey < fkv || lastKey > lkv {
 		return errors.Errorf("pdfcpu: validateNameTreeDictLimitsEntry: leaf node corrupted (firstKey: %s vs %s) (lastKey: %s vs %s)\n", firstKey, fkv, lastKey, lkv)
@@ -680,6 +681,8 @@ func validateNameTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, f
 }
 
 func validateNameTree(xRefTable *model.XRefTable, name string, d types.Dict, root bool) (string, string, *model.Node, error) {
+
+	//fmt.Printf("validateNameTree begin %s\n", d)
 
 	// see 7.7.4
 
@@ -747,6 +750,8 @@ func validateNameTree(xRefTable *model.XRefTable, name string, d types.Dict, roo
 	// We track limits for all nodes internally.
 	node.Kmin = kmin
 	node.Kmax = kmax
+
+	//fmt.Println("validateNameTree end")
 
 	return kmin, kmax, node, nil
 }

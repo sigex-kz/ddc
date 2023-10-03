@@ -22,7 +22,6 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/format"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
 )
@@ -181,7 +180,7 @@ func (tb *TextBox) padding(name string) *Padding {
 	return tb.content.namedPadding(name)
 }
 
-func (tb *TextBox) mergeIn(tb0 *TextBox) {
+func (tb *TextBox) mergeInPos(tb0 *TextBox) {
 
 	if !tb.anchored && tb.x == 0 && tb.y == 0 {
 		tb.x = tb0.x
@@ -195,6 +194,15 @@ func (tb *TextBox) mergeIn(tb0 *TextBox) {
 	}
 	if tb.Dy == 0 {
 		tb.Dy = tb0.Dy
+	}
+}
+
+func (tb *TextBox) mergeIn(tb0 *TextBox) {
+
+	tb.mergeInPos(tb0)
+
+	if tb.Value == "" {
+		tb.Value = tb0.Value
 	}
 
 	if tb.Width == 0 {
@@ -261,6 +269,21 @@ func (tb *TextBox) calcFont() error {
 		f.col = &color.Black
 	}
 	return nil
+}
+
+func tdMargin(p *Padding, td *model.TextDescriptor) {
+	// TODO TextDescriptor margin is actually a padding.
+	if p.Width > 0 {
+		td.MTop = p.Width
+		td.MRight = p.Width
+		td.MBot = p.Width
+		td.MLeft = p.Width
+	} else {
+		td.MTop = p.Top
+		td.MRight = p.Right
+		td.MBot = p.Bottom
+		td.MLeft = p.Left
+	}
 }
 
 func (tb *TextBox) prepareTextDescriptor(p *model.Page, pageNr int, fonts model.FontMap) (*model.TextDescriptor, error) {
@@ -340,19 +363,7 @@ func (tb *TextBox) prepareTextDescriptor(p *model.Page, pageNr int, fonts model.
 			}
 			p.mergeIn(p0)
 		}
-
-		// TODO TextDescriptor margin is actually a padding.
-		if p.Width > 0 {
-			td.MTop = p.Width
-			td.MRight = p.Width
-			td.MBot = p.Width
-			td.MLeft = p.Width
-		} else {
-			td.MTop = p.Top
-			td.MRight = p.Right
-			td.MBot = p.Bottom
-			td.MLeft = p.Left
-		}
+		tdMargin(p, &td)
 	}
 
 	return &td, nil

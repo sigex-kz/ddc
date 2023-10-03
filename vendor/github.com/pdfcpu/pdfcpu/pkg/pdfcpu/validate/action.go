@@ -33,7 +33,7 @@ func validateGoToActionDict(xRefTable *model.XRefTable, d types.Dict, dictName s
 	}
 
 	// D, required, name, byte string or array
-	return validateDestinationEntry(xRefTable, d, dictName, "D", required, model.V10)
+	return validateActionDestinationEntry(xRefTable, d, dictName, "D", required, model.V10)
 }
 
 func validateGoToRActionDict(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
@@ -47,7 +47,7 @@ func validateGoToRActionDict(xRefTable *model.XRefTable, d types.Dict, dictName 
 	}
 
 	// D, required, name, byte string or array
-	err = validateDestinationEntry(xRefTable, d, dictName, "D", REQUIRED, model.V10)
+	err = validateActionDestinationEntry(xRefTable, d, dictName, "D", REQUIRED, model.V10)
 	if err != nil {
 		return err
 	}
@@ -108,7 +108,7 @@ func validateGoToEActionDict(xRefTable *model.XRefTable, d types.Dict, dictName 
 	}
 
 	// D, required, name, byte string or array
-	err = validateDestinationEntry(xRefTable, d, dictName, "D", REQUIRED, model.V10)
+	err = validateActionDestinationEntry(xRefTable, d, dictName, "D", REQUIRED, model.V10)
 	if err != nil {
 		return err
 	}
@@ -566,7 +566,7 @@ func validateNamedActionDict(xRefTable *model.XRefTable, d types.Dict, dictName 
 		}
 
 		// Some known non standard named actions
-		if types.MemberOf(s, []string{"GoToPage", "GoBack", "GoForward", "Find", "Print", "Quit", "FullScreen"}) {
+		if types.MemberOf(s, []string{"GoToPage", "GoBack", "GoForward", "Find", "Print", "SaveAs", "Quit", "FullScreen"}) {
 			return true
 		}
 
@@ -917,7 +917,7 @@ func validateAdditionalActions(xRefTable *model.XRefTable, dict types.Dict, dict
 			}
 
 		case "fieldOrAnnot":
-			// A terminal acro field may be merged with a widget annotation.
+			// A terminal form field may be merged with a widget annotation.
 			fieldOptions := []string{"K", "F", "V", "C"}
 			annotOptions := []string{"E", "X", "D", "U", "Fo", "Bl", "PO", "PC", "PV", "Pl"}
 			options := append(fieldOptions, annotOptions...)

@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/matrix"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -83,14 +84,8 @@ func prepTransform(rSrc, rDest *types.Rectangle, enforce bool) (float64, float64
 	sin := math.Sin(rot * float64(model.DegToRad))
 	cos := math.Cos(rot * float64(model.DegToRad))
 
-	switch rot {
-	case 90:
+	if rot == 90 {
 		dx += h
-	case 180:
-		dx += w
-		dy += h
-	case 270:
-		dy += w
 	}
 
 	dx += rDest.LL.X
@@ -99,27 +94,7 @@ func prepTransform(rSrc, rDest *types.Rectangle, enforce bool) (float64, float64
 	return sc, sin, cos, dx, dy
 }
 
-func resizePage(ctx *model.Context, pageNr int, res *model.Resize) error {
-
-	d, _, inhPAttrs, err := ctx.PageDict(pageNr, false)
-	if err != nil {
-		return err
-	}
-
-	cropBox := inhPAttrs.MediaBox
-	if inhPAttrs.CropBox != nil {
-		cropBox = inhPAttrs.CropBox
-	}
-
-	// Account for existing rotation.
-	if inhPAttrs.Rotate != 0 {
-		if types.IntMemberOf(inhPAttrs.Rotate, []int{+90, -90, +270, -270}) {
-			w := cropBox.Width()
-			cropBox.UR.X = cropBox.LL.X + cropBox.Height()
-			cropBox.UR.Y = cropBox.LL.Y + w
-		}
-	}
-
+func prepResize(res *model.Resize, cropBox *types.Rectangle) (*types.Rectangle, float64, float64, float64, float64, float64) {
 	ar := cropBox.AspectRatio()
 
 	var (
@@ -150,10 +125,61 @@ func resizePage(ctx *model.Context, pageNr int, res *model.Resize) error {
 		}
 	}
 
+	return r, sc, sin, cos, dx, dy
+}
+
+func handleBgColAndBorder(dx, dy float64, cropBox *types.Rectangle, bb *[]byte, res *model.Resize) {
+	if (dx > 0 || dy > 0) && (res.BgColor != nil || res.Border) {
+		w, h := cropBox.Width(), cropBox.Height()
+		if dx > 0 {
+			w -= 2 * dx
+		}
+		if dy > 0 {
+			h -= 2 * dy
+		}
+		r1 := types.RectForWidthAndHeight(dx, dy, w, h)
+		var buf bytes.Buffer
+
+		if res.BgColor != nil {
+			draw.FillRectNoBorder(&buf, cropBox, *res.BgColor)
+			draw.FillRectNoBorder(&buf, r1, color.White)
+		}
+
+		if res.Border {
+			draw.DrawRect(&buf, r1, 1, &color.Black, nil)
+		}
+
+		*bb = append(buf.Bytes(), *bb...)
+	}
+}
+
+func resizePage(ctx *model.Context, pageNr int, res *model.Resize) error {
+
+	d, _, inhPAttrs, err := ctx.PageDict(pageNr, false)
+	if err != nil {
+		return err
+	}
+
+	cropBox := inhPAttrs.MediaBox
+	if inhPAttrs.CropBox != nil {
+		cropBox = inhPAttrs.CropBox
+	}
+
+	// Account for existing rotation.
+	if inhPAttrs.Rotate != 0 {
+		if types.IntMemberOf(inhPAttrs.Rotate, []int{+90, -90, +270, -270}) {
+			w := cropBox.Width()
+			cropBox.UR.X = cropBox.LL.X + cropBox.Height()
+			cropBox.UR.Y = cropBox.LL.Y + w
+		}
+	}
+
+	r, sc, sin, cos, dx, dy := prepResize(res, cropBox)
+
 	m := matrix.CalcTransformMatrix(sc, sc, sin, cos, dx, dy)
 
 	var trans bytes.Buffer
-	fmt.Fprintf(&trans, "q %.2f %.2f %.2f %.2f %.2f %.2f cm ", m[0][0], m[0][1], m[1][0], m[1][1], m[2][0], m[2][1])
+	fmt.Fprintf(&trans, "q %.5f %.5f %.5f %.5f %.5f %.5f cm ", m[0][0], m[0][1], m[1][0], m[1][1], m[2][0], m[2][1])
 
 	bb, err := ctx.PageContent(d)
 	if err == model.ErrNoContent {
@@ -164,7 +190,7 @@ func resizePage(ctx *model.Context, pageNr int, res *model.Resize) error {
 	}
 
 	if inhPAttrs.Rotate != 0 {
-		bbInvRot := model.ContentBytesForPageRotation(inhPAttrs.Rotate, cropBox.Width(), cropBox.Height())
+		bbInvRot := append([]byte(" q "), model.ContentBytesForPageRotation(inhPAttrs.Rotate, cropBox.Width(), cropBox.Height())...)
 		bb = append(bbInvRot, bb...)
 		bb = append(bb, []byte(" Q")...)
 	}
@@ -180,11 +206,7 @@ func resizePage(ctx *model.Context, pageNr int, res *model.Resize) error {
 		cropBox.UR.Y = cropBox.LL.Y + r.Height()
 	}
 
-	if res.BgColor != nil {
-		var buf bytes.Buffer
-		draw.FillRectNoBorder(&buf, cropBox, *res.BgColor)
-		bb = append(buf.Bytes(), bb...)
-	}
+	handleBgColAndBorder(dx, dy, cropBox, &bb, res)
 
 	sd, _ := ctx.NewStreamDictForBuf(bb)
 	if err := sd.Encode(); err != nil {

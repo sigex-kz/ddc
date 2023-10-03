@@ -326,6 +326,13 @@ func (d Dict) HexLiteralEntry(key string) *HexLiteral {
 	return nil
 }
 
+func (d Dict) StringOrHexLiteralEntry(key string) (*string, error) {
+	if obj, ok := d.Find(key); ok {
+		return StringOrHexLiteral(obj)
+	}
+	return nil, nil
+}
+
 // Length returns a *int64 for entry with key "Length".
 // Stream length may be referring to an indirect object.
 func (d Dict) Length() (*int64, *int) {

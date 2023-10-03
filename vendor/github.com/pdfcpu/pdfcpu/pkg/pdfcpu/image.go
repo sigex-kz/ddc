@@ -29,7 +29,104 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
-func listImages(ctx *model.Context, mm []map[int]model.Image, maxLenObjNr, maxLenID, maxLenSize, maxLenFilters int) ([]string, int, int64, error) {
+// Images returns all embedded images of ctx.
+func Images(ctx *model.Context, selectedPages types.IntSet) ([]map[int]model.Image, *ImageListMaxLengths, error) {
+	pageNrs := []int{}
+	for k, v := range selectedPages {
+		if !v {
+			continue
+		}
+		pageNrs = append(pageNrs, k)
+	}
+	sort.Ints(pageNrs)
+
+	mm := []map[int]model.Image{}
+	var (
+		maxLenObjNr, maxLenID, maxLenSize, maxLenFilters int
+	)
+
+	for _, i := range pageNrs {
+		m, err := ExtractPageImages(ctx, i, true)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(m) == 0 {
+			continue
+		}
+		for _, i := range m {
+			s := strconv.Itoa(i.ObjNr)
+			if len(s) > maxLenObjNr {
+				maxLenObjNr = len(s)
+			}
+			if len(i.Name) > maxLenID {
+				maxLenID = len(i.Name)
+			}
+			lenSize := len(types.ByteSize(i.Size).String())
+			if lenSize > maxLenSize {
+				maxLenSize = lenSize
+			}
+			if len(i.Filter) > maxLenFilters {
+				maxLenFilters = len(i.Filter)
+			}
+		}
+		mm = append(mm, m)
+	}
+
+	maxLen := &ImageListMaxLengths{ObjNr: maxLenObjNr, ID: maxLenID, Size: maxLenSize, Filters: maxLenFilters}
+
+	return mm, maxLen, nil
+}
+
+func prepHorSep(horSep *[]int, maxLen *ImageListMaxLengths) string {
+	s := "Page Obj# "
+	if maxLen.ObjNr > 4 {
+		s += strings.Repeat(" ", maxLen.ObjNr-4)
+		*horSep = append(*horSep, 10+maxLen.ObjNr-4)
+	} else {
+		*horSep = append(*horSep, 10)
+	}
+
+	s += draw.VBar + " Id "
+	if maxLen.ID > 2 {
+		s += strings.Repeat(" ", maxLen.ID-2)
+		*horSep = append(*horSep, 4+maxLen.ID-2)
+	} else {
+		*horSep = append(*horSep, 4)
+	}
+
+	s += draw.VBar + " Type  SoftMask ImgMask "
+	*horSep = append(*horSep, 24)
+
+	s += draw.VBar + " Width " + draw.VBar + " Height " + draw.VBar + " ColorSpace Comp bpc Interp "
+	*horSep = append(*horSep, 7, 8, 28)
+
+	s += draw.VBar + " "
+	if maxLen.Size > 4 {
+		s += strings.Repeat(" ", maxLen.Size-4)
+		*horSep = append(*horSep, 6+maxLen.Size-4)
+	} else {
+		*horSep = append(*horSep, 6)
+	}
+	s += "Size " + draw.VBar + " Filters"
+	if maxLen.Filters > 7 {
+		*horSep = append(*horSep, 8+maxLen.Filters-7)
+	} else {
+		*horSep = append(*horSep, 8)
+	}
+
+	return s
+}
+
+func sortedObjNrs(ii map[int]model.Image) []int {
+	objNrs := []int{}
+	for k := range ii {
+		objNrs = append(objNrs, k)
+	}
+	sort.Ints(objNrs)
+	return objNrs
+}
+
+func listImages(ctx *model.Context, mm []map[int]model.Image, maxLen *ImageListMaxLengths) ([]string, int, int64, error) {
 	ss := []string{}
 	first := true
 	j, size := 0, int64(0)
@@ -37,41 +134,7 @@ func listImages(ctx *model.Context, mm []map[int]model.Image, maxLenObjNr, maxLe
 	horSep := []int{}
 	for _, ii := range mm {
 		if first {
-			s := "Page Obj# "
-			if maxLenObjNr > 4 {
-				s += strings.Repeat(" ", maxLenObjNr-4)
-				horSep = append(horSep, 10+maxLenObjNr-4)
-			} else {
-				horSep = append(horSep, 10)
-			}
-
-			s += draw.VBar + " Id "
-			if maxLenID > 2 {
-				s += strings.Repeat(" ", maxLenID-2)
-				horSep = append(horSep, 4+maxLenID-2)
-			} else {
-				horSep = append(horSep, 4)
-			}
-
-			s += draw.VBar + " Type  SoftMask ImgMask "
-			horSep = append(horSep, 24)
-
-			s += draw.VBar + " Width " + draw.VBar + " Height " + draw.VBar + " ColorSpace Comp bpc Interp "
-			horSep = append(horSep, 7, 8, 28)
-
-			s += draw.VBar + " "
-			if maxLenSize > 4 {
-				s += strings.Repeat(" ", maxLenSize-4)
-				horSep = append(horSep, 6+maxLenSize-4)
-			} else {
-				horSep = append(horSep, 6)
-			}
-			s += "Size " + draw.VBar + " Filters"
-			if maxLenFilters > 7 {
-				horSep = append(horSep, 8+maxLenFilters-7)
-			} else {
-				horSep = append(horSep, 8)
-			}
+			s := prepHorSep(&horSep, maxLen)
 			ss = append(ss, s)
 			first = false
 		}
@@ -79,13 +142,7 @@ func listImages(ctx *model.Context, mm []map[int]model.Image, maxLenObjNr, maxLe
 
 		newPage := true
 
-		objNrs := []int{}
-		for k := range ii {
-			objNrs = append(objNrs, k)
-		}
-		sort.Ints(objNrs)
-
-		for _, objNr := range objNrs {
+		for _, objNr := range sortedObjNrs(ii) {
 			img := ii[objNr]
 			pageNr := ""
 			if newPage {
@@ -121,20 +178,20 @@ func listImages(ctx *model.Context, mm []map[int]model.Image, maxLenObjNr, maxLe
 			}
 
 			s := strconv.Itoa(img.ObjNr)
-			fill1 := strings.Repeat(" ", maxLenObjNr-len(s))
-			if maxLenObjNr < 4 {
-				fill1 += strings.Repeat(" ", 4-maxLenObjNr)
+			fill1 := strings.Repeat(" ", maxLen.ObjNr-len(s))
+			if maxLen.ObjNr < 4 {
+				fill1 += strings.Repeat(" ", 4-maxLen.ObjNr)
 			}
 
-			fill2 := strings.Repeat(" ", maxLenID-len(img.Name))
-			if maxLenID < 2 {
-				fill2 += strings.Repeat(" ", 2-maxLenID-len(img.Name))
+			fill2 := strings.Repeat(" ", maxLen.ID-len(img.Name))
+			if maxLen.ID < 2 {
+				fill2 += strings.Repeat(" ", 2-maxLen.ID-len(img.Name))
 			}
 
 			sizeStr := types.ByteSize(img.Size).String()
-			fill3 := strings.Repeat(" ", maxLenSize-len(sizeStr))
-			if maxLenSize < 4 {
-				fill3 = strings.Repeat(" ", 4-maxLenSize)
+			fill3 := strings.Repeat(" ", maxLen.Size-len(sizeStr))
+			if maxLen.Size < 4 {
+				fill3 = strings.Repeat(" ", 4-maxLen.Size)
 			}
 
 			ss = append(ss, fmt.Sprintf("%4s %s%s %s %s%s %s %s    %s        %s    %s %5d %s  %5d %s %10s    %d   %s    %s   %s %s%s %s %s",
@@ -156,50 +213,19 @@ func listImages(ctx *model.Context, mm []map[int]model.Image, maxLenObjNr, maxLe
 	return ss, j, size, nil
 }
 
-// ListImages returns a list of embedded images.
+type ImageListMaxLengths struct {
+	ObjNr, ID, Size, Filters int
+}
+
+// ListImages returns a formatted list of embedded images.
 func ListImages(ctx *model.Context, selectedPages types.IntSet) ([]string, error) {
-	pageNrs := []int{}
-	for k, v := range selectedPages {
-		if !v {
-			continue
-		}
-		pageNrs = append(pageNrs, k)
-	}
-	sort.Ints(pageNrs)
 
-	mm := []map[int]model.Image{}
-	var (
-		maxLenObjNr, maxLenID, maxLenSize, maxLenFilters int
-	)
-
-	for _, i := range pageNrs {
-		m, err := ExtractPageImages(ctx, i, true)
-		if err != nil {
-			return nil, err
-		}
-		if len(m) == 0 {
-			continue
-		}
-		for _, i := range m {
-			s := strconv.Itoa(i.ObjNr)
-			if len(s) > maxLenObjNr {
-				maxLenObjNr = len(s)
-			}
-			if len(i.Name) > maxLenID {
-				maxLenID = len(i.Name)
-			}
-			lenSize := len(types.ByteSize(i.Size).String())
-			if lenSize > maxLenSize {
-				maxLenSize = lenSize
-			}
-			if len(i.Filter) > maxLenFilters {
-				maxLenFilters = len(i.Filter)
-			}
-		}
-		mm = append(mm, m)
+	mm, maxLen, err := Images(ctx, selectedPages)
+	if err != nil {
+		return nil, err
 	}
 
-	ss, j, size, err := listImages(ctx, mm, maxLenObjNr, maxLenID, maxLenSize, maxLenFilters)
+	ss, j, size, err := listImages(ctx, mm, maxLen)
 	if err != nil {
 		return nil, err
 	}

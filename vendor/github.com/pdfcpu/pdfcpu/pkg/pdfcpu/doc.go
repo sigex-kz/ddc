@@ -7,6 +7,7 @@ The commands are:
 	annotations   list, remove page annotations
 	attachments   list, add, remove, extract embedded file attachments
 	booklet       arrange pages onto larger sheets of paper to make a booklet or zine
+	bookmarks     list, import, export, remove bookmarks
 	boxes         list, add, remove page boundaries for selected pages
 	changeopw     change owner password
 	changeupw     change user password
@@ -14,6 +15,7 @@ The commands are:
 	config        print configuration
 	create        create PDF content including forms via JSON
 	crop          set cropbox for selected pages
+	cut           custom cut pages horizontally or vertically
 	decrypt       remove password protection
 	encrypt       set password protection
 	extract       extract images, fonts, content, pages or metadata
@@ -25,12 +27,14 @@ The commands are:
 	info          print file info
 	keywords      list, add, remove keywords
 	merge         concatenate PDFs
+	ndown         cut selected pages into n pages symmetrically
 	nup           rearrange pages or images for reduced number of pages
 	optimize      optimize PDF by getting rid of redundant page resources
 	pages         insert, remove selected pages
 	paper         print list of supported paper sizes
 	permissions   list, set user access permissions
 	portfolio     list, add, remove, extract portfolio entries with optional description
+	poster        cut selected pages into poster using paper size or dimensions
 	properties    list, add, remove document properties
 	resize        scale selected pages
 	rotate        rotate selected pages

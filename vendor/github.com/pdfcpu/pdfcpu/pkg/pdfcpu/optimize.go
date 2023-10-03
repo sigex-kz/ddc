@@ -22,8 +22,8 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/form"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/primitives"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
 )
@@ -462,7 +462,58 @@ func optimizeXObjectForm(ctx *model.Context, sd *types.StreamDict, rName string,
 	return nil, nil
 }
 
-func optimizeXObjectResourcesDict(ctx *model.Context, rDict types.Dict, pageNumber, pageObjNumber int) error {
+func optimizeFormResources(ctx *model.Context, o types.Object, pageNumber, pageObjNumber int, visitedRes []types.Object) error {
+	d, err := ctx.DereferenceDict(o)
+	if err != nil {
+		return err
+	}
+	if d != nil {
+		// Optimize image and font resources.
+		if err = optimizeResources(ctx, d, pageNumber, pageObjNumber, visitedRes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func visited(o types.Object, visited []types.Object) bool {
+	for _, obj := range visited {
+		if obj == o {
+			return true
+		}
+	}
+	return false
+}
+
+func optimizeForm(ctx *model.Context, osd *types.StreamDict, rName string, rDict types.Dict, objNr, pageNumber, pageObjNumber int, vis []types.Object) error {
+
+	ir, err := optimizeXObjectForm(ctx, osd, rName, objNr)
+	if err != nil {
+		return err
+	}
+
+	if ir != nil {
+		rDict[rName] = *ir
+		return nil
+	}
+
+	o, found := osd.Find("Resources")
+	if !found {
+		return nil
+	}
+
+	indRef, ok := o.(types.IndirectRef)
+	if ok {
+		if visited(indRef, vis) {
+			return nil
+		}
+		vis = append(vis, indRef)
+	}
+
+	return optimizeFormResources(ctx, o, pageNumber, pageObjNumber, vis)
+}
+
+func optimizeXObjectResourcesDict(ctx *model.Context, rDict types.Dict, pageNumber, pageObjNumber int, vis []types.Object) error {
 	log.Optimize.Printf("optimizeXObjectResourcesDict page#%dbegin: %s\n", pageObjNumber, rDict)
 	pageImages := pageImages(ctx, pageNumber)
 
@@ -472,6 +523,11 @@ func optimizeXObjectResourcesDict(ctx *model.Context, rDict types.Dict, pageNumb
 		if !ok {
 			continue
 		}
+
+		if visited(indRef, vis) {
+			continue
+		}
+		vis = append(vis, indRef)
 
 		log.Optimize.Printf("optimizeXObjectResourcesDict: processing xobject: %s, %s\n", rName, indRef)
 		objNr := int(indRef.ObjectNumber)
@@ -503,30 +559,9 @@ func optimizeXObjectResourcesDict(ctx *model.Context, rDict types.Dict, pageNumb
 		}
 
 		if *osd.Subtype() == "Form" {
-			ir, err := optimizeXObjectForm(ctx, osd, rName, objNr)
-			if err != nil {
-				return err
-			}
-			if ir != nil {
-				rDict[rName] = *ir
-				continue
-			}
 
-			o, found := osd.Find("Resources")
-			if !found {
-				continue
-			}
-
-			// Optimize form resources
-			d, err := ctx.DereferenceDict(o)
-			if err != nil {
+			if err := optimizeForm(ctx, osd, rName, rDict, objNr, pageNumber, pageObjNumber, vis); err != nil {
 				return err
-			}
-			if d != nil {
-				// Optimize image and font resources.
-				if err = optimizeResources(ctx, d, pageNumber, pageObjNumber); err != nil {
-					return err
-				}
 			}
 
 			continue
@@ -541,7 +576,7 @@ func optimizeXObjectResourcesDict(ctx *model.Context, rDict types.Dict, pageNumb
 }
 
 // Optimize given resource dictionary by removing redundant fonts and images.
-func optimizeResources(ctx *model.Context, resourcesDict types.Dict, pageNumber, pageObjNumber int) error {
+func optimizeResources(ctx *model.Context, resourcesDict types.Dict, pageNumber, pageObjNumber int, visitedRes []types.Object) error {
 	log.Optimize.Printf("optimizeResources begin: pageNumber=%d pageObjNumber=%d\n", pageNumber, pageObjNumber)
 
 	if resourcesDict == nil {
@@ -583,7 +618,7 @@ func optimizeResources(ctx *model.Context, resourcesDict types.Dict, pageNumber,
 			return errors.Errorf("pdfcpu: optimizeResources: xobject resource dict is null for page %d pageObj %d\n", pageNumber, pageObjNumber)
 		}
 
-		if err = optimizeXObjectResourcesDict(ctx, d, pageNumber, pageObjNumber); err != nil {
+		if err = optimizeXObjectResourcesDict(ctx, d, pageNumber, pageObjNumber, visitedRes); err != nil {
 			return err
 		}
 
@@ -614,7 +649,7 @@ func parseResourcesDict(ctx *model.Context, pageDict types.Dict, pageNumber, pag
 	if d != nil {
 
 		// Optimize image and font resources.
-		if err = optimizeResources(ctx, d, pageNumber, pageObjNumber); err != nil {
+		if err = optimizeResources(ctx, d, pageNumber, pageObjNumber, []types.Object{}); err != nil {
 			return err
 		}
 
@@ -1239,7 +1274,7 @@ func fixReferencesToFreeObjects(ctx *model.Context) error {
 
 func cacheFormFonts(ctx *model.Context) error {
 
-	d, err := form.FontResDict(ctx.XRefTable)
+	d, err := primitives.FontResDict(ctx.XRefTable)
 	if err != nil {
 		return err
 	}

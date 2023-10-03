@@ -29,13 +29,17 @@ func validateDestinationArrayFirstElement(xRefTable *model.XRefTable, a types.Ar
 		return nil, err
 	}
 
+	if o == nil {
+		return nil, errors.Errorf("destination array invalid: %s", a)
+	}
+
 	switch o := o.(type) {
 
 	case types.Integer, types.Name: // no further processing
 
 	case types.Dict:
-		if o.Type() == nil || (*o.Type() != "Page" && *o.Type() != "Pages") {
-			err = errors.New("pdfcpu: validateDestinationArrayFirstElement: first element refers to invalid destination page dict" + *o.Type())
+		if o.Type() == nil || (o.Type() != nil && (*o.Type() != "Page" && *o.Type() != "Pages")) {
+			err = errors.Errorf("pdfcpu: validateDestinationArrayFirstElement: first element must be a pageDict indRef or an integer: %v (%T)", o, o)
 		}
 
 	default:
@@ -125,25 +129,28 @@ func validateDestinationDict(xRefTable *model.XRefTable, d types.Dict) error {
 	return validateDestinationArray(xRefTable, a)
 }
 
-func validateDestination(xRefTable *model.XRefTable, o types.Object) error {
+func validateDestination(xRefTable *model.XRefTable, o types.Object, forAction bool) (string, error) {
 
 	o, err := xRefTable.Dereference(o)
 	if err != nil || o == nil {
-		return err
+		return "", err
 	}
 
 	switch o := o.(type) {
 
 	case types.Name:
-		// no further processing.
+		return o.Value(), nil
 
 	case types.StringLiteral:
-		// no further processing.
+		return types.StringLiteralToString(o)
 
 	case types.HexLiteral:
-		// no further processing.
+		return types.HexLiteralToString(o)
 
 	case types.Dict:
+		if forAction {
+			return "", errors.New("pdfcpu: validateDestination: unsupported PDF object")
+		}
 		err = validateDestinationDict(xRefTable, o)
 
 	case types.Array:
@@ -154,10 +161,10 @@ func validateDestination(xRefTable *model.XRefTable, o types.Object) error {
 
 	}
 
-	return err
+	return "", err
 }
 
-func validateDestinationEntry(xRefTable *model.XRefTable, d types.Dict, dictName string, entryName string, required bool, sinceVersion model.Version) error {
+func validateActionDestinationEntry(xRefTable *model.XRefTable, d types.Dict, dictName string, entryName string, required bool, sinceVersion model.Version) error {
 
 	// see 12.3.2
 
@@ -166,5 +173,15 @@ func validateDestinationEntry(xRefTable *model.XRefTable, d types.Dict, dictName
 		return err
 	}
 
-	return validateDestination(xRefTable, o)
+	name, err := validateDestination(xRefTable, o, true)
+	if err != nil {
+		return err
+	}
+
+	if len(name) > 0 && xRefTable.IsMerging() {
+		nm := xRefTable.NameRef("Dests")
+		nm.Add(name, d)
+	}
+
+	return nil
 }

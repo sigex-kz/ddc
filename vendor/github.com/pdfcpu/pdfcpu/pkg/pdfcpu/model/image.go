@@ -63,14 +63,21 @@ func ImageFileName(fileName string) bool {
 	return types.MemberOf(ext, []string{".png", ".webp", ".tif", ".tiff", ".jpg", ".jpeg"})
 }
 
-// ImageFileNames returns a slice of image file names contained in dir.
-func ImageFileNames(dir string) ([]string, error) {
+// ImageFileNames returns a slice of image file names contained in dir constrained by maxFileSize.
+func ImageFileNames(dir string, maxFileSize types.ByteSize) ([]string, error) {
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 	fn := []string{}
 	for _, fi := range files {
+		fileInfo, err := fi.Info()
+		if err != nil {
+			continue
+		}
+		if types.ByteSize(fileInfo.Size()) > maxFileSize {
+			continue
+		}
 		if ImageFileName(fi.Name()) {
 			fn = append(fn, filepath.Join(dir, fi.Name()))
 		}
@@ -251,7 +258,7 @@ func writeNRGBAImageBuf(xRefTable *XRefTable, img image.Image) ([]byte, []byte) 
 				if xRefTable != nil && c.A != 0xFF {
 					softMask = true
 					sm = []byte{}
-					for j := 0; j < y*h+x; j++ {
+					for j := 0; j < y*w+x; j++ {
 						sm = append(sm, 0xFF)
 					}
 					sm = append(sm, c.A)
@@ -285,7 +292,7 @@ func writeNRGBA64ImageBuf(xRefTable *XRefTable, img image.Image) ([]byte, []byte
 				if xRefTable != nil && c.A != 0xFFFF {
 					softMask = true
 					sm = []byte{}
-					for j := 0; j < y*h+x; j++ {
+					for j := 0; j < y*w+x; j++ {
 						sm = append(sm, 0xFF)
 						sm = append(sm, 0xFF)
 					}

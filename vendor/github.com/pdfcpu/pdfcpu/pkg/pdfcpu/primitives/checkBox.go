@@ -23,7 +23,6 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
 )
@@ -761,4 +760,19 @@ func (cb *CheckBox) render(p *model.Page, pageNr int, fonts model.FontMap) error
 	}
 
 	return cb.doRender(p, fonts)
+}
+
+func CalcCheckBoxASNames(d types.Dict) (types.Name, types.Name) {
+	apDict := d.DictEntry("AP")
+	d1 := apDict.DictEntry("D")
+	if d1 == nil {
+		d1 = apDict.DictEntry("N")
+	}
+	offName, yesName := "Off", "Yes"
+	for k := range d1 {
+		if k != "Off" {
+			yesName = k
+		}
+	}
+	return types.Name(offName), types.Name(yesName)
 }

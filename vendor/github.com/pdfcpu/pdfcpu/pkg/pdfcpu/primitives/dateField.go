@@ -19,14 +19,12 @@ package primitives
 import (
 	"bytes"
 	"fmt"
-	"strconv"
-	"strings"
+	"io"
 
 	"github.com/pdfcpu/pdfcpu/pkg/font"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/format"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
 )
@@ -283,83 +281,37 @@ func (df *DateField) validate() error {
 	return df.validateTab()
 }
 
-// NewDateField returns a new date field for d and v.
-func NewDateField(xRefTable *model.XRefTable, d types.Dict, v string) (*DateField, error) {
-	df := &DateField{Value: v}
-
-	bb, _ := types.RectForArray(d.ArrayEntry("Rect"))
-	df.BoundingBox = types.RectForDim(bb.Width(), bb.Height())
-
-	var f FormFont
+func (df *DateField) calcFontFromDA(ctx *model.Context, d types.Dict, fonts map[string]types.IndirectRef) (*types.IndirectRef, error) {
 
 	s := d.StringEntry("DA")
 	if s == nil {
-		return nil, errors.New("pdfcpu: datefield missing \"DA\"")
-	}
-	da := strings.Split(*s, " ")
-
-	var fontID string
-
-	for i := 0; i < len(da); i++ {
-		if da[i] == "Tf" {
-			fontID = da[i-2][1:]
-			df.SetFontID(fontID) // inputform only !
-			f.Size, _ = strconv.Atoi(da[i-1])
-			continue
-		}
-		if da[i] == "rg" {
-			r, _ := strconv.ParseFloat(da[i-3], 32)
-			g, _ := strconv.ParseFloat(da[i-2], 32)
-			b, _ := strconv.ParseFloat(da[i-1], 32)
-			f.SetCol(color.SimpleColor{R: float32(r), G: float32(g), B: float32(b)})
+		s = ctx.Form.StringEntry("DA")
+		if s == nil {
+			return nil, errors.New("pdfcpu: datefield missing \"DA\"")
 		}
 	}
-	df.Font = &f
 
-	// tf.horAlign
-	q := d.IntEntry("Q")
-	df.HorAlign = types.AlignLeft
-	if q != nil {
-		df.HorAlign = types.HAlignment(*q)
-	}
-
-	// tf.bgCol, tf.boCol
-	boCol := color.Black
-
-	o, err := xRefTable.DereferenceDictEntry(d, "MK")
+	fontID, f, err := fontFromDA(*s)
 	if err != nil {
 		return nil, err
 	}
-	if o != nil {
-		d1, _ := o.(types.Dict)
-		if len(d1) > 0 {
 
-			if arr := d1.ArrayEntry("BG"); arr != nil {
-				bgCol := (color.NewSimpleColorForArray(arr))
-				df.BgCol = &bgCol
-			}
+	df.Font, df.fontID = &f, fontID
 
-			if arr := d1.ArrayEntry("BC"); arr != nil {
-				boCol = (color.NewSimpleColorForArray(arr))
-			}
-		}
+	id, name, lang, fontIndRef, err := extractFormFontDetails(ctx, df.fontID, fonts)
+	if err != nil {
+		return nil, err
+	}
+	if fontIndRef == nil {
+		return nil, errors.New("pdfcpu: unable to detect indirect reference for font")
 	}
 
-	// tf.Border
-	boWidth := 0
-	if arr := d.ArrayEntry("Border"); arr != nil {
-		// 0, 1 ??
-		boWidth = int(arr[2].(types.Float).Value())
-	}
+	df.fontID = id
+	df.Font.Name = name
+	df.Font.Lang = lang
+	//df.RTL = pdffont.RTL(lang)
 
-	var b Border
-	if boWidth > 0 {
-		b.Width = boWidth
-		b.SetCol(boCol)
-	}
-	df.Border = &b
-
-	return df, nil
+	return fontIndRef, nil
 }
 
 func (df *DateField) calcFont() error {
@@ -459,23 +411,28 @@ func (df *DateField) labelPos(labelHeight, w, g float64) (float64, float64) {
 	return x, y
 }
 
+func (tf *DateField) renderBackground(w io.Writer, bgCol, boCol *color.SimpleColor, boWidth, width, height float64) {
+	if bgCol != nil || (boCol != nil && boWidth > 0) {
+		fmt.Fprint(w, "q ")
+		if bgCol != nil {
+			fmt.Fprintf(w, "%.2f %.2f %.2f rg 0 0 %.2f %.2f re f ", bgCol.R, bgCol.G, bgCol.B, width, height)
+		}
+		if boCol != nil && boWidth > 0 {
+			fmt.Fprintf(w, "%.2f %.2f %.2f RG %.2f w %.2f %.2f %.2f %.2f re s ",
+				boCol.R, boCol.G, boCol.B, boWidth, boWidth/2, boWidth/2, width-boWidth, height-boWidth)
+		}
+		fmt.Fprint(w, "Q ")
+	}
+}
+
 func (df *DateField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
+
 	w, h := df.BoundingBox.Width(), df.BoundingBox.Height()
 	bgCol := df.BgCol
 	boWidth, boCol := df.calcBorder()
 	buf := new(bytes.Buffer)
 
-	if bgCol != nil || boCol != nil {
-		fmt.Fprint(buf, "q ")
-		if bgCol != nil {
-			fmt.Fprintf(buf, "%.2f %.2f %.2f rg 0 0 %.2f %.2f re f ", bgCol.R, bgCol.G, bgCol.B, w, h)
-		}
-		if boCol != nil {
-			fmt.Fprintf(buf, "%.2f %.2f %.2f RG %.2f w %.2f %.2f %.2f %.2f re s ",
-				boCol.R, boCol.G, boCol.B, boWidth, boWidth/2, boWidth/2, w-boWidth, h-boWidth)
-		}
-		fmt.Fprint(buf, "Q ")
-	}
+	df.renderBackground(buf, bgCol, boCol, boWidth, w, h)
 
 	fmt.Fprint(buf, "/Tx BMC q ")
 	fmt.Fprintf(buf, "1 1 %.1f %.1f re W n ", w-2, h-2)
@@ -601,6 +558,43 @@ func (df *DateField) calcBorder() (boWidth float64, boCol *color.SimpleColor) {
 	return df.Border.calc()
 }
 
+func (df *DateField) prepareFF() FieldFlags {
+	ff := FieldDoNotSpellCheck
+	ff += FieldDoNotScroll
+	if df.Locked {
+		ff += FieldReadOnly
+	}
+	return ff
+}
+
+func (df *DateField) handleBorderAndMK(d types.Dict) {
+	bgCol := df.BgCol
+	if bgCol == nil {
+		bgCol = df.content.page.bgCol
+		if bgCol == nil {
+			bgCol = df.pdf.bgCol
+		}
+	}
+	df.BgCol = bgCol
+
+	boWidth, boCol := df.calcBorder()
+
+	if bgCol != nil || boCol != nil {
+		appCharDict := types.Dict{}
+		if bgCol != nil {
+			appCharDict["BG"] = bgCol.Array()
+		}
+		if boCol != nil && df.Border.Width > 0 {
+			appCharDict["BC"] = boCol.Array()
+		}
+		d["MK"] = appCharDict
+	}
+
+	if boWidth > 0 {
+		d["Border"] = types.NewNumberArray(0, 0, boWidth)
+	}
+}
+
 func (df *DateField) prepareDict(fonts model.FontMap) (types.Dict, error) {
 	pdf := df.pdf
 
@@ -609,11 +603,7 @@ func (df *DateField) prepareDict(fonts model.FontMap) (types.Dict, error) {
 		return nil, err
 	}
 
-	ff := FieldDoNotSpellCheck
-	ff += FieldDoNotScroll
-	if df.Locked {
-		ff += FieldReadOnly
-	}
+	ff := df.prepareFF()
 
 	format, err := types.Escape(fmt.Sprintf("AFDate_FormatEx(\"%s\");", df.dateFormat.Ext))
 	if err != nil {
@@ -662,31 +652,7 @@ func (df *DateField) prepareDict(fonts model.FontMap) (types.Dict, error) {
 		},
 	)
 
-	bgCol := df.BgCol
-	if bgCol == nil {
-		bgCol = df.content.page.bgCol
-		if bgCol == nil {
-			bgCol = df.pdf.bgCol
-		}
-	}
-	df.BgCol = bgCol
-
-	boWidth, boCol := df.calcBorder()
-
-	if bgCol != nil || boCol != nil {
-		appCharDict := types.Dict{}
-		if bgCol != nil {
-			appCharDict["BG"] = bgCol.Array()
-		}
-		if boCol != nil && df.Border.Width > 0 {
-			appCharDict["BC"] = boCol.Array()
-		}
-		d["MK"] = appCharDict
-	}
-
-	if boWidth > 0 {
-		d["Border"] = types.NewNumberArray(0, 0, boWidth)
-	}
+	df.handleBorderAndMK(d)
 
 	if df.Value != "" {
 		s, err := types.EscapeUTF16String(df.Value)
@@ -883,4 +849,99 @@ func (df *DateField) render(p *model.Page, pageNr int, fonts model.FontMap) erro
 	}
 
 	return df.doRender(p, fonts)
+}
+
+// NewDateField returns a new date field for d.
+func NewDateField(
+	ctx *model.Context,
+	d types.Dict,
+	v string,
+	fonts map[string]types.IndirectRef) (*DateField, *types.IndirectRef, error) {
+
+	df := &DateField{Value: v}
+
+	bb, err := types.RectForArray(d.ArrayEntry("Rect"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	df.BoundingBox = types.RectForDim(bb.Width(), bb.Height())
+
+	fontIndRef, err := df.calcFontFromDA(ctx, d, fonts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	df.HorAlign = types.AlignLeft
+	if q := d.IntEntry("Q"); q != nil {
+		df.HorAlign = types.HAlignment(*q)
+	}
+
+	bgCol, boCol, err := calcColsFromMK(ctx, d)
+	if err != nil {
+		return nil, nil, err
+	}
+	df.BgCol = bgCol
+
+	var b Border
+	boWidth := calcBorderWidth(d)
+	if boWidth > 0 {
+		b.Width = boWidth
+		b.col = boCol
+	}
+	df.Border = &b
+
+	return df, fontIndRef, nil
+}
+
+func renderDateFieldAP(ctx *model.Context, d types.Dict, v string, fonts map[string]types.IndirectRef) error {
+
+	df, fontIndRef, err := NewDateField(ctx, d, v, fonts)
+	if err != nil {
+		return err
+	}
+
+	bb, err := df.renderN(ctx.XRefTable)
+	if err != nil {
+		return err
+	}
+
+	irN, err := NewForm(ctx.XRefTable, bb, df.fontID, fontIndRef, df.BoundingBox)
+	if err != nil {
+		return err
+	}
+
+	d["AP"] = types.Dict(map[string]types.Object{"N": *irN})
+
+	return nil
+}
+
+func refreshDateFieldAP(ctx *model.Context, d types.Dict, v string, fonts map[string]types.IndirectRef, irN *types.IndirectRef) error {
+
+	df, _, err := NewDateField(ctx, d, v, fonts)
+	if err != nil {
+		return err
+	}
+
+	bb, err := df.renderN(ctx.XRefTable)
+	if err != nil {
+		return err
+	}
+
+	return UpdateForm(ctx.XRefTable, bb, irN)
+}
+
+func EnsureDateFieldAP(ctx *model.Context, d types.Dict, v string, fonts map[string]types.IndirectRef) error {
+
+	apd := d.DictEntry("AP")
+	if apd == nil {
+		return renderDateFieldAP(ctx, d, v, fonts)
+	}
+
+	irN := apd.IndirectRefEntry("N")
+	if irN == nil {
+		return nil
+	}
+
+	return refreshDateFieldAP(ctx, d, v, fonts, irN)
 }

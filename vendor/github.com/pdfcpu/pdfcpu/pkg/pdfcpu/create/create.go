@@ -163,58 +163,62 @@ func setAnnotationParentsAndFields(xRefTable *model.XRefTable, p *model.Page, pI
 	return nil
 }
 
-func mergeAnnotations(oldAnnots types.Array, ff []model.FieldAnnotation, m map[int]model.FieldAnnotation) (types.Array, error) {
+func addAnnotations(ff []model.FieldAnnotation, m map[int]model.FieldAnnotation) types.Array {
 
 	arr := types.Array{}
 
-	if len(oldAnnots) == 0 {
-
-		for i, j := 0, 0; j < len(ff); i++ {
-			an, ok := m[i+1]
-			if ok {
-				if an.Kids == nil {
-					arr = append(arr, *an.IndRef)
-				} else {
-					arr = append(arr, an.Kids...)
-				}
-				an.Field = true
-				m[i+1] = an
-				continue
-			}
-			if j < len(ff) {
-				an = ff[j]
-				if an.Kids == nil {
-					arr = append(arr, *an.IndRef)
-				} else {
-					arr = append(arr, an.Kids...)
-				}
-				j++
-				continue
-			}
-			break
-		}
-
-		keys := make([]int, 0, len(m))
-		for k, an := range m {
-			if !an.Field {
-				keys = append(keys, k)
-			}
-		}
-		sort.Ints(keys)
-
-		for _, k := range keys {
-			an := m[k]
+	for i, j := 0, 0; j < len(ff); i++ {
+		an, ok := m[i+1]
+		if ok {
 			if an.Kids == nil {
 				arr = append(arr, *an.IndRef)
 			} else {
 				arr = append(arr, an.Kids...)
 			}
+			an.Field = true
+			m[i+1] = an
+			continue
 		}
-
-		return arr, nil
-
+		if j < len(ff) {
+			an = ff[j]
+			if an.Kids == nil {
+				arr = append(arr, *an.IndRef)
+			} else {
+				arr = append(arr, an.Kids...)
+			}
+			j++
+			continue
+		}
+		break
 	}
 
+	keys := make([]int, 0, len(m))
+	for k, an := range m {
+		if !an.Field {
+			keys = append(keys, k)
+		}
+	}
+	sort.Ints(keys)
+
+	for _, k := range keys {
+		an := m[k]
+		if an.Kids == nil {
+			arr = append(arr, *an.IndRef)
+		} else {
+			arr = append(arr, an.Kids...)
+		}
+	}
+
+	return arr
+}
+
+func mergeAnnotations(oldAnnots types.Array, ff []model.FieldAnnotation, m map[int]model.FieldAnnotation) (types.Array, error) {
+
+	if len(oldAnnots) == 0 {
+		return addAnnotations(ff, m), nil
+	}
+
+	arr := types.Array{}
 	i := 0
 	for j := 0; j < len(oldAnnots); i++ {
 		an, ok := m[i+1]
@@ -396,11 +400,11 @@ func UpdatePage(xRefTable *model.XRefTable, dIndRef types.IndirectRef, d, res ty
 
 func cacheFormFieldIDs(ctx *model.Context, pdf *primitives.PDF) error {
 
-	if ctx.AcroForm == nil {
+	if ctx.Form == nil {
 		return nil
 	}
 
-	o, found := ctx.AcroForm.Find("Fields")
+	o, found := ctx.Form.Find("Fields")
 	if !found {
 		return nil
 	}
@@ -611,7 +615,7 @@ func prepareFormFontResDict(ctx *model.Context, pdf *primitives.PDF, fonts model
 	return d, nil
 }
 
-func createAcroForm(
+func createForm(
 	ctx *model.Context,
 	pdf *primitives.PDF,
 	fields types.Array,
@@ -632,13 +636,13 @@ func createAcroForm(
 	return nil
 }
 
-func updateAcroForm(
+func updateForm(
 	ctx *model.Context,
 	pdf *primitives.PDF,
 	fields types.Array,
 	fonts model.FontMap) error {
 
-	d := ctx.AcroForm
+	d := ctx.Form
 
 	o, _ := d.Find("Fields")
 	arr, err := ctx.DereferenceArray(o)
@@ -692,7 +696,7 @@ func updateAcroForm(
 	return nil
 }
 
-func handleAcroForm(
+func handleForm(
 	ctx *model.Context,
 	pdf *primitives.PDF,
 	fields types.Array,
@@ -700,9 +704,9 @@ func handleAcroForm(
 
 	var err error
 	if pdf.Update() && pdf.HasForm {
-		err = updateAcroForm(ctx, pdf, fields, fonts)
+		err = updateForm(ctx, pdf, fields, fonts)
 	} else {
-		err = createAcroForm(ctx, pdf, fields, fonts)
+		err = createForm(ctx, pdf, fields, fonts)
 	}
 	if err != nil {
 		return err
@@ -744,7 +748,7 @@ func FromJSON(ctx *model.Context, rd io.Reader) error {
 	}
 
 	if len(fields) > 0 {
-		if err := handleAcroForm(ctx, pdf, fields, fonts); err != nil {
+		if err := handleForm(ctx, pdf, fields, fonts); err != nil {
 			return err
 		}
 	}

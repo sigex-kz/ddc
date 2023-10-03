@@ -29,6 +29,10 @@ import (
 
 // Validate validates a PDF stream read from rs.
 func Validate(rs io.ReadSeeker, conf *model.Configuration) error {
+	if rs == nil {
+		return errors.New("pdfcpu: Validate: missing rs")
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
 	}
@@ -116,15 +120,19 @@ func ValidateFiles(inFiles []string, conf *model.Configuration) error {
 			if len(inFiles) == 1 {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			fmt.Fprintf(os.Stderr, "%s: %v\n", fn, err)
 		}
 	}
 
 	return nil
 }
 
-// Validate validates a PDF stream read from rs.
+// DumpObject writes an object from rs to stdout.
 func DumpObject(rs io.ReadSeeker, objNr int, hex bool, conf *model.Configuration) error {
+	if rs == nil {
+		return errors.New("pdfcpu: DumpObject: missing rs")
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
 	}
@@ -148,6 +156,7 @@ func DumpObject(rs io.ReadSeeker, objNr int, hex bool, conf *model.Configuration
 	return err
 }
 
+// DumpObjectFile writes an object from rs to stdout.
 func DumpObjectFile(inFile string, objNr int, hex bool, conf *model.Configuration) error {
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()

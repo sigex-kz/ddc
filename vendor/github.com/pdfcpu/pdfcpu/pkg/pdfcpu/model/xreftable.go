@@ -103,6 +103,7 @@ type XRefTable struct {
 	Root                *types.IndirectRef // Pointer to catalog (reference to root object).
 	RootDict            types.Dict         // Catalog
 	Names               map[string]*Node   // Cache for name trees as found in catalog.
+	NameRefs            map[string]NameMap // Name refs for merging only
 	Encrypt             *types.IndirectRef // Encrypt dict.
 	E                   *Enc
 	EncKey              []byte // Encrypt key.
@@ -149,6 +150,7 @@ type XRefTable struct {
 	// Validation
 	CurPage        int                       // current page during validation
 	CurObj         int                       // current object during validation, the last dereferenced object
+	Conf           *Configuration            // current command being executed
 	ValidationMode int                       // see Configuration
 	ValidateLinks  bool                      // check for broken links in LinkAnnotations/URIDicts.
 	Valid          bool                      // true means successful validated against ISO 32000.
@@ -156,7 +158,8 @@ type XRefTable struct {
 
 	Optimized      bool
 	Watermarked    bool
-	AcroForm       types.Dict
+	Form           types.Dict
+	Outlines       types.Dict
 	SignatureExist bool
 	AppendOnly     bool
 
@@ -165,19 +168,21 @@ type XRefTable struct {
 }
 
 // NewXRefTable creates a new XRefTable.
-func newXRefTable(validationMode int, validateLinks bool) (xRefTable *XRefTable) {
+func newXRefTable(conf *Configuration) (xRefTable *XRefTable) {
 	return &XRefTable{
 		Table:             map[int]*XRefTableEntry{},
 		Names:             map[string]*Node{},
+		NameRefs:          map[string]NameMap{},
 		Properties:        map[string]string{},
 		LinearizationObjs: types.IntSet{},
 		PageAnnots:        map[int]PgAnnots{},
 		PageThumbs:        map[int]types.IndirectRef{},
 		Stats:             NewPDFStats(),
-		ValidationMode:    validationMode,
-		ValidateLinks:     validateLinks,
+		ValidationMode:    conf.ValidationMode,
+		ValidateLinks:     conf.ValidateLinks,
 		URIs:              map[int]map[string]string{},
 		UsedGIDs:          map[string]map[uint16]bool{},
+		Conf:              conf,
 	}
 }
 
@@ -220,6 +225,15 @@ func (xRefTable *XRefTable) ValidateVersion(element string, sinceVersion Version
 	}
 
 	return nil
+}
+
+func (xRefTable *XRefTable) currentCommand() CommandMode {
+	return xRefTable.Conf.Cmd
+}
+
+func (xRefTable *XRefTable) IsMerging() bool {
+	cmd := xRefTable.currentCommand()
+	return cmd == MERGECREATE || cmd == MERGEAPPEND
 }
 
 // EnsureVersionForWriting sets the version to the highest supported PDF Version 1.7.
@@ -625,7 +639,9 @@ func (xRefTable *XRefTable) NewFileSpecDict(f, uf, desc string, indRefStreamDict
 	efDict.Insert("UF", indRefStreamDict)
 	d.Insert("EF", efDict)
 
-	d.InsertString("Desc", desc)
+	if desc != "" {
+		d.InsertString("Desc", desc)
+	}
 
 	// CI, optional, collection item dict, since V1.7
 	// a corresponding collection schema dict in a collection.
@@ -936,15 +952,6 @@ func (xRefTable *XRefTable) Pages() (*types.IndirectRef, error) {
 	return rootDict.IndirectRefEntry("Pages"), nil
 }
 
-// Outlines returns the Outlines reference contained in the catalog.
-func (xRefTable *XRefTable) Outlines() (*types.IndirectRef, error) {
-	rootDict, err := xRefTable.Catalog()
-	if err != nil {
-		return nil, err
-	}
-	return rootDict.IndirectRefEntry("Outlines"), nil
-}
-
 // MissingObjects returns the number of objects that were not written
 // plus the corresponding comma separated string representation.
 func (xRefTable *XRefTable) MissingObjects() (int, *string) {
@@ -1169,7 +1176,6 @@ func (xRefTable *XRefTable) bindNameTreeNode(name string, n *Node, root bool) er
 		n.D = dict
 	} else {
 		if root {
-			// Update root object after possible tree modification after removal of empty kid.
 			namesDict, err := xRefTable.NamesDict()
 			if err != nil {
 				return err
@@ -1184,7 +1190,7 @@ func (xRefTable *XRefTable) bindNameTreeNode(name string, n *Node, root bool) er
 	}
 
 	if !root {
-		dict.Update("Limits", types.NewStringArray(n.Kmin, n.Kmax))
+		dict.Update("Limits", types.NewHexLiteralArray(n.Kmin, n.Kmax))
 	} else {
 		dict.Delete("Limits")
 	}
@@ -1192,7 +1198,7 @@ func (xRefTable *XRefTable) bindNameTreeNode(name string, n *Node, root bool) er
 	if n.leaf() {
 		a := types.Array{}
 		for _, e := range n.Names {
-			a = append(a, types.StringLiteral(e.k))
+			a = append(a, types.NewHexLiteral([]byte(e.k)))
 			a = append(a, e.v)
 		}
 		dict.Update("Names", a)
@@ -1202,8 +1208,7 @@ func (xRefTable *XRefTable) bindNameTreeNode(name string, n *Node, root bool) er
 
 	kids := types.Array{}
 	for _, k := range n.Kids {
-		err := xRefTable.bindNameTreeNode(name, k, false)
-		if err != nil {
+		if err := xRefTable.bindNameTreeNode(name, k, false); err != nil {
 			return err
 		}
 		indRef, err := xRefTable.IndRefForNewObject(k.D)
@@ -1303,14 +1308,20 @@ func (xRefTable *XRefTable) LocateNameTree(nameTreeName string, ensure bool) err
 // NamesDict returns the dict that contains all name trees.
 func (xRefTable *XRefTable) NamesDict() (types.Dict, error) {
 
-	rootDict, err := xRefTable.Catalog()
+	d, err := xRefTable.Catalog()
 	if err != nil {
 		return nil, err
 	}
 
-	o, found := rootDict.Find("Names")
+	o, found := d.Find("Names")
 	if !found {
-		return nil, errors.New("pdfcpu: NamesDict: root entry \"Names\" missing")
+		dict := types.NewDict()
+		ir, err := xRefTable.IndRefForNewObject(dict)
+		if err != nil {
+			return nil, err
+		}
+		d["Names"] = *ir
+		return dict, nil
 	}
 
 	return xRefTable.DereferenceDict(o)
@@ -1458,8 +1469,12 @@ func (xRefTable *XRefTable) IDFirstElement() (id []byte, err error) {
 		return nil, errors.New("pdfcpu: ID must contain hex literals or string literals")
 	}
 
-	//return Unescape(sl.Value())
-	return []byte(sl), nil
+	bb, err := types.Unescape(sl.Value(), false)
+	if err != nil {
+		return nil, err
+	}
+
+	return bb, nil
 }
 
 // InheritedPageAttrs represents all inherited page attributes.
@@ -1738,7 +1753,7 @@ func consolidateResources(consolidateRes bool, xRefTable *XRefTable, pageDict, r
 	// Compare required resouces (prn) with available resources (pAttrs.resources).
 	// Remove any resource that's not required.
 	// Return an error for any required resource missing.
-	// TODO Calculate and acumulate resources required by content streams of any present form or type 3 fonts.
+	// TODO Calculate and accumulate resources required by content streams of any present form or type 3 fonts.
 	return consolidateResourceDict(resDict, prn, page)
 }
 
@@ -2045,7 +2060,14 @@ func (xRefTable *XRefTable) collectMediaBoxAndCropBox(d types.Dict, inhMediaBox,
 	return nil
 }
 
-func (xRefTable *XRefTable) collectPageBoundariesForPageTree(root *types.IndirectRef, inhMediaBox, inhCropBox **types.Rectangle, pb []PageBoundaries, r int, p *int) error {
+func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
+	root *types.IndirectRef,
+	inhMediaBox, inhCropBox **types.Rectangle,
+	pb []PageBoundaries,
+	r int,
+	p *int,
+	selectedPages types.IntSet) error {
+
 	d, err := xRefTable.DereferenceDict(*root)
 	if err != nil {
 		return err
@@ -2095,13 +2117,19 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(root *types.Indirec
 		switch *pageNodeDict.Type() {
 
 		case "Pages":
-			if err = xRefTable.collectPageBoundariesForPageTree(&ir, inhMediaBox, inhCropBox, pb, r, p); err != nil {
+			if err = xRefTable.collectPageBoundariesForPageTree(&ir, inhMediaBox, inhCropBox, pb, r, p, selectedPages); err != nil {
 				return err
 			}
 
 		case "Page":
-			if err = xRefTable.collectPageBoundariesForPageTree(&ir, inhMediaBox, inhCropBox, pb, r, p); err != nil {
-				return err
+			collect := len(selectedPages) == 0
+			if !collect {
+				_, collect = selectedPages[(*p)+1]
+			}
+			if collect {
+				if err = xRefTable.collectPageBoundariesForPageTree(&ir, inhMediaBox, inhCropBox, pb, r, p, selectedPages); err != nil {
+					return err
+				}
 			}
 			*p++
 		}
@@ -2113,7 +2141,7 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(root *types.Indirec
 
 // PageBoundaries returns a sorted slice with page boundaries
 // for all pages sorted ascending by page number.
-func (xRefTable *XRefTable) PageBoundaries() ([]PageBoundaries, error) {
+func (xRefTable *XRefTable) PageBoundaries(selectedPages types.IntSet) ([]PageBoundaries, error) {
 	if err := xRefTable.EnsurePageCount(); err != nil {
 		return nil, err
 	}
@@ -2128,7 +2156,7 @@ func (xRefTable *XRefTable) PageBoundaries() ([]PageBoundaries, error) {
 	mb := &types.Rectangle{}
 	cb := &types.Rectangle{}
 	pbs := make([]PageBoundaries, xRefTable.PageCount)
-	if err := xRefTable.collectPageBoundariesForPageTree(root, &mb, &cb, pbs, 0, &i); err != nil {
+	if err := xRefTable.collectPageBoundariesForPageTree(root, &mb, &cb, pbs, 0, &i, selectedPages); err != nil {
 		return nil, err
 	}
 	return pbs, nil
@@ -2137,7 +2165,7 @@ func (xRefTable *XRefTable) PageBoundaries() ([]PageBoundaries, error) {
 // PageDims returns a sorted slice with effective media box dimensions
 // for all pages sorted ascending by page number.
 func (xRefTable *XRefTable) PageDims() ([]types.Dim, error) {
-	pbs, err := xRefTable.PageBoundaries()
+	pbs, err := xRefTable.PageBoundaries(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -2395,4 +2423,14 @@ func (xRefTable *XRefTable) AppendContent(pageDict types.Dict, bb []byte) error 
 func (xRefTable *XRefTable) HasUsedGIDs(fontName string) bool {
 	usedGIDs, ok := xRefTable.UsedGIDs[fontName]
 	return ok && len(usedGIDs) > 0
+}
+
+func (xRefTable *XRefTable) NameRef(nameType string) NameMap {
+	nm, ok := xRefTable.NameRefs[nameType]
+	if !ok {
+		nm = NameMap{}
+		xRefTable.NameRefs[nameType] = nm
+		return nm
+	}
+	return nm
 }

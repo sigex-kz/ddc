@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/pdfcpu/pdfcpu/pkg/font"
-
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
@@ -61,7 +60,7 @@ type CommandMode int
 // The available commands.
 const (
 	VALIDATE CommandMode = iota
-	INFO
+	LISTINFO
 	OPTIMIZE
 	SPLIT
 	MERGECREATE
@@ -102,7 +101,11 @@ const (
 	ROTATE
 	NUP
 	BOOKLET
+	LISTBOOKMARKS
 	ADDBOOKMARKS
+	REMOVEBOOKMARKS
+	IMPORTBOOKMARKS
+	EXPORTBOOKMARKS
 	LISTIMAGES
 	CREATE
 	DUMP
@@ -122,6 +125,9 @@ const (
 	INSTALLFONTS
 	LISTFONTS
 	RESIZE
+	POSTER
+	NDOWN
+	CUT
 )
 
 // Configuration of a Context.
@@ -199,6 +205,9 @@ type Configuration struct {
 
 	// Optimize duplicate content streams across pages.
 	OptimizeDuplicateContentStreams bool
+
+	// Merge creates bookmarks
+	CreateBookmarks bool
 }
 
 // ConfigPath defines the location of pdfcpu's configuration directory.
@@ -207,6 +216,9 @@ type Configuration struct {
 //
 //	default:	Ensure config dir at default location
 //	disable:	Disable config dir usage
+//
+// If you want to disable config dir usage in a multi threaded environment
+// you are encouraged to use api.DisableConfigDir().
 var ConfigPath string = "default"
 
 var loadedDefaultConfig *Configuration
@@ -270,6 +282,7 @@ func newDefaultConfiguration() *Configuration {
 		DateFormat:                      "2006-01-02",
 		HeaderBufSize:                   100,
 		OptimizeDuplicateContentStreams: false,
+		CreateBookmarks:                 true,
 	}
 }
 
@@ -336,7 +349,8 @@ func (c Configuration) String() string {
 		"TimestampFormat:	%s\n"+
 		"DateFormat:		%s\n"+
 		"HeaderBufSize:		%d\n"+
-		"OptimizeDuplicateContentStreams %t\n",
+		"OptimizeDuplicateContentStreams %t\n"+
+		"CreateBookmarks %t\n",
 		path,
 		c.CheckFileNameExt,
 		c.Reader15,
@@ -353,6 +367,7 @@ func (c Configuration) String() string {
 		c.DateFormat,
 		c.HeaderBufSize,
 		c.OptimizeDuplicateContentStreams,
+		c.CreateBookmarks,
 	)
 }
 

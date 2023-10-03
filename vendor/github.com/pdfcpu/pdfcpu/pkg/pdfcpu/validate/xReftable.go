@@ -173,8 +173,7 @@ func validateNamedDestinations(xRefTable *model.XRefTable, rootDict types.Dict, 
 	}
 
 	for _, o := range d {
-		err = validateDestination(xRefTable, o)
-		if err != nil {
+		if _, err = validateDestination(xRefTable, o, false); err != nil {
 			return err
 		}
 	}
@@ -574,6 +573,10 @@ func validatePieceDict(xRefTable *model.XRefTable, d types.Dict) error {
 
 func validateRootPieceInfo(xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {
 
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		return nil
+	}
+
 	_, err := validatePieceInfo(xRefTable, rootDict, "rootDict", "PieceInfo", required, sinceVersion)
 
 	return err
@@ -680,8 +683,16 @@ func validateCollectionFieldDict(xRefTable *model.XRefTable, d types.Dict) error
 	}
 
 	// Subtype, required name
+	subTypes := []string{"S", "D", "N", "F", "Desc", "ModDate", "CreationDate", "Size"}
+
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		// See i659.pdf
+		subTypes = append(subTypes, "AFRelationship")
+		subTypes = append(subTypes, "CompressedSize")
+	}
+
 	validateCollectionFieldSubtype := func(s string) bool {
-		return types.MemberOf(s, []string{"S", "D", "N", "F", "Desc", "ModDate", "CreationDate", "Size"})
+		return types.MemberOf(s, subTypes)
 	}
 	_, err = validateNameEntry(xRefTable, d, dictName, "Subtype", REQUIRED, model.V10, validateCollectionFieldSubtype)
 	if err != nil {
@@ -974,7 +985,7 @@ func validateRootObject(xRefTable *model.XRefTable) error {
 		{validateOpenAction, OPTIONAL, model.V11},
 		{validateRootAdditionalActions, OPTIONAL, model.V14},
 		{validateURI, OPTIONAL, model.V11},
-		{validateAcroForm, OPTIONAL, model.V12},
+		{validateForm, OPTIONAL, model.V12},
 		{validateRootMetadata, OPTIONAL, model.V14},
 		{validateStructTree, OPTIONAL, model.V13},
 		{validateMarkInfo, OPTIONAL, model.V14},

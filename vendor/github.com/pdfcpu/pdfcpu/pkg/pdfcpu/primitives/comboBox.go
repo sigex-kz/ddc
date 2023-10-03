@@ -19,14 +19,12 @@ package primitives
 import (
 	"bytes"
 	"fmt"
-	"strconv"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/pdfcpu/pdfcpu/pkg/font"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
+	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
 )
@@ -48,7 +46,7 @@ type ComboBox struct {
 	BoundingBox     *types.Rectangle `json:"-"`
 	Edit            bool
 	Font            *FormFont
-	FontID          string `json:"-"`
+	fontID          string `json:"-"`
 	Margin          *Margin
 	Border          *Border
 	BackgroundColor string             `json:"bgCol"`
@@ -63,7 +61,7 @@ type ComboBox struct {
 }
 
 func (cb *ComboBox) SetFontID(s string) {
-	cb.FontID = s
+	cb.fontID = s
 }
 
 func (cb *ComboBox) validateID() error {
@@ -234,90 +232,37 @@ func (cb *ComboBox) validate() error {
 	return cb.validateTab()
 }
 
-// NewComboBox creates a new combobox for d.
-func NewComboBox(xRefTable *model.XRefTable, d types.Dict, opts []string) (*ComboBox, error) {
-	cb := &ComboBox{}
-
-	bb, _ := types.RectForArray(d.ArrayEntry("Rect"))
-	cb.BoundingBox = types.RectForDim(bb.Width(), bb.Height())
-
-	var f FormFont
+func (cb *ComboBox) calcFontFromDA(ctx *model.Context, d types.Dict, fonts map[string]types.IndirectRef) (*types.IndirectRef, error) {
 
 	s := d.StringEntry("DA")
 	if s == nil {
-		return nil, errors.New("pdfcpu: combobox missing \"DA\"")
-	}
-	da := strings.Split(*s, " ")
-
-	var fontID string
-
-	for i := 0; i < len(da); i++ {
-		if da[i] == "Tf" {
-			fontID = da[i-2][1:]
-			cb.SetFontID(fontID)
-			f.Size, _ = strconv.Atoi(da[i-1])
-			continue
-		}
-		if da[i] == "rg" {
-			r, _ := strconv.ParseFloat(da[i-3], 32)
-			g, _ := strconv.ParseFloat(da[i-2], 32)
-			b, _ := strconv.ParseFloat(da[i-1], 32)
-			f.SetCol(color.SimpleColor{R: float32(r), G: float32(g), B: float32(b)})
+		s = ctx.Form.StringEntry("DA")
+		if s == nil {
+			return nil, errors.New("pdfcpu: combobox missing \"DA\"")
 		}
 	}
-	cb.Font = &f
 
-	cb.Options = opts
-
-	// cb.horAlign
-	q := d.IntEntry("Q")
-	cb.HorAlign = types.AlignLeft
-	if q != nil {
-		cb.HorAlign = types.HAlignment(*q)
-	}
-
-	// cb.bgCol, cb.boCol
-	boCol := color.Black
-
-	o, err := xRefTable.DereferenceDictEntry(d, "MK")
+	fontID, f, err := fontFromDA(*s)
 	if err != nil {
 		return nil, err
 	}
-	if o != nil {
-		d1, _ := o.(types.Dict)
-		if len(d1) > 0 {
 
-			if arr := d1.ArrayEntry("BG"); arr != nil {
-				bgCol := (color.NewSimpleColorForArray(arr))
-				cb.BgCol = &bgCol
-			}
+	cb.Font, cb.fontID = &f, fontID
 
-			if arr := d1.ArrayEntry("BC"); arr != nil {
-				boCol = (color.NewSimpleColorForArray(arr))
-			}
-		}
+	id, name, lang, fontIndRef, err := extractFormFontDetails(ctx, cb.fontID, fonts)
+	if err != nil {
+		return nil, err
+	}
+	if fontIndRef == nil {
+		return nil, errors.New("pdfcpu: unable to detect indirect reference for font")
 	}
 
-	// cb.Border
-	boWidth := 0
-	if arr := d.ArrayEntry("Border"); arr != nil {
-		// 0, 1 ??
-		bw, ok := arr[2].(types.Integer)
-		if ok {
-			boWidth = bw.Value()
-		} else {
-			boWidth = int(arr[2].(types.Float).Value())
-		}
-	}
+	cb.fontID = id
+	cb.Font.Name = name
+	cb.Font.Lang = lang
+	cb.RTL = pdffont.RTL(lang)
 
-	var b Border
-	if boWidth > 0 {
-		b.Width = boWidth
-		b.SetCol(boCol)
-	}
-	cb.Border = &b
-
-	return cb, nil
+	return fontIndRef, nil
 }
 
 func (cb *ComboBox) calcFont() error {
@@ -455,7 +400,7 @@ func (cb *ComboBox) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 
 	y := (cb.BoundingBox.Height()-font.LineHeight(f.Name, f.Size))/2 + font.Descent(f.Name, f.Size)
 
-	fmt.Fprintf(buf, "BT /%s %d Tf ", cb.FontID, f.Size)
+	fmt.Fprintf(buf, "BT /%s %d Tf ", cb.fontID, f.Size)
 	fmt.Fprintf(buf, "%.2f %.2f %.2f RG %.2f %.2f %.2f rg %.2f %.2f Td (%s) Tj ET ",
 		f.col.R, f.col.G, f.col.B,
 		f.col.R, f.col.G, f.col.B, x, y, s)
@@ -470,45 +415,6 @@ func (cb *ComboBox) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ComboBoxN creates a new appearance dict needed to render locked combo boxes.
-// This is needed because Adobe Reader provides the appearance dict for unlocked fields only.
-func ComboBoxN(xRefTable *model.XRefTable, cb *ComboBox, ir types.IndirectRef) (*types.IndirectRef, error) {
-
-	bb, err := cb.renderN(xRefTable)
-	if err != nil {
-		return nil, err
-	}
-
-	sd, err := xRefTable.NewStreamDictForBuf(bb)
-	if err != nil {
-		return nil, err
-	}
-
-	sd.InsertName("Type", "XObject")
-	sd.InsertName("Subtype", "Form")
-	sd.InsertInt("FormType", 1)
-	sd.Insert("BBox", types.NewNumberArray(0, 0, cb.BoundingBox.Width(), cb.BoundingBox.Height()))
-	sd.Insert("Matrix", types.NewNumberArray(1, 0, 0, 1, 0, 0))
-
-	d := types.Dict(
-		map[string]types.Object{
-			"Font": types.Dict(
-				map[string]types.Object{
-					cb.FontID: ir,
-				},
-			),
-		},
-	)
-
-	sd.Insert("Resources", d)
-
-	if err := sd.Encode(); err != nil {
-		return nil, err
-	}
-
-	return xRefTable.IndRefForNewObject(*sd)
-}
-
 func (cb *ComboBox) calcBorder() (boWidth float64, boCol *color.SimpleColor) {
 	if cb.Border == nil {
 		return 0, nil
@@ -516,23 +422,7 @@ func (cb *ComboBox) calcBorder() (boWidth float64, boCol *color.SimpleColor) {
 	return cb.Border.calc()
 }
 
-func (cb *ComboBox) prepareDict(fonts model.FontMap) (types.Dict, error) {
-	pdf := cb.pdf
-
-	id, err := types.EscapeUTF16String(cb.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	opt := types.Array{}
-	for _, s := range cb.Options {
-		s, err := types.EscapeUTF16String(s)
-		if err != nil {
-			return nil, err
-		}
-		opt = append(opt, types.StringLiteral(*s))
-	}
-
+func (cb *ComboBox) prepareFF() FieldFlags {
 	ff := FieldFlags(0)
 	ff += FieldCombo
 	if cb.Edit {
@@ -543,29 +433,10 @@ func (cb *ComboBox) prepareDict(fonts model.FontMap) (types.Dict, error) {
 		// Note: unsupported in Mac Preview
 		ff += FieldReadOnly
 	}
+	return ff
+}
 
-	d := types.Dict(
-		map[string]types.Object{
-			"Type":    types.Name("Annot"),
-			"Subtype": types.Name("Widget"),
-			"FT":      types.Name("Ch"),
-			"Rect":    cb.BoundingBox.Array(),
-			"F":       types.Integer(model.AnnPrint),
-			"Ff":      types.Integer(ff),
-			"Opt":     opt,
-			"Q":       types.Integer(cb.HorAlign),
-			"T":       types.StringLiteral(*id),
-		},
-	)
-
-	if cb.Tip != "" {
-		tu, err := types.EscapeUTF16String(cb.Tip)
-		if err != nil {
-			return nil, err
-		}
-		d["TU"] = types.StringLiteral(*tu)
-	}
-
+func (cb *ComboBox) handleBorderAndMK(d types.Dict) {
 	bgCol := cb.BgCol
 	if bgCol == nil {
 		bgCol = cb.content.page.bgCol
@@ -591,6 +462,50 @@ func (cb *ComboBox) prepareDict(fonts model.FontMap) (types.Dict, error) {
 	if boWidth > 0 {
 		d["Border"] = types.NewNumberArray(0, 0, boWidth)
 	}
+}
+
+func (cb *ComboBox) prepareDict(fonts model.FontMap) (types.Dict, error) {
+	pdf := cb.pdf
+
+	id, err := types.EscapeUTF16String(cb.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	opt := types.Array{}
+	for _, s := range cb.Options {
+		s, err := types.EscapeUTF16String(s)
+		if err != nil {
+			return nil, err
+		}
+		opt = append(opt, types.StringLiteral(*s))
+	}
+
+	ff := cb.prepareFF()
+
+	d := types.Dict(
+		map[string]types.Object{
+			"Type":    types.Name("Annot"),
+			"Subtype": types.Name("Widget"),
+			"FT":      types.Name("Ch"),
+			"Rect":    cb.BoundingBox.Array(),
+			"F":       types.Integer(model.AnnPrint),
+			"Ff":      types.Integer(ff),
+			"Opt":     opt,
+			"Q":       types.Integer(cb.HorAlign),
+			"T":       types.StringLiteral(*id),
+		},
+	)
+
+	if cb.Tip != "" {
+		tu, err := types.EscapeUTF16String(cb.Tip)
+		if err != nil {
+			return nil, err
+		}
+		d["TU"] = types.StringLiteral(*tu)
+	}
+
+	cb.handleBorderAndMK(d)
 
 	v := cb.Value
 	if cb.Default != "" {
@@ -629,7 +544,7 @@ func (cb *ComboBox) prepareDict(fonts model.FontMap) (types.Dict, error) {
 	if err != nil {
 		return d, err
 	}
-	cb.FontID = fontID
+	cb.fontID = fontID
 
 	da := fmt.Sprintf("/%s %d Tf %.2f %.2f %.2f rg", fontID, f.Size, fCol.R, fCol.G, fCol.B)
 	// Note: Mac Preview does not honour inherited "DA"
@@ -796,4 +711,99 @@ func (cb *ComboBox) render(p *model.Page, pageNr int, fonts model.FontMap) error
 	}
 
 	return cb.doRender(p, fonts)
+}
+
+// NewComboBox creates a new combobox for d.
+func NewComboBox(
+	ctx *model.Context,
+	d types.Dict,
+	v string,
+	fonts map[string]types.IndirectRef) (*ComboBox, *types.IndirectRef, error) {
+
+	cb := &ComboBox{Value: v}
+
+	bb, err := types.RectForArray(d.ArrayEntry("Rect"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	cb.BoundingBox = types.RectForDim(bb.Width(), bb.Height())
+
+	fontIndRef, err := cb.calcFontFromDA(ctx, d, fonts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	cb.HorAlign = types.AlignLeft
+	if q := d.IntEntry("Q"); q != nil {
+		cb.HorAlign = types.HAlignment(*q)
+	}
+
+	bgCol, boCol, err := calcColsFromMK(ctx, d)
+	if err != nil {
+		return nil, nil, err
+	}
+	cb.BgCol = bgCol
+
+	var b Border
+	boWidth := calcBorderWidth(d)
+	if boWidth > 0 {
+		b.Width = boWidth
+		b.col = boCol
+	}
+	cb.Border = &b
+
+	return cb, fontIndRef, nil
+}
+
+func renderComboBoxAP(ctx *model.Context, d types.Dict, v string, fonts map[string]types.IndirectRef) error {
+
+	cb, fontIndRef, err := NewComboBox(ctx, d, v, fonts)
+	if err != nil {
+		return err
+	}
+
+	bb, err := cb.renderN(ctx.XRefTable)
+	if err != nil {
+		return err
+	}
+
+	irN, err := NewForm(ctx.XRefTable, bb, cb.fontID, fontIndRef, cb.BoundingBox)
+	if err != nil {
+		return err
+	}
+
+	d["AP"] = types.Dict(map[string]types.Object{"N": *irN})
+
+	return nil
+}
+
+func refreshComboBoxAP(ctx *model.Context, d types.Dict, v string, fonts map[string]types.IndirectRef, irN *types.IndirectRef) error {
+
+	cb, _, err := NewComboBox(ctx, d, v, fonts)
+	if err != nil {
+		return err
+	}
+
+	bb, err := cb.renderN(ctx.XRefTable)
+	if err != nil {
+		return err
+	}
+
+	return UpdateForm(ctx.XRefTable, bb, irN)
+}
+
+func EnsureComboBoxAP(ctx *model.Context, d types.Dict, v string, fonts map[string]types.IndirectRef) error {
+
+	apd := d.DictEntry("AP")
+	if apd == nil {
+		return renderComboBoxAP(ctx, d, v, fonts)
+	}
+
+	irN := apd.IndirectRefEntry("N")
+	if irN == nil {
+		return nil
+	}
+
+	return refreshComboBoxAP(ctx, d, v, fonts, irN)
 }

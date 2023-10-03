@@ -34,13 +34,25 @@ import (
 	"github.com/pkg/errors"
 )
 
-// ListFormFields returns a list of form field ids in rs.
-func ListFormFields(rs io.ReadSeeker, conf *model.Configuration) ([]string, error) {
+var (
+	ErrNoFormData           = errors.New("pdfcpu: missing form data")
+	ErrNoFormFieldsAffected = errors.New("pdfcpu: no form fields affected")
+	ErrInvalidCSV           = errors.New("pdfcpu: invalid csv input file")
+	ErrInvalidJSON          = errors.New("pdfcpu: invalid JSON encoding")
+)
+
+// FormFields returns all form fields of rs.
+func FormFields(rs io.ReadSeeker, conf *model.Configuration) ([]form.Field, error) {
+	if rs == nil {
+		return nil, errors.New("pdfcpu: FormFields: missing rs")
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
-		conf.Cmd = model.LISTFORMFIELDS
 	}
-	ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
+	conf.Cmd = model.LISTFORMFIELDS
+
+	ctx, _, _, _, err := ReadValidateAndOptimize(rs, conf, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -49,43 +61,23 @@ func ListFormFields(rs io.ReadSeeker, conf *model.Configuration) ([]string, erro
 		return nil, err
 	}
 
-	return form.ListFormFields(ctx)
-}
+	fields, _, err := form.FormFields(ctx)
 
-// ListFormFieldsFile returns a list of form field ids in inFile.
-func ListFormFieldsFile(inFiles []string, conf *model.Configuration) ([]string, error) {
-	ss := []string{}
-	for _, fn := range inFiles {
-		f, err := os.Open(fn)
-		if err != nil {
-			if len(inFiles) > 1 {
-				ss = append(ss, fmt.Sprintf("\ncan't open %s: %v", fn, err))
-				continue
-			}
-			return nil, err
-		}
-		defer f.Close()
-		output, err := ListFormFields(f, conf)
-		if err != nil {
-			if len(inFiles) > 1 {
-				ss = append(ss, fmt.Sprintf("\nproblem processing %s: %v", fn, err))
-				continue
-			}
-			return nil, err
-		}
-		ss = append(ss, "\n"+fn)
-		ss = append(ss, output...)
-	}
-	return ss, nil
+	return fields, err
 }
 
 // RemoveFormFields deletes form fields in rs and writes the result to w.
-func RemoveFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *model.Configuration) error {
+func RemoveFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) error {
+	if rs == nil {
+		return errors.New("pdfcpu: RemoveFormFields: missing rs")
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
-		conf.Cmd = model.REMOVEFORMFIELDS
 	}
-	ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
+	conf.Cmd = model.REMOVEFORMFIELDS
+
+	ctx, _, _, _, err := ReadValidateAndOptimize(rs, conf, time.Now())
 	if err != nil {
 		return err
 	}
@@ -94,12 +86,12 @@ func RemoveFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *mo
 		return err
 	}
 
-	ok, err := form.RemoveFormFields(ctx, fieldIDs)
+	ok, err := form.RemoveFormFields(ctx, fieldIDsOrNames)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return errors.New("no form fields removed")
+		return ErrNoFormFieldsAffected
 	}
 
 	log.Stats.Printf("XRefTable:\n%s\n", ctx)
@@ -114,7 +106,7 @@ func RemoveFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *mo
 }
 
 // RemoveFormFieldsFile deletes form fields in inFile and writes the result to outFile.
-func RemoveFormFieldsFile(inFile, outFile string, fieldIDs []string, conf *model.Configuration) (err error) {
+func RemoveFormFieldsFile(inFile, outFile string, fieldIDsOrNames []string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 
 	if f1, err = os.Open(inFile); err != nil {
@@ -152,16 +144,21 @@ func RemoveFormFieldsFile(inFile, outFile string, fieldIDs []string, conf *model
 		}
 	}()
 
-	return RemoveFormFields(f1, f2, fieldIDs, conf)
+	return RemoveFormFields(f1, f2, fieldIDsOrNames, conf)
 }
 
 // LockFormFields turns form fields in rs into read-only and writes the result to w.
-func LockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *model.Configuration) error {
+func LockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) error {
+	if rs == nil {
+		return errors.New("pdfcpu: LockFormFields: missing rs")
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
-		conf.Cmd = model.LOCKFORMFIELDS
 	}
-	ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
+	conf.Cmd = model.LOCKFORMFIELDS
+
+	ctx, _, _, _, err := ReadValidateAndOptimize(rs, conf, time.Now())
 	if err != nil {
 		return err
 	}
@@ -170,12 +167,12 @@ func LockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *mode
 		return err
 	}
 
-	ok, err := form.LockFormFields(ctx, fieldIDs)
+	ok, err := form.LockFormFields(ctx, fieldIDsOrNames)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return errors.New("no form fields locked")
+		return ErrNoFormFieldsAffected
 	}
 
 	log.Stats.Printf("XRefTable:\n%s\n", ctx)
@@ -190,7 +187,7 @@ func LockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *mode
 }
 
 // LockFormFieldsFile turns form fields of inFile into read-only and writes the result to outFile.
-func LockFormFieldsFile(inFile, outFile string, fieldIDs []string, conf *model.Configuration) (err error) {
+func LockFormFieldsFile(inFile, outFile string, fieldIDsOrNames []string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 
 	if f1, err = os.Open(inFile); err != nil {
@@ -228,16 +225,21 @@ func LockFormFieldsFile(inFile, outFile string, fieldIDs []string, conf *model.C
 		}
 	}()
 
-	return LockFormFields(f1, f2, fieldIDs, conf)
+	return LockFormFields(f1, f2, fieldIDsOrNames, conf)
 }
 
 // UnlockFormFields makess form fields in rs writeable and writes the result to w.
-func UnlockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *model.Configuration) error {
+func UnlockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) error {
+	if rs == nil {
+		return errors.New("pdfcpu: UnlockFormFields: missing rs")
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
-		conf.Cmd = model.UNLOCKFORMFIELDS
 	}
-	ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
+	conf.Cmd = model.UNLOCKFORMFIELDS
+
+	ctx, _, _, _, err := ReadValidateAndOptimize(rs, conf, time.Now())
 	if err != nil {
 		return err
 	}
@@ -246,12 +248,12 @@ func UnlockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *mo
 		return err
 	}
 
-	ok, err := form.UnlockFormFields(ctx, fieldIDs)
+	ok, err := form.UnlockFormFields(ctx, fieldIDsOrNames)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return errors.New("no form fields unlocked")
+		return ErrNoFormFieldsAffected
 	}
 
 	log.Stats.Printf("XRefTable:\n%s\n", ctx)
@@ -266,7 +268,7 @@ func UnlockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *mo
 }
 
 // UnlockFormFieldsFile makes form fields of inFile writeable and writes the result to outFile.
-func UnlockFormFieldsFile(inFile, outFile string, fieldIDs []string, conf *model.Configuration) (err error) {
+func UnlockFormFieldsFile(inFile, outFile string, fieldIDsOrNames []string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 
 	if f1, err = os.Open(inFile); err != nil {
@@ -304,16 +306,21 @@ func UnlockFormFieldsFile(inFile, outFile string, fieldIDs []string, conf *model
 		}
 	}()
 
-	return UnlockFormFields(f1, f2, fieldIDs, conf)
+	return UnlockFormFields(f1, f2, fieldIDsOrNames, conf)
 }
 
 // ResetFormFields resets form fields of rs and writes the result to w.
-func ResetFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *model.Configuration) error {
+func ResetFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) error {
+	if rs == nil {
+		return errors.New("pdfcpu: ResetFormFields: missing rs")
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
-		conf.Cmd = model.RESETFORMFIELDS
 	}
-	ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
+	conf.Cmd = model.RESETFORMFIELDS
+
+	ctx, _, _, _, err := ReadValidateAndOptimize(rs, conf, time.Now())
 	if err != nil {
 		return err
 	}
@@ -322,12 +329,12 @@ func ResetFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *mod
 		return err
 	}
 
-	ok, err := form.ResetFormFields(ctx, fieldIDs)
+	ok, err := form.ResetFormFields(ctx, fieldIDsOrNames)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return errors.New("no form fields reset")
+		return ErrNoFormFieldsAffected
 	}
 
 	log.Stats.Printf("XRefTable:\n%s\n", ctx)
@@ -342,7 +349,7 @@ func ResetFormFields(rs io.ReadSeeker, w io.Writer, fieldIDs []string, conf *mod
 }
 
 // ResetFormFieldsFile resets form fields of inFile and writes the result to outFile.
-func ResetFormFieldsFile(inFile, outFile string, fieldIDs []string, conf *model.Configuration) (err error) {
+func ResetFormFieldsFile(inFile, outFile string, fieldIDsOrNames []string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 
 	if f1, err = os.Open(inFile); err != nil {
@@ -380,16 +387,56 @@ func ResetFormFieldsFile(inFile, outFile string, fieldIDs []string, conf *model.
 		}
 	}()
 
-	return ResetFormFields(f1, f2, fieldIDs, conf)
+	return ResetFormFields(f1, f2, fieldIDsOrNames, conf)
 }
 
-// ExportForm extracts form data originating from source from rs and writes the result to w.
-func ExportForm(rs io.ReadSeeker, w io.Writer, source string, conf *model.Configuration) error {
+// ExportForm extracts form data originating from source from rs.
+func ExportForm(rs io.ReadSeeker, source string, conf *model.Configuration) (*form.FormGroup, error) {
+	if rs == nil {
+		return nil, errors.New("pdfcpu: ExportForm: missing rs")
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
-		conf.Cmd = model.EXPORTFORMFIELDS
 	}
-	ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
+	conf.Cmd = model.EXPORTFORMFIELDS
+
+	ctx, _, _, _, err := ReadValidateAndOptimize(rs, conf, time.Now())
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ctx.EnsurePageCount(); err != nil {
+		return nil, err
+	}
+
+	formGroup, ok, err := form.ExportForm(ctx.XRefTable, source)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrNoFormFieldsAffected
+	}
+
+	return formGroup, nil
+}
+
+// ExportFormJSON extracts form data originating from source from rs and writes the result to w.
+func ExportFormJSON(rs io.ReadSeeker, w io.Writer, source string, conf *model.Configuration) error {
+	if rs == nil {
+		return errors.New("pdfcpu: ExportFormJSON: missing rs")
+	}
+
+	if w == nil {
+		return errors.New("pdfcpu: ExportFormJSON: missing w")
+	}
+
+	if conf == nil {
+		conf = model.NewDefaultConfiguration()
+	}
+	conf.Cmd = model.EXPORTFORMFIELDS
+
+	ctx, _, _, _, err := ReadValidateAndOptimize(rs, conf, time.Now())
 	if err != nil {
 		return err
 	}
@@ -398,12 +445,12 @@ func ExportForm(rs io.ReadSeeker, w io.Writer, source string, conf *model.Config
 		return err
 	}
 
-	ok, err := form.ExportForm(ctx.XRefTable, source, w)
+	ok, err := form.ExportFormJSON(ctx.XRefTable, source, w)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return errors.New("no form fields exported")
+		return ErrNoFormFieldsAffected
 	}
 
 	return nil
@@ -437,19 +484,40 @@ func ExportFormFile(inFilePDF, outFileJSON string, conf *model.Configuration) (e
 		}
 	}()
 
-	return ExportForm(f1, f2, inFilePDF, conf)
+	return ExportFormJSON(f1, f2, inFilePDF, conf)
 }
 
 // FillForm populates the form rs with data from rd and writes the result to w.
 func FillForm(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configuration) error {
+	if rs == nil {
+		return errors.New("pdfcpu: FillForm: missing rs")
+	}
+
+	if rd == nil {
+		return errors.New("pdfcpu: FillForm: missing rd")
+	}
 
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
-		conf.Cmd = model.FILLFORMFIELDS
 	}
-	ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
+	conf.Cmd = model.FILLFORMFIELDS
+
+	ctx, _, _, _, err := ReadValidateAndOptimize(rs, conf, time.Now())
 	if err != nil {
 		return err
+	}
+
+	if ctx.SignatureExist || ctx.AppendOnly {
+		// TODO enable incremental writing
+		log.CLI.Println("removing signature...")
+		// root -> Perms -> UR3 -> = Sig dict
+		d1 := ctx.RootDict
+		delete(d1, "Perms")
+		d2 := ctx.Form
+		delete(d2, "SigFlags")
+		delete(d2, "XFA")
+		d1["AcroForm"] = d2
+		delete(d1, "Extensions")
 	}
 
 	if err := ctx.EnsurePageCount(); err != nil {
@@ -464,7 +532,7 @@ func FillForm(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configura
 	bb := buf.Bytes()
 
 	if !json.Valid(bb) {
-		return errors.Errorf("pdfcpu: invalid JSON encoding detected.")
+		return ErrInvalidJSON
 	}
 
 	formGroup := form.FormGroup{}
@@ -474,7 +542,7 @@ func FillForm(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configura
 	}
 
 	if len(formGroup.Forms) == 0 {
-		return errors.New("pdfcpu: missing form data")
+		return ErrNoFormData
 	}
 
 	f := formGroup.Forms[0]
@@ -484,7 +552,7 @@ func FillForm(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configura
 		return err
 	}
 	if !ok {
-		return errors.New("no form fields filled")
+		return ErrNoFormFieldsAffected
 	}
 
 	if _, _, err := create.UpdatePageTree(ctx, pp, nil); err != nil {
@@ -567,7 +635,7 @@ func parseFormGroup(rd io.Reader) (*form.FormGroup, error) {
 	bb := buf.Bytes()
 
 	if !json.Valid(bb) {
-		return nil, errors.Errorf("pdfcpu: invalid JSON encoding detected.")
+		return nil, ErrInvalidJSON
 	}
 
 	if err := json.Unmarshal(bb, formGroup); err != nil {
@@ -575,10 +643,24 @@ func parseFormGroup(rd io.Reader) (*form.FormGroup, error) {
 	}
 
 	if len(formGroup.Forms) == 0 {
-		return nil, errors.New("pdfcpu: missing form data")
+		return nil, ErrNoFormData
 	}
 
 	return formGroup, nil
+}
+
+func mergeForms(outDir, fileName string, outFiles []string, conf *model.Configuration) error {
+	outFile := filepath.Join(outDir, fileName+".pdf")
+	if err := MergeCreateFile(outFiles, outFile, conf); err != nil {
+		return err
+	}
+	log.CLI.Println("cleaning up...")
+	for _, fn := range outFiles {
+		if err := os.Remove(fn); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func multiFillFormJSON(inFilePDF string, rd io.Reader, outDir, fileName string, merge bool, conf *model.Configuration) error {
@@ -598,7 +680,7 @@ func multiFillFormJSON(inFilePDF string, rd io.Reader, outDir, fileName string, 
 		}
 		defer rs.Close()
 
-		ctx, _, _, _, err := readValidateAndOptimize(rs, conf, time.Now())
+		ctx, _, _, _, err := ReadValidateAndOptimize(rs, conf, time.Now())
 		if err != nil {
 			return err
 		}
@@ -612,7 +694,7 @@ func multiFillFormJSON(inFilePDF string, rd io.Reader, outDir, fileName string, 
 			return err
 		}
 		if !ok {
-			return errors.New("no form fields filled => no form generated!")
+			return ErrNoFormFieldsAffected
 		}
 
 		if _, _, err := create.UpdatePageTree(ctx, pp, nil); err != nil {
@@ -635,15 +717,8 @@ func multiFillFormJSON(inFilePDF string, rd io.Reader, outDir, fileName string, 
 	}
 
 	if merge {
-		outFile := filepath.Join(outDir, fileName+".pdf")
-		if err := MergeCreateFile(outFiles, outFile, conf); err != nil {
+		if err := mergeForms(outDir, fileName, outFiles, conf); err != nil {
 			return err
-		}
-		log.CLI.Println("cleaning up...")
-		for _, fn := range outFiles {
-			if err := os.Remove(fn); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -655,7 +730,7 @@ func parseCSVLines(rd io.Reader) ([][]string, error) {
 	// Does NOT do any fieldtype checking!
 	// Don't use unless you know your form anatomy inside out!
 
-	// The first row is expected to hold the fieldNames of the fields to be filled - the only form metadata needed for this usecase.
+	// The first row is expected to hold the fieldIDs/fieldNames of the fields to be filled - the only form metadata needed for this usecase.
 	// The remaining rows are the corresponding data tuples.
 	// Each row results in one separate PDF form written to outDir.
 
@@ -670,12 +745,12 @@ func parseCSVLines(rd io.Reader) ([][]string, error) {
 	}
 
 	if len(csvLines) < 2 {
-		return nil, errors.New("pdfcpu: invalid csv input file")
+		return nil, ErrInvalidCSV
 	}
 
 	fieldNames := csvLines[0]
 	if len(fieldNames) == 0 {
-		return nil, errors.New("pdfcpu: invalid csv input file")
+		return nil, ErrInvalidCSV
 	}
 
 	return csvLines, nil
@@ -699,7 +774,7 @@ func multiFillFormCSV(inFilePDF string, rd io.Reader, outDir, fileName string, m
 		}
 		defer f.Close()
 
-		ctx, _, _, _, err := readValidateAndOptimize(f, conf, time.Now())
+		ctx, _, _, _, err := ReadValidateAndOptimize(f, conf, time.Now())
 		if err != nil {
 			return err
 		}
@@ -718,7 +793,7 @@ func multiFillFormCSV(inFilePDF string, rd io.Reader, outDir, fileName string, m
 			return err
 		}
 		if !ok {
-			return errors.New("no form fields filled => no form generated!")
+			return ErrNoFormFieldsAffected
 		}
 
 		if _, _, err := create.UpdatePageTree(ctx, pp, nil); err != nil {
@@ -740,28 +815,21 @@ func multiFillFormCSV(inFilePDF string, rd io.Reader, outDir, fileName string, m
 	}
 
 	if merge {
-		outFile := filepath.Join(outDir, fileName+".pdf")
-		if err := MergeCreateFile(outFiles, outFile, conf); err != nil {
+		if err := mergeForms(outDir, fileName, outFiles, conf); err != nil {
 			return err
-		}
-		log.CLI.Println("cleaning up...")
-		for _, fn := range outFiles {
-			if err := os.Remove(fn); err != nil {
-				return err
-			}
 		}
 	}
 
 	return nil
 }
 
-// MultiFillForm populates multiples instances of rs's form with data from rd and writes the result to outDir.
+// MultiFillForm populates multiples instances of inFilePDF's form with data from rd and writes the result to outDir.
 func MultiFillForm(inFilePDF string, rd io.Reader, outDir, fileName string, format form.DataFormat, merge bool, conf *model.Configuration) error {
 
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
-		conf.Cmd = model.MULTIFILLFORMFIELDS
 	}
+	conf.Cmd = model.MULTIFILLFORMFIELDS
 
 	fileName = strings.TrimSuffix(filepath.Base(fileName), ".pdf")
 
