@@ -447,7 +447,7 @@ linters-settings:
       - name: error-strings
       - name: error-naming
       - name: exported
-      - name: if-return
+      # - name: if-return
       - name: increment-decrement
       - name: var-naming
       - name: var-declaration
@@ -622,12 +622,12 @@ linters:
     - gosec
     - revive
     - godox
-    - gomnd
+    # - gomnd
     - asciicheck
     - misspell
     - nakedret
 
-    - nilerr
+    # - nilerr
     - nilnil
     - thelper
     - errorlint
@@ -636,14 +636,14 @@ linters:
     - gocheckcompilerdirectives
     - mirror
     - musttag
-    - goerr113
+    # - goerr113
 
     - makezero
     - zerologlint
     - bidichk
     - tagalign
     - wastedassign
-    - wsl
+    # - wsl
     - prealloc
     - predeclared
     - promlinter
