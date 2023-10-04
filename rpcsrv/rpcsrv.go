@@ -1,3 +1,4 @@
+// RPC server for ddc library
 package rpcsrv
 
 import (

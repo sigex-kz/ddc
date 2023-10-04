@@ -23,7 +23,7 @@ type ExtractorRegisterResp struct {
 }
 
 // Register new extractor slot and retrieve it's id
-func (t *Extractor) Register(args *ExtractorRegisterArgs, resp *ExtractorRegisterResp) error {
+func (t *Extractor) Register(_ *ExtractorRegisterArgs, resp *ExtractorRegisterResp) error {
 	ee := extractorEntry{}
 
 	resp.ID = newStoreEntry(nil, &ee)
@@ -262,7 +262,7 @@ type ExtractorDropResp struct {
 }
 
 // Drop DDC in the specified slot
-func (t *Extractor) Drop(args *ExtractorDropArgs, resp *ExtractorDropResp) error {
+func (t *Extractor) Drop(args *ExtractorDropArgs, _ *ExtractorDropResp) error {
 	deleteStoreEntry(args.ID)
 	return nil
 }

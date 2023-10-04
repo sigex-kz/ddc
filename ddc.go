@@ -1,3 +1,4 @@
+// Digital document card (https://github.com/kaarkz/ddcard) implementation in golang
 package ddc
 
 import (

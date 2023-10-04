@@ -275,7 +275,7 @@ type BuilderDropResp struct {
 }
 
 // Drop DDC in the specified slot
-func (t *Builder) Drop(args *BuilderDropArgs, resp *BuilderDropResp) error {
+func (t *Builder) Drop(args *BuilderDropArgs, _ *BuilderDropResp) error {
 	deleteStoreEntry(args.ID)
 	return nil
 }

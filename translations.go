@@ -1,6 +1,6 @@
 package ddc
 
-var kk map[string]string = map[string]string{
+var kk = map[string]string{
 	"стр. %v из %v": "%[2]v беттің %[1]v беті",
 	"Подлинник электронного документа": "Электрондық құжаттың түпнұсқасы",
 	"ЭЦП, %v": "ЭСҚ, %v",
@@ -79,7 +79,7 @@ var kk map[string]string = map[string]string{
 Басып шығарушы: %v`,
 }
 
-var kkRU map[string]string = map[string]string{
+var kkRU = map[string]string{
 	"стр. %v из %v": "%[2]v беттің %[1]v беті / стр. %[1]v из %[2]v",
 	"Подлинник электронного документа": "Электрондық құжаттың түпнұсқасы / Подлинник электронного документа",
 	"ЭЦП, %v": "ЭСҚ / ЭЦП, %v",

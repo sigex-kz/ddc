@@ -1,3 +1,4 @@
+// Runs ddc RPC server
 package main
 
 import (
