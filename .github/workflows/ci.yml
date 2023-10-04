@@ -6,7 +6,9 @@ jobs:
     container: golangci/golangci-lint:latest
     steps:
       - uses: actions/checkout@v3
-      - run: golangci-lint run -v ./...
+      - run: |
+          git config --global --add safe.directory '*'
+          golangci-lint run -v ./...
 
   test:
     runs-on: ubuntu-latest
