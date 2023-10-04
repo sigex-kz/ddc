@@ -1,4 +1,4 @@
-// Digital document card (https://github.com/kaarkz/ddcard) implementation in golang
+// Package ddc implements Digital document card specification (https://github.com/kaarkz/ddcard)
 package ddc
 
 import (
