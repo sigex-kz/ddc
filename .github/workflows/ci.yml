@@ -3,7 +3,7 @@ on: [push]
 jobs:
   lint:
     runs-on: ubuntu-latest
-    container: golangci/golangci-lint:latest
+    container: golangci/golangci-lint:v1.54.2
     steps:
       - uses: actions/checkout@v3
       - run: golangci-lint run -v ./...
