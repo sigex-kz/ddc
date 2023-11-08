@@ -711,12 +711,17 @@ func (ddc *Builder) constructDocumentVisualization() error {
 			embeddedPageScaledHeight = constEmbeddedPageMaxHeight
 		}
 
+		xShift := (constEmbeddedPageMaxWidth - embeddedPageScaledWidth) / 2
+		if xShift < 0 {
+			xShift = 0
+		}
+
 		yShift := (constEmbeddedPageMaxHeight - embeddedPageScaledHeight) / 2
 		if yShift < 0 {
 			yShift = 0
 		}
 
-		x := float64(constPageLeftMargin)
+		x := float64(constPageLeftMargin) + xShift
 		y := constPageTopMargin + constHeaderHeight + yShift
 		w := embeddedPageScaledWidth
 		h := embeddedPageScaledHeight
