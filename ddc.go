@@ -447,7 +447,7 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	}
 
 	// Add pages of the embedded PDF
-	if ddc.embeddedPDF != nil {
+	if visualizeDocument {
 		var tempPDFBytes bytes.Buffer
 
 		wm, err := pdfcpu.ParsePDFWatermarkDetails(ddc.embeddedDocFileName, "offset: 30 0 ,rot:0, scale:0.8 rel", false, pdfcputypes.POINTS)
