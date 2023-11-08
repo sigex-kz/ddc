@@ -237,7 +237,8 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 	}
 
 	var b bytes.Buffer
-	if err = pdfcpuapi.WriteContext(ctx, &b); err != nil {
+	err = pdfcpuapi.WriteContext(ctx, &b)
+	if err != nil {
 		return err
 	}
 
@@ -442,7 +443,8 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	}
 
 	// Just in case
-	if err := ddc.pdf.Error(); err != nil {
+	err = ddc.pdf.Error()
+	if err != nil {
 		return err
 	}
 
@@ -450,10 +452,12 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	if visualizeDocument {
 		var tempPDFBytes bytes.Buffer
 
-		wm, err := pdfcpu.ParsePDFWatermarkDetails(ddc.embeddedDocFileName, "offset: 30 0 ,rot:0, scale:0.8 rel", false, pdfcputypes.POINTS)
+		var wm *pdfcpumodel.Watermark
+		wm, err = pdfcpu.ParsePDFWatermarkDetails(ddc.embeddedDocFileName, "offset: 30 0 ,rot:0, scale:0.8 rel", false, pdfcputypes.POINTS)
 		if err != nil {
 			return err
 		}
+
 		wm.PDF = ddc.embeddedPDF
 		wm.SkipPages = ddc.infoBlockNumPages
 
