@@ -452,8 +452,10 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	if visualizeDocument {
 		var tempPDFBytes bytes.Buffer
 
+		desc := fmt.Sprintf("offset: %v 0 ,rot:0, scale:0.8 rel", constPageLeftMargin)
+
 		var wm *pdfcpumodel.Watermark
-		wm, err = pdfcpu.ParsePDFWatermarkDetails(ddc.embeddedDocFileName, "offset: 30 0 ,rot:0, scale:0.8 rel", false, pdfcputypes.POINTS)
+		wm, err = pdfcpu.ParsePDFWatermarkDetails(ddc.embeddedDocFileName, desc, false, pdfcputypes.POINTS)
 		if err != nil {
 			return err
 		}
