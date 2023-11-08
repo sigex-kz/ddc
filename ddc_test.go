@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
+	pdfcpuapi "github.com/vsenko/pdfcpu/pkg/api"
 )
 
 const (

@@ -4,9 +4,8 @@ go 1.21
 
 require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/pdfcpu/pdfcpu v0.5.0
 	github.com/vsenko/gofpdf v1.5.0
-	github.com/vsenko/gofpdi v1.0.17
+	github.com/vsenko/pdfcpu v0.5.2
 )
 
 require (

@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
-	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
-	pdfcpumodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/vsenko/gofpdf"
-	"github.com/vsenko/gofpdf/contrib/gofpdi"
-	realgofpdi "github.com/vsenko/gofpdi"
+	pdfcpuapi "github.com/vsenko/pdfcpu/pkg/api"
+	"github.com/vsenko/pdfcpu/pkg/pdfcpu"
+	pdfcpumodel "github.com/vsenko/pdfcpu/pkg/pdfcpu/model"
+	pdfcputypes "github.com/vsenko/pdfcpu/pkg/pdfcpu/types"
 )
 
 const (
@@ -47,8 +48,6 @@ const (
 	constInfoBlockAttachmentsIndexNumColWidth    = 10
 	constInfoBlockAttachmentsDescriptionColWidth = 75
 	constInfoBlockAttachmentsFileNameColWidth    = constContentMaxWidth - constInfoBlockAttachmentsIndexNumColWidth - constInfoBlockAttachmentsDescriptionColWidth
-
-	constPDFBoxType = "/MediaBox"
 
 	constFontRegular    = "LiberationSans-Regular"
 	constFontBold       = "LiberationSans-Bold"
@@ -206,7 +205,7 @@ type Builder struct {
 	// For embedded PDFs
 	embeddedPDF           io.ReadSeeker
 	embeddedPDFNumPages   int
-	embeddedPDFPagesSizes map[int]map[string]map[string]float64
+	embeddedPDFPagesSizes []pdfcputypes.Dim
 
 	totalPages int
 }
@@ -232,17 +231,23 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 	config.WriteObjectStream = false
 	config.WriteXRefStream = false
 
-	var b bytes.Buffer
-	err := pdfcpuapi.Optimize(pdf, &b, config)
+	ctx, _, _, _, err := pdfcpuapi.ReadValidateAndOptimize(pdf, config, time.Now())
 	if err != nil {
 		return err
 	}
+
+	var b bytes.Buffer
+	if err = pdfcpuapi.WriteContext(ctx, &b); err != nil {
+		return err
+	}
+
 	var optimizedPDF io.ReadSeeker = bytes.NewReader(b.Bytes())
 
-	imp := realgofpdi.NewImporter()
-	imp.SetSourceStream(&optimizedPDF)
-	numPages := imp.GetNumPages()
-	pagesSizes := imp.GetPageSizes()
+	numPages := ctx.PageCount
+	pagesSizes, err := ctx.PageDims()
+	if err != nil {
+		return err
+	}
 
 	if numPages < 1 {
 		return errors.New("document is empty")
@@ -254,12 +259,12 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 }
 
 // EmbedDoc registers a digital document original in any format that should be embedded into DDC
-func (ddc *Builder) EmbedDoc(pdf io.ReadSeeker, fileName string) error {
-	ddc.embedDoc(pdf, nil, 0, nil, fileName)
+func (ddc *Builder) EmbedDoc(doc io.ReadSeeker, fileName string) error {
+	ddc.embedDoc(doc, nil, 0, nil, fileName)
 	return nil
 }
 
-func (ddc *Builder) embedDoc(doc, optimizedPDF io.ReadSeeker, numPages int, pagesSizes map[int]map[string]map[string]float64, fileName string) {
+func (ddc *Builder) embedDoc(doc, optimizedPDF io.ReadSeeker, numPages int, pagesSizes []pdfcputypes.Dim, fileName string) {
 	ddc.embeddedDoc = doc
 	ddc.embeddedDocFileName = fileName
 
@@ -273,7 +278,7 @@ func (ddc *Builder) initPdf() (pdf *gofpdf.Fpdf, err error) {
 
 	// Fpdf by default sets PDF version to "1.3" and not always bumps it when uses newer features.
 	// Adding an empty layer bumps the version to "1.5" thus increasing compliance with the standard.
-	pdf.AddLayer("Empty", false)
+	pdf.AddLayer("Layer1", true)
 
 	pdf.AddUTF8FontFromBytes(constFontRegular, "", embeddedFontRegular)
 	pdf.AddUTF8FontFromBytes(constFontBold, "", embeddedFontBold)
@@ -430,20 +435,40 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	}
 
 	// Build output
-	var b bytes.Buffer
-	err = ddc.pdf.Output(&b)
-	if err != nil {
-		return err
-	}
-
-	// Optimize output
-	err = pdfcpuapi.Optimize(bytes.NewReader(b.Bytes()), w, pdfcpumodel.NewDefaultConfiguration())
+	var pdfBytes bytes.Buffer
+	err = ddc.pdf.Output(&pdfBytes)
 	if err != nil {
 		return err
 	}
 
 	// Just in case
 	if err := ddc.pdf.Error(); err != nil {
+		return err
+	}
+
+	// Add pages of the embedded PDF
+	if ddc.embeddedPDF != nil {
+		var tempPDFBytes bytes.Buffer
+
+		wm, err := pdfcpu.ParsePDFWatermarkDetails(ddc.embeddedDocFileName, "offset: 30 0 ,rot:0, scale:0.8 rel", false, pdfcputypes.POINTS)
+		if err != nil {
+			return err
+		}
+		wm.PDF = ddc.embeddedPDF
+		wm.SkipPages = ddc.infoBlockNumPages
+
+		pageInDDC := fmt.Sprintf("%v-%v", ddc.infoBlockNumPages+1, ddc.infoBlockNumPages+ddc.embeddedPDFNumPages)
+		err = pdfcpuapi.AddWatermarks(bytes.NewReader(pdfBytes.Bytes()), &tempPDFBytes, []string{pageInDDC}, wm, pdfcpumodel.NewDefaultConfiguration())
+		if err != nil {
+			return err
+		}
+
+		pdfBytes = tempPDFBytes
+	}
+
+	// Optimize output
+	err = pdfcpuapi.Optimize(bytes.NewReader(pdfBytes.Bytes()), w, pdfcpumodel.NewDefaultConfiguration())
+	if err != nil {
 		return err
 	}
 
@@ -664,7 +689,6 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 }
 
 func (ddc *Builder) constructDocumentVisualization() error {
-	imp := gofpdi.NewImporter()
 	for pageNum := 1; pageNum <= ddc.embeddedPDFNumPages; pageNum++ {
 		ddc.pdf.AddPage()
 
@@ -674,9 +698,8 @@ func (ddc *Builder) constructDocumentVisualization() error {
 		}
 
 		// Calculate location
-		embeddedPageSize := ddc.embeddedPDFPagesSizes[pageNum][constPDFBoxType]
-		embeddedPageScaledWidth := embeddedPageSize["w"]
-		embeddedPageScaledHeight := embeddedPageSize["h"]
+		embeddedPageScaledWidth := ddc.embeddedPDFPagesSizes[pageNum-1].Width
+		embeddedPageScaledHeight := ddc.embeddedPDFPagesSizes[pageNum-1].Height
 
 		if embeddedPageScaledWidth > constEmbeddedPageMaxWidth {
 			embeddedPageScaledHeight = embeddedPageScaledHeight * constEmbeddedPageMaxWidth / embeddedPageScaledWidth
@@ -698,18 +721,11 @@ func (ddc *Builder) constructDocumentVisualization() error {
 		w := embeddedPageScaledWidth
 		h := embeddedPageScaledHeight
 
+		// Box
 		r, g, b := ddc.pdf.GetDrawColor()
 		ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
 		ddc.pdf.Rect(x, y, w, h, "D")
 		ddc.pdf.SetDrawColor(r, g, b)
-
-		_, err = ddc.embeddedPDF.Seek(0, io.SeekStart)
-		if err != nil {
-			return err
-		}
-
-		tpl := imp.ImportPageFromStream(ddc.pdf, &ddc.embeddedPDF, pageNum, constPDFBoxType)
-		imp.UseImportedTemplate(ddc.pdf, tpl, x, y, w, h)
 
 		// Watermark
 		r, g, b = ddc.pdf.GetTextColor()
