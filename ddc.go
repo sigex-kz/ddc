@@ -34,7 +34,7 @@ const (
 	constFooterDescriptionMaxLength = 90
 	constEmbeddedPageMaxWidth       = constContentMaxWidth
 	constEmbeddedPageMaxHeight      = constContentMaxHeight - constHeaderHeight - constFooterHeight
-	constContentTop                 = constPageTopMargin + constHeaderHeight + 10
+	constContentTop                 = constPageTopMargin + constHeaderHeight + 5
 	constContentLeftColumnWidth     = constContentMaxWidth / 3 * 2
 	constContentRightColumnWidth    = constContentMaxWidth / 3
 	constContentRightColumnX        = constPageLeftMargin + constContentLeftColumnWidth
@@ -45,7 +45,7 @@ const (
 	constSignatureQRCodeTopMargin = 5
 
 	constInfoBlockContentsPageNumColWidth        = 10
-	constInfoBlockAttachmentsIndexNumColWidth    = 10
+	constInfoBlockAttachmentsIndexNumColWidth    = 11
 	constInfoBlockAttachmentsDescriptionColWidth = 75
 	constInfoBlockAttachmentsFileNameColWidth    = constContentMaxWidth - constInfoBlockAttachmentsIndexNumColWidth - constInfoBlockAttachmentsDescriptionColWidth
 
@@ -287,7 +287,7 @@ func (ddc *Builder) initPdf() (pdf *gofpdf.Fpdf, err error) {
 	pdf.AddUTF8FontFromBytes(constFontBoldItalic, "", embeddedFontBoldItalic)
 
 	// Fpdf margins are used only on Info Block pages, configure them with header and footer height to utilize auto page break
-	pdf.SetMargins(constPageLeftMargin, constPageTopMargin+constHeaderHeight, constPageRightMargin)
+	pdf.SetMargins(constPageLeftMargin, constContentTop, constPageRightMargin)
 	pdf.SetAutoPageBreak(true, constPageBottomMargin+constFooterHeight)
 
 	if err := pdf.Error(); err != nil {
@@ -625,26 +625,31 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 
 	ddc.pdf.SetFont(constFontRegular, "", 12)
 	for i, a := range ddc.attachments {
-		y := ddc.pdf.GetY()
+		currentY := ddc.pdf.GetY()
 
 		ddc.pdf.MultiCell(constInfoBlockAttachmentsIndexNumColWidth, 5, fmt.Sprintf("%v.", i+1), "", "LM", false)
-		lowestY := ddc.pdf.GetY()
+		newY := ddc.pdf.GetY()
+		if newY < currentY { // new page
+			currentY = constContentTop
+		}
 
-		ddc.pdf.SetY(y)
+		ddc.pdf.SetY(currentY)
 		ddc.pdf.SetX(constPageLeftMargin + constInfoBlockAttachmentsIndexNumColWidth)
 		ddc.pdf.MultiCell(constInfoBlockAttachmentsFileNameColWidth, 5, a.Filename, "", "LM", false)
-		if ddc.pdf.GetY() > lowestY {
-			lowestY = ddc.pdf.GetY()
+		y := ddc.pdf.GetY()
+		if y > newY {
+			newY = y
 		}
 
-		ddc.pdf.SetY(y)
+		ddc.pdf.SetY(currentY)
 		ddc.pdf.SetX(constPageLeftMargin + constInfoBlockAttachmentsIndexNumColWidth + constInfoBlockAttachmentsFileNameColWidth)
 		ddc.pdf.MultiCell(constInfoBlockAttachmentsDescriptionColWidth, 5, a.Description, "", "LM", false)
-		if ddc.pdf.GetY() > lowestY {
-			lowestY = ddc.pdf.GetY()
+		y = ddc.pdf.GetY()
+		if y > newY || y < currentY { // check if on the new page
+			newY = y
 		}
 
-		ddc.pdf.SetY(lowestY)
+		ddc.pdf.SetY(newY)
 	}
 
 	// Comments
