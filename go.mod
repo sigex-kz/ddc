@@ -4,8 +4,8 @@ go 1.21
 
 require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
+	github.com/pdfcpu/pdfcpu v0.6.0
 	github.com/vsenko/gofpdf v1.5.0
-	github.com/vsenko/pdfcpu v0.5.2
 )
 
 require (
@@ -14,7 +14,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rivo/uniseg v0.4.4 // indirect
-	golang.org/x/image v0.11.0 // indirect
-	golang.org/x/text v0.12.0 // indirect
+	golang.org/x/image v0.12.0 // indirect
+	golang.org/x/text v0.13.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
