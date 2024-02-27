@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
@@ -231,7 +230,12 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 	config.WriteObjectStream = false
 	config.WriteXRefStream = false
 
-	ctx, _, _, _, err := pdfcpuapi.ReadValidateAndOptimize(pdf, config, time.Now())
+	ctx, err := pdfcpuapi.ReadContext(pdf, config)
+	if err != nil {
+		return err
+	}
+
+	err = pdfcpuapi.ValidateContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -472,11 +476,7 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		pdfBytes = tempPDFBytes
 	}
 
-	// Optimize output
-	err = pdfcpuapi.Optimize(bytes.NewReader(pdfBytes.Bytes()), w, pdfcpumodel.NewDefaultConfiguration())
-	if err != nil {
-		return err
-	}
+	w.Write(pdfBytes.Bytes())
 
 	return nil
 }
@@ -924,12 +924,20 @@ type AttachedFile struct {
 
 // ExtractAttachments from DDC and return them as structures
 func ExtractAttachments(ddcPdf io.ReadSeeker) (documentOriginal *AttachedFile, signatures []AttachedFile, err error) {
-	err = pdfcpuapi.Validate(ddcPdf, nil)
+	conf := pdfcpumodel.NewDefaultConfiguration()
+	conf.Cmd = pdfcpumodel.EXTRACTATTACHMENTS
+
+	ctx, err := pdfcpuapi.ReadContext(ddcPdf, conf)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	attachments, err := pdfcpuapi.ExtractAttachmentsRaw(ddcPdf, "", nil, nil)
+	err = pdfcpuapi.ValidateContext(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	attachments, err := ctx.ExtractAttachments(nil)
 	if err != nil {
 		return nil, nil, err
 	}
