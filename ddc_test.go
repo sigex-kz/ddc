@@ -203,12 +203,14 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ddc, err := NewBuilder(&di)
+	pdf, err := os.Open("./tests-data/embed.pdf")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	pdf, err := os.Open("./tests-data/embed.pdf")
+	// Only document visualization
+
+	ddc, err := NewBuilder(&di)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +220,6 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only document visualization
 	var b bytes.Buffer
 	err = ddc.Build(true, false, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
 	if err != nil {
@@ -236,7 +237,18 @@ func TestBuildPartialVisualizations(t *testing.T) {
 	}
 
 	// Only signatures visualization
-	b.Reset()
+
+	ddc, err = NewBuilder(&di)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = ddc.EmbedPDF(pdf, di.Title)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b = bytes.Buffer{}
 	err = ddc.Build(false, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +265,18 @@ func TestBuildPartialVisualizations(t *testing.T) {
 	}
 
 	// No visualizations
-	b.Reset()
+
+	ddc, err = NewBuilder(&di)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = ddc.EmbedPDF(pdf, di.Title)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b = bytes.Buffer{}
 	err = ddc.Build(false, false, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
