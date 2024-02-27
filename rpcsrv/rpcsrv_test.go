@@ -16,6 +16,7 @@ const (
 	address          = "127.0.0.1:1234"
 	eicar            = `X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`
 	clamAVEicarFound = "unexpected response from clamd 'stream: Win.Test.EICAR_HDB-1 FOUND\n'"
+	docChunkSize     = 1 * 1024 * 1024
 )
 
 func TestPingPong(t *testing.T) {
@@ -95,27 +96,28 @@ func TestPingPong(t *testing.T) {
 	// Send PDF to embed
 
 	badpArgs := BuilderAppendDocumentPartArgs{
-		ID:    brResp.ID,
-		Bytes: embeddedPdfBytes[:len(embeddedPdfBytes)/2],
+		ID: brResp.ID,
 	}
 	badpResp := BuilderAppendDocumentPartResp{}
 
-	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if badpResp.Error != "" {
-		t.Fatal(badpResp.Error)
-	}
+	for n := 0; ; n++ {
+		if n*docChunkSize > len(embeddedPdfBytes) {
+			break
+		}
 
-	badpArgs.Bytes = embeddedPdfBytes[len(embeddedPdfBytes)/2:]
+		if (n+1)*docChunkSize > len(embeddedPdfBytes) {
+			badpArgs.Bytes = embeddedPdfBytes[n*docChunkSize:]
+		} else {
+			badpArgs.Bytes = embeddedPdfBytes[n*docChunkSize : (n+1)*docChunkSize]
+		}
 
-	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if badpResp.Error != "" {
-		t.Fatal(badpResp.Error)
+		err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if badpResp.Error != "" {
+			t.Fatal(badpResp.Error)
+		}
 	}
 
 	// Send signatures
@@ -158,41 +160,40 @@ func TestPingPong(t *testing.T) {
 
 	bgddcpArgs := BuilderGetDDCPartArgs{
 		ID:          brResp.ID,
-		MaxPartSize: 10,
+		MaxPartSize: docChunkSize,
 	}
 	bgddcpResp := BuilderGetDDCPartResp{}
 
-	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bgddcpResp.Error != "" {
-		t.Fatal(bgddcpResp.Error)
-	}
-
-	if bgddcpResp.IsFinal {
-		t.Fatal("should not be final")
-	}
-
 	ddcPDFBuffer := bytes.Buffer{}
-	ddcPDFBuffer.Write(bgddcpResp.Part)
 
-	bgddcpArgs.MaxPartSize = 100 * 1024 * 1024
-	bgddcpResp = BuilderGetDDCPartResp{}
+	isFinal := false
+	for !isFinal {
+		err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bgddcpResp.Error != "" {
+			t.Fatal(bgddcpResp.Error)
+		}
 
-	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+		ddcPDFBuffer.Write(bgddcpResp.Part)
+		isFinal = bgddcpResp.IsFinal
+	}
+
+	// Drop builder
+
+	bdArgs := BuilderDropArgs{
+		ID: brResp.ID,
+	}
+	bdResp := BuilderDropResp{}
+
+	err = client.Call("Builder.Drop", &bdArgs, &bdResp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bgddcpResp.Error != "" {
-		t.Fatal(bgddcpResp.Error)
+	if bdResp.Error != "" {
+		t.Fatal(bdResp.Error)
 	}
-
-	if !bgddcpResp.IsFinal {
-		t.Fatal("should be final")
-	}
-
-	ddcPDFBuffer.Write(bgddcpResp.Part)
 
 	// Save DDC as file
 
@@ -221,27 +222,29 @@ func TestPingPong(t *testing.T) {
 	// Send DDC to extractor
 
 	eaddcpArgs := ExtractorAppendDDCPartArgs{
-		ID:   erResp.ID,
-		Part: ddcPDFBuffer.Next(10),
+		ID: erResp.ID,
 	}
 	eaddcpResp := ExtractorAppendDDCPartResp{}
 
-	err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &eaddcpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if eaddcpResp.Error != "" {
-		t.Fatal(eaddcpResp.Error)
-	}
+	ddcPDFBytes := ddcPDFBuffer.Bytes()
+	for n := 0; ; n++ {
+		if n*chunkSize > len(ddcPDFBytes) {
+			break
+		}
 
-	eaddcpArgs.Part = ddcPDFBuffer.Next(ddcPDFBuffer.Len())
+		if (n+1)*chunkSize > len(ddcPDFBytes) {
+			eaddcpArgs.Part = ddcPDFBytes[n*chunkSize:]
+		} else {
+			eaddcpArgs.Part = ddcPDFBytes[n*chunkSize : (n+1)*chunkSize]
+		}
 
-	err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &eaddcpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if eaddcpResp.Error != "" {
-		t.Fatal(eaddcpResp.Error)
+		err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &eaddcpResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if eaddcpResp.Error != "" {
+			t.Fatal(eaddcpResp.Error)
+		}
 	}
 
 	// Parse
@@ -267,39 +270,25 @@ func TestPingPong(t *testing.T) {
 
 	egdpArgs := ExtractorGetDocumentPartArgs{
 		ID:          erResp.ID,
-		MaxPartSize: 10,
+		MaxPartSize: docChunkSize,
 	}
 	egdpResp := ExtractorGetDocumentPartResp{}
 
-	err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if egdpResp.Error != "" {
-		t.Fatal(egdpResp.Error)
-	}
-
-	if egdpResp.IsFinal {
-		t.Fatal("should not be final")
-	}
-
 	embeddedPDFBuffer := bytes.Buffer{}
-	embeddedPDFBuffer.Write(egdpResp.Part)
 
-	egdpArgs.MaxPartSize = 100 * 1024 * 1024
-	err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if egdpResp.Error != "" {
-		t.Fatal(egdpResp.Error)
-	}
+	isFinal = false
+	for !isFinal {
+		err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if egdpResp.Error != "" {
+			t.Fatal(egdpResp.Error)
+		}
 
-	if !egdpResp.IsFinal {
-		t.Fatal("should be final")
+		embeddedPDFBuffer.Write(egdpResp.Part)
+		isFinal = egdpResp.IsFinal
 	}
-
-	embeddedPDFBuffer.Write(egdpResp.Part)
 
 	if !bytes.Equal(embeddedPdfBytes, embeddedPDFBuffer.Bytes()) {
 		t.Fatalf("extracted embedded file (size %v) differs from the original (size %v)", len(embeddedPdfBytes), embeddedPDFBuffer.Len())
@@ -308,22 +297,25 @@ func TestPingPong(t *testing.T) {
 	// Rewind and retrieve embedded PDF again
 
 	egdpArgs.Rewind = true
-	egdpArgs.MaxPartSize = 100 * 1024 * 1024
+	embeddedPDFBuffer = bytes.Buffer{}
 
-	err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if egdpResp.Error != "" {
-		t.Fatal(egdpResp.Error)
+	isFinal = false
+	for !isFinal {
+		err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if egdpResp.Error != "" {
+			t.Fatal(egdpResp.Error)
+		}
+
+		embeddedPDFBuffer.Write(egdpResp.Part)
+		isFinal = egdpResp.IsFinal
+		egdpArgs.Rewind = false
 	}
 
-	if !egdpResp.IsFinal {
-		t.Fatal("should be final")
-	}
-
-	if !bytes.Equal(embeddedPdfBytes, egdpResp.Part) {
-		t.Fatalf("extracted embedded file (size %v) differs from the original (size %v)", len(embeddedPdfBytes), len(egdpResp.Part))
+	if !bytes.Equal(embeddedPdfBytes, embeddedPDFBuffer.Bytes()) {
+		t.Fatalf("extracted embedded file (size %v) differs from the original (size %v)", len(embeddedPdfBytes), len(embeddedPDFBuffer.Bytes()))
 	}
 
 	// Retrieve signatures
@@ -353,6 +345,21 @@ func TestPingPong(t *testing.T) {
 		if !bytes.Equal(s.Body, egsResp.Signature.Bytes) {
 			t.Fatalf("extracted signature (size %v) differs from the original (size %v)", len(egsResp.Signature.Bytes), len(s.Body))
 		}
+	}
+
+	// Drop extractor
+
+	edArgs := ExtractorDropArgs{
+		ID: erResp.ID,
+	}
+	edResp := ExtractorDropResp{}
+
+	err = client.Call("Extractor.Drop", &edArgs, &edResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edResp.Error != "" {
+		t.Fatal(edResp.Error)
 	}
 }
 
@@ -433,17 +440,28 @@ func TestWithoutDocumentVisualization(t *testing.T) {
 	// Send Doc to embed
 
 	badpArgs := BuilderAppendDocumentPartArgs{
-		ID:    brResp.ID,
-		Bytes: embeddedDocBytes,
+		ID: brResp.ID,
 	}
 	badpResp := BuilderAppendDocumentPartResp{}
 
-	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if badpResp.Error != "" {
-		t.Fatal(badpResp.Error)
+	for n := 0; ; n++ {
+		if n*docChunkSize > len(embeddedDocBytes) {
+			break
+		}
+
+		if (n+1)*docChunkSize > len(embeddedDocBytes) {
+			badpArgs.Bytes = embeddedDocBytes[n*docChunkSize:]
+		} else {
+			badpArgs.Bytes = embeddedDocBytes[n*docChunkSize : (n+1)*docChunkSize]
+		}
+
+		err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if badpResp.Error != "" {
+			t.Fatal(badpResp.Error)
+		}
 	}
 
 	// Send signatures
@@ -487,41 +505,40 @@ func TestWithoutDocumentVisualization(t *testing.T) {
 
 	bgddcpArgs := BuilderGetDDCPartArgs{
 		ID:          brResp.ID,
-		MaxPartSize: 10,
+		MaxPartSize: docChunkSize,
 	}
 	bgddcpResp := BuilderGetDDCPartResp{}
 
-	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bgddcpResp.Error != "" {
-		t.Fatal(bgddcpResp.Error)
-	}
-
-	if bgddcpResp.IsFinal {
-		t.Fatal("should not be final")
-	}
-
 	ddcPDFBuffer := bytes.Buffer{}
-	ddcPDFBuffer.Write(bgddcpResp.Part)
 
-	bgddcpArgs.MaxPartSize = 100 * 1024 * 1024
-	bgddcpResp = BuilderGetDDCPartResp{}
+	isFinal := false
+	for !isFinal {
+		err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+		if err != nil {
+			panic(err)
+		}
+		if bgddcpResp.Error != "" {
+			panic(bgddcpResp.Error)
+		}
 
-	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+		ddcPDFBuffer.Write(bgddcpResp.Part)
+		isFinal = bgddcpResp.IsFinal
+	}
+
+	// Drop builder
+
+	bdArgs := BuilderDropArgs{
+		ID: brResp.ID,
+	}
+	bdResp := BuilderDropResp{}
+
+	err = client.Call("Builder.Drop", &bdArgs, &bdResp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bgddcpResp.Error != "" {
-		t.Fatal(bgddcpResp.Error)
+	if bdResp.Error != "" {
+		t.Fatal(bdResp.Error)
 	}
-
-	if !bgddcpResp.IsFinal {
-		t.Fatal("should be final")
-	}
-
-	ddcPDFBuffer.Write(bgddcpResp.Part)
 
 	// Save DDC as file
 
@@ -550,17 +567,29 @@ func TestWithoutDocumentVisualization(t *testing.T) {
 	// Send DDC to extractor
 
 	eaddcpArgs := ExtractorAppendDDCPartArgs{
-		ID:   erResp.ID,
-		Part: ddcPDFBuffer.Bytes(),
+		ID: erResp.ID,
 	}
 	eaddcpResp := ExtractorAppendDDCPartResp{}
 
-	err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &eaddcpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if eaddcpResp.Error != "" {
-		t.Fatal(eaddcpResp.Error)
+	ddcPDFBytes := ddcPDFBuffer.Bytes()
+	for n := 0; ; n++ {
+		if n*chunkSize > len(ddcPDFBytes) {
+			break
+		}
+
+		if (n+1)*chunkSize > len(ddcPDFBytes) {
+			eaddcpArgs.Part = ddcPDFBytes[n*chunkSize:]
+		} else {
+			eaddcpArgs.Part = ddcPDFBytes[n*chunkSize : (n+1)*chunkSize]
+		}
+
+		err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &eaddcpResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if eaddcpResp.Error != "" {
+			t.Fatal(eaddcpResp.Error)
+		}
 	}
 
 	// Parse
@@ -582,30 +611,76 @@ func TestWithoutDocumentVisualization(t *testing.T) {
 		t.Fatalf("bad file name '%v', expected '%v'", epResp.DocumentFileName, "embed.txt")
 	}
 
-	// Retrieve embedded Doc
+	// Retrieve embedded PDF
 
 	egdpArgs := ExtractorGetDocumentPartArgs{
 		ID:          erResp.ID,
-		MaxPartSize: 100 * 1024 * 1024,
+		MaxPartSize: docChunkSize,
 	}
 	egdpResp := ExtractorGetDocumentPartResp{}
 
-	err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
+	embeddedPDFBuffer := bytes.Buffer{}
+
+	isFinal = false
+	for !isFinal {
+		err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if egdpResp.Error != "" {
+			t.Fatal(egdpResp.Error)
+		}
+
+		embeddedPDFBuffer.Write(egdpResp.Part)
+		isFinal = egdpResp.IsFinal
+	}
+
+	if !bytes.Equal(embeddedDocBytes, embeddedPDFBuffer.Bytes()) {
+		t.Fatalf("extracted embedded file (size %v) differs from the original (size %v)", len(embeddedDocBytes), len(embeddedPDFBuffer.Bytes()))
+	}
+
+	// Retrieve signatures
+
+	for i, s := range di.Signatures {
+		egsArgs := ExtractorGetSignatureArgs{
+			ID: erResp.ID,
+		}
+		egsResp := ExtractorGetSignatureResp{}
+
+		err = client.Call("Extractor.GetSignature", &egsArgs, &egsResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if egsResp.Error != "" {
+			t.Fatal(egsResp.Error)
+		}
+
+		if (i+1 != len(di.Signatures)) && egsResp.IsFinal {
+			t.Fatal("should not be final")
+		}
+
+		if (i+1 == len(di.Signatures)) && !egsResp.IsFinal {
+			t.Fatal("should be final")
+		}
+
+		if !bytes.Equal(s.Body, egsResp.Signature.Bytes) {
+			t.Fatalf("extracted signature (size %v) differs from the original (size %v)", len(egsResp.Signature.Bytes), len(s.Body))
+		}
+	}
+
+	// Drop extractor
+
+	edArgs := ExtractorDropArgs{
+		ID: erResp.ID,
+	}
+	edResp := ExtractorDropResp{}
+
+	err = client.Call("Extractor.Drop", &edArgs, &edResp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if egdpResp.Error != "" {
-		t.Fatal(egdpResp.Error)
-	}
-
-	if !egdpResp.IsFinal {
-		t.Fatal("should be final")
-	}
-
-	embeddedPDFBuffer := egdpResp.Part
-
-	if !bytes.Equal(embeddedDocBytes, embeddedPDFBuffer) {
-		t.Fatalf("extracted embedded file (size %v) differs from the original (size %v)", len(embeddedDocBytes), len(embeddedPDFBuffer))
+	if edResp.Error != "" {
+		t.Fatal(edResp.Error)
 	}
 }
 
@@ -695,6 +770,21 @@ func TestClamAV(t *testing.T) {
 		if basResp.Error != clamAVEicarFound {
 			t.Fatal("should fail because of the antivirus test")
 		}
+
+		// Drop builder
+
+		bdArgs := BuilderDropArgs{
+			ID: brResp.ID,
+		}
+		bdResp := BuilderDropResp{}
+
+		err = client.Call("Builder.Drop", &bdArgs, &bdResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bdResp.Error != "" {
+			t.Fatal(bdResp.Error)
+		}
 	})
 
 	t.Run("bad document", func(t *testing.T) {
@@ -771,6 +861,21 @@ func TestClamAV(t *testing.T) {
 		if bbResp.Error != clamAVEicarFound {
 			t.Fatal("should fail because of the antivirus test")
 		}
+
+		// Drop builder
+
+		bdArgs := BuilderDropArgs{
+			ID: brResp.ID,
+		}
+		bdResp := BuilderDropResp{}
+
+		err = client.Call("Builder.Drop", &bdArgs, &bdResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bdResp.Error != "" {
+			t.Fatal(bdResp.Error)
+		}
 	})
 
 	t.Run("bad ddc", func(t *testing.T) {
@@ -821,6 +926,21 @@ func TestClamAV(t *testing.T) {
 		}
 		if epResp.Error != clamAVEicarFound {
 			t.Fatal("should fail because of the antivirus test")
+		}
+
+		// Drop extractor
+
+		edArgs := ExtractorDropArgs{
+			ID: erResp.ID,
+		}
+		edResp := ExtractorDropResp{}
+
+		err = client.Call("Extractor.Drop", &edArgs, &edResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if edResp.Error != "" {
+			t.Fatal(edResp.Error)
 		}
 	})
 }
@@ -903,27 +1023,28 @@ func TestKK(t *testing.T) {
 	// Send PDF to embed
 
 	badpArgs := BuilderAppendDocumentPartArgs{
-		ID:    brResp.ID,
-		Bytes: embeddedPdfBytes[:len(embeddedPdfBytes)/2],
+		ID: brResp.ID,
 	}
 	badpResp := BuilderAppendDocumentPartResp{}
 
-	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if badpResp.Error != "" {
-		t.Fatal(badpResp.Error)
-	}
+	for n := 0; ; n++ {
+		if n*docChunkSize > len(embeddedPdfBytes) {
+			break
+		}
 
-	badpArgs.Bytes = embeddedPdfBytes[len(embeddedPdfBytes)/2:]
+		if (n+1)*docChunkSize > len(embeddedPdfBytes) {
+			badpArgs.Bytes = embeddedPdfBytes[n*docChunkSize:]
+		} else {
+			badpArgs.Bytes = embeddedPdfBytes[n*docChunkSize : (n+1)*docChunkSize]
+		}
 
-	err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if badpResp.Error != "" {
-		t.Fatal(badpResp.Error)
+		err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
+		if err != nil {
+			panic(err)
+		}
+		if badpResp.Error != "" {
+			panic(badpResp.Error)
+		}
 	}
 
 	// Send signatures
@@ -966,46 +1087,512 @@ func TestKK(t *testing.T) {
 
 	bgddcpArgs := BuilderGetDDCPartArgs{
 		ID:          brResp.ID,
-		MaxPartSize: 10,
+		MaxPartSize: docChunkSize,
 	}
 	bgddcpResp := BuilderGetDDCPartResp{}
 
-	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bgddcpResp.Error != "" {
-		t.Fatal(bgddcpResp.Error)
-	}
-
-	if bgddcpResp.IsFinal {
-		t.Fatal("should not be final")
-	}
-
 	ddcPDFBuffer := bytes.Buffer{}
-	ddcPDFBuffer.Write(bgddcpResp.Part)
 
-	bgddcpArgs.MaxPartSize = 100 * 1024 * 1024
-	bgddcpResp = BuilderGetDDCPartResp{}
+	isFinal := false
+	for !isFinal {
+		err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+		if err != nil {
+			panic(err)
+		}
+		if bgddcpResp.Error != "" {
+			panic(bgddcpResp.Error)
+		}
 
-	err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+		ddcPDFBuffer.Write(bgddcpResp.Part)
+		isFinal = bgddcpResp.IsFinal
+	}
+
+	// Drop builder
+
+	bdArgs := BuilderDropArgs{
+		ID: brResp.ID,
+	}
+	bdResp := BuilderDropResp{}
+
+	err = client.Call("Builder.Drop", &bdArgs, &bdResp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bgddcpResp.Error != "" {
-		t.Fatal(bgddcpResp.Error)
+	if bdResp.Error != "" {
+		t.Fatal(bdResp.Error)
 	}
-
-	if !bgddcpResp.IsFinal {
-		t.Fatal("should be final")
-	}
-
-	ddcPDFBuffer.Write(bgddcpResp.Part)
 
 	// Save DDC as file
 
 	err = os.WriteFile("../tests-output/rpcsrv-kk.pdf", ddcPDFBuffer.Bytes(), 0o600)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func BenchmarkBuild(b *testing.B) {
+
+	// Configure ClamAV
+
+	ClamAVConfigure("unix", "/var/run/clamav/clamd.ctl")
+
+	// Start server
+
+	errChan := make(chan error)
+	go func(errChan chan error) {
+		<-errChan
+	}(errChan)
+
+	err := Start(network, address, errChan)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	defer func() {
+		stopErr := Stop()
+		if stopErr != nil {
+			b.Fatal(stopErr)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}()
+
+	client, err := jsonrpc.Dial(network, address)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Load test data
+
+	jsonBytes, err := os.ReadFile("../tests-data/fullfeatured-di.json")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	di := ddc.DocumentInfo{}
+	err = json.Unmarshal(jsonBytes, &di)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	embeddedPdfBytes, err := os.ReadFile("../tests-data/embed.pdf")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Register builder id
+
+		brArgs := BuilderRegisterArgs{
+			Title:       di.Title,
+			Description: di.Description,
+			ID:          di.ID,
+			IDQRCode:    di.IDQRCode,
+			FileName:    "embed.pdf",
+		}
+		brResp := BuilderRegisterResp{}
+
+		err = client.Call("Builder.Register", &brArgs, &brResp)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if brResp.Error != "" {
+			b.Fatal(brResp.Error)
+		}
+
+		// Send PDF to embed
+
+		badpArgs := BuilderAppendDocumentPartArgs{
+			ID: brResp.ID,
+		}
+		badpResp := BuilderAppendDocumentPartResp{}
+
+		for n := 0; ; n++ {
+			if n*chunkSize > len(embeddedPdfBytes) {
+				break
+			}
+
+			if (n+1)*chunkSize > len(embeddedPdfBytes) {
+				badpArgs.Bytes = embeddedPdfBytes[n*chunkSize:]
+			} else {
+				badpArgs.Bytes = embeddedPdfBytes[n*chunkSize : (n+1)*chunkSize]
+			}
+
+			err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
+			if err != nil {
+				panic(err)
+			}
+			if badpResp.Error != "" {
+				panic(badpResp.Error)
+			}
+		}
+
+		// Send signatures
+
+		for _, s := range di.Signatures {
+			basArgs := BuilderAppendSignatureArgs{
+				ID:            brResp.ID,
+				SignatureInfo: s,
+			}
+			basResp := BuilderAppendSignatureResp{}
+
+			err = client.Call("Builder.AppendSignature", &basArgs, &basResp)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if basResp.Error != "" {
+				b.Fatal(basResp.Error)
+			}
+		}
+
+		// Build
+
+		bbArgs := BuilderBuildArgs{
+			ID:           brResp.ID,
+			CreationDate: "2021.01.31 13:45:00 UTC+6",
+			BuilderName:  "RPC builder",
+			HowToVerify:  "Somehow",
+		}
+		bbResp := BuilderBuildResp{}
+
+		err = client.Call("Builder.Build", &bbArgs, &bbResp)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if bbResp.Error != "" {
+			b.Fatal(bbResp.Error)
+		}
+
+		// Retrieve
+
+		bgddcpArgs := BuilderGetDDCPartArgs{
+			ID:          brResp.ID,
+			MaxPartSize: chunkSize,
+		}
+		bgddcpResp := BuilderGetDDCPartResp{}
+
+		ddcPDFBuffer := bytes.Buffer{}
+
+		isFinal := false
+		for !isFinal {
+			err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+			if err != nil {
+				panic(err)
+			}
+			if bgddcpResp.Error != "" {
+				panic(bgddcpResp.Error)
+			}
+
+			ddcPDFBuffer.Write(bgddcpResp.Part)
+			isFinal = bgddcpResp.IsFinal
+		}
+
+		// Drop builder
+
+		bdArgs := BuilderDropArgs{
+			ID: brResp.ID,
+		}
+		bdResp := BuilderDropResp{}
+
+		err = client.Call("Builder.Drop", &bdArgs, &bdResp)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if bdResp.Error != "" {
+			b.Fatal(bdResp.Error)
+		}
+	}
+}
+
+func BenchmarkParse(b *testing.B) {
+
+	// Configure ClamAV
+
+	ClamAVConfigure("unix", "/var/run/clamav/clamd.ctl")
+
+	// Start server
+
+	errChan := make(chan error)
+	go func(errChan chan error) {
+		<-errChan
+	}(errChan)
+
+	err := Start(network, address, errChan)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	defer func() {
+		stopErr := Stop()
+		if stopErr != nil {
+			b.Fatal(stopErr)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}()
+
+	client, err := jsonrpc.Dial(network, address)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Load test data
+
+	jsonBytes, err := os.ReadFile("../tests-data/fullfeatured-di.json")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	di := ddc.DocumentInfo{}
+	err = json.Unmarshal(jsonBytes, &di)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	embeddedPdfBytes, err := os.ReadFile("../tests-data/embed.pdf")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Register builder id
+
+	brArgs := BuilderRegisterArgs{
+		Title:       di.Title,
+		Description: di.Description,
+		ID:          di.ID,
+		IDQRCode:    di.IDQRCode,
+		FileName:    "embed.pdf",
+	}
+	brResp := BuilderRegisterResp{}
+
+	err = client.Call("Builder.Register", &brArgs, &brResp)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if brResp.Error != "" {
+		b.Fatal(brResp.Error)
+	}
+
+	if brResp.ID == "" {
+		b.Fatal("received bad id")
+	}
+
+	// Send PDF to embed
+
+	badpArgs := BuilderAppendDocumentPartArgs{
+		ID: brResp.ID,
+	}
+	badpResp := BuilderAppendDocumentPartResp{}
+
+	for n := 0; ; n++ {
+		if n*chunkSize > len(embeddedPdfBytes) {
+			break
+		}
+
+		if (n+1)*chunkSize > len(embeddedPdfBytes) {
+			badpArgs.Bytes = embeddedPdfBytes[n*chunkSize:]
+		} else {
+			badpArgs.Bytes = embeddedPdfBytes[n*chunkSize : (n+1)*chunkSize]
+		}
+
+		err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
+		if err != nil {
+			panic(err)
+		}
+		if badpResp.Error != "" {
+			panic(badpResp.Error)
+		}
+	}
+
+	// Send signatures
+
+	for _, s := range di.Signatures {
+		basArgs := BuilderAppendSignatureArgs{
+			ID:            brResp.ID,
+			SignatureInfo: s,
+		}
+		basResp := BuilderAppendSignatureResp{}
+
+		err = client.Call("Builder.AppendSignature", &basArgs, &basResp)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if basResp.Error != "" {
+			b.Fatal(basResp.Error)
+		}
+	}
+
+	// Build
+
+	bbArgs := BuilderBuildArgs{
+		ID:           brResp.ID,
+		CreationDate: "2021.01.31 13:45:00 UTC+6",
+		BuilderName:  "RPC builder",
+		HowToVerify:  "Somehow",
+	}
+	bbResp := BuilderBuildResp{}
+
+	err = client.Call("Builder.Build", &bbArgs, &bbResp)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if bbResp.Error != "" {
+		b.Fatal(bbResp.Error)
+	}
+
+	// Retrieve
+
+	bgddcpArgs := BuilderGetDDCPartArgs{
+		ID:          brResp.ID,
+		MaxPartSize: chunkSize,
+	}
+	bgddcpResp := BuilderGetDDCPartResp{}
+
+	ddcPDFBuffer := bytes.Buffer{}
+
+	isFinal := false
+	for !isFinal {
+		err = client.Call("Builder.GetDDCPart", &bgddcpArgs, &bgddcpResp)
+		if err != nil {
+			panic(err)
+		}
+		if bgddcpResp.Error != "" {
+			panic(bgddcpResp.Error)
+		}
+
+		ddcPDFBuffer.Write(bgddcpResp.Part)
+		isFinal = bgddcpResp.IsFinal
+	}
+
+	// Drop builder
+
+	bdArgs := BuilderDropArgs{
+		ID: brResp.ID,
+	}
+	bdResp := BuilderDropResp{}
+
+	err = client.Call("Builder.Drop", &bdArgs, &bdResp)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if bdResp.Error != "" {
+		b.Fatal(bdResp.Error)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Register extractor id
+
+		erArgs := ExtractorRegisterArgs{}
+		erResp := ExtractorRegisterResp{}
+
+		err = client.Call("Extractor.Register", &erArgs, &erResp)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if erResp.Error != "" {
+			b.Fatal(erResp.Error)
+		}
+
+		// Send DDC to extractor
+
+		eaddcpArgs := ExtractorAppendDDCPartArgs{
+			ID: erResp.ID,
+		}
+		eaddcpResp := ExtractorAppendDDCPartResp{}
+
+		ddcPDFBytes := ddcPDFBuffer.Bytes()
+		for n := 0; ; n++ {
+			if n*chunkSize > len(ddcPDFBytes) {
+				break
+			}
+
+			if (n+1)*chunkSize > len(ddcPDFBytes) {
+				eaddcpArgs.Part = ddcPDFBytes[n*chunkSize:]
+			} else {
+				eaddcpArgs.Part = ddcPDFBytes[n*chunkSize : (n+1)*chunkSize]
+			}
+
+			err = client.Call("Extractor.AppendDDCPart", &eaddcpArgs, &eaddcpResp)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if eaddcpResp.Error != "" {
+				b.Fatal(eaddcpResp.Error)
+			}
+		}
+
+		// Parse
+
+		epArgs := ExtractorParseArgs{
+			ID: erResp.ID,
+		}
+		epResp := ExtractorParseResp{}
+
+		err = client.Call("Extractor.Parse", &epArgs, &epResp)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if epResp.Error != "" {
+			b.Fatal(epResp.Error)
+		}
+
+		// Retrieve embedded PDF
+
+		egdpArgs := ExtractorGetDocumentPartArgs{
+			ID:          erResp.ID,
+			MaxPartSize: docChunkSize,
+		}
+		egdpResp := ExtractorGetDocumentPartResp{}
+
+		embeddedPDFBuffer := bytes.Buffer{}
+
+		isFinal = false
+		for !isFinal {
+			err = client.Call("Extractor.GetDocumentPart", &egdpArgs, &egdpResp)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if egdpResp.Error != "" {
+				b.Fatal(egdpResp.Error)
+			}
+
+			embeddedPDFBuffer.Write(egdpResp.Part)
+			isFinal = egdpResp.IsFinal
+		}
+
+		// Retrieve signatures
+
+		for range di.Signatures {
+			egsArgs := ExtractorGetSignatureArgs{
+				ID: erResp.ID,
+			}
+			egsResp := ExtractorGetSignatureResp{}
+
+			err = client.Call("Extractor.GetSignature", &egsArgs, &egsResp)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if egsResp.Error != "" {
+				b.Fatal(egsResp.Error)
+			}
+		}
+
+		// Drop extractor
+
+		edArgs := ExtractorDropArgs{
+			ID: erResp.ID,
+		}
+		edResp := ExtractorDropResp{}
+
+		err = client.Call("Extractor.Drop", &edArgs, &edResp)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if edResp.Error != "" {
+			b.Fatal(edResp.Error)
+		}
+
 	}
 }

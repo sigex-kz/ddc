@@ -780,3 +780,94 @@ func TestBuildLotsOfSignatures(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func BenchmarkBuild(b *testing.B) {
+	// Build
+
+	jsonBytes, err := os.ReadFile("./tests-data/lognstrings-di.json")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		di := DocumentInfo{}
+		err = json.Unmarshal(jsonBytes, &di)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		ddc, err := NewBuilder(&di)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		pdf, err := os.Open("./tests-data/embed.pdf")
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		err = ddc.EmbedPDF(pdf, "fullfeatured-embed ревизия документа 2020.02.20.pdf")
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		var bB bytes.Buffer
+		err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", consthowToVerifyString, &bB)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkParse(b *testing.B) {
+	// Build
+
+	jsonBytes, err := os.ReadFile("./tests-data/lognstrings-di.json")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	di := DocumentInfo{}
+	err = json.Unmarshal(jsonBytes, &di)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	ddc, err := NewBuilder(&di)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	pdf, err := os.Open("./tests-data/embed.pdf")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	err = ddc.EmbedPDF(pdf, di.Title)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	var bB bytes.Buffer
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", consthowToVerifyString, &bB)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		doc, signatures, err := ExtractAttachments(bytes.NewReader(bB.Bytes()))
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		if doc.Name != di.Title {
+			b.Fatalf("unexpected document file name (%v)", doc.Name)
+		}
+
+		if len(signatures) != len(di.Signatures) {
+			b.Fatalf("quantity of extracted signatures (%v) does not match the original (%v)", len(signatures), len(di.Signatures))
+		}
+	}
+}
