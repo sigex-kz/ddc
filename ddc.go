@@ -476,7 +476,10 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		pdfBytes = tempPDFBytes
 	}
 
-	w.Write(pdfBytes.Bytes())
+	_, err = w.Write(pdfBytes.Bytes())
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
