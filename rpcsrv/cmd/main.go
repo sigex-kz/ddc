@@ -56,7 +56,7 @@ func main() {
 		panic(err)
 	}
 
-	var prometheusServer *(http.Server)
+	var prometheusServer *http.Server
 	if *prometheusPortFlag != "" {
 		go func() {
 			mux := http.NewServeMux()
