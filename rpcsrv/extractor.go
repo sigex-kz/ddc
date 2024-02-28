@@ -2,6 +2,7 @@ package rpcsrv
 
 import (
 	"bytes"
+	"log"
 
 	"github.com/sigex-kz/ddc"
 )
@@ -51,6 +52,7 @@ func (t *Extractor) AppendDDCPart(args *ExtractorAppendDDCPartArgs, resp *Extrac
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Extractor.AppendDDCPart: %s", resp.Error)
 		return nil
 	}
 
@@ -59,12 +61,14 @@ func (t *Extractor) AppendDDCPart(args *ExtractorAppendDDCPartArgs, resp *Extrac
 
 	if e.ee == nil {
 		resp.Error = "unknown id"
+		log.Printf("Extractor.AppendDDCPart: %s", resp.Error)
 		return nil
 	}
 
 	_, err = e.ee.ddcFileBuffer.Write(args.Part)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Extractor.AppendDDCPart: %s", resp.Error)
 		return nil
 	}
 
@@ -92,6 +96,7 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) er
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Extractor.Parse: %s", resp.Error)
 		return nil
 	}
 
@@ -101,23 +106,27 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) er
 	err = clamAVScan(e.ee.ddcFileBuffer.Bytes())
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Extractor.Parse: %s", resp.Error)
 		return nil
 	}
 
 	if e.ee == nil {
 		resp.Error = "unknown id"
+		log.Printf("Extractor.Parse: %s", resp.Error)
 		return nil
 	}
 
 	documentOriginal, signatures, err := ddc.ExtractAttachments(bytes.NewReader(e.ee.ddcFileBuffer.Bytes()))
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Extractor.Parse: %s", resp.Error)
 		return nil
 	}
 
 	err = clamAVScan(documentOriginal.Bytes)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Extractor.Parse: %s", resp.Error)
 		return nil
 	}
 
@@ -125,6 +134,7 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) er
 		err = clamAVScan(s.Bytes)
 		if err != nil {
 			resp.Error = err.Error()
+			log.Printf("Extractor.Parse: %s", resp.Error)
 			return nil
 		}
 	}
@@ -166,6 +176,7 @@ func (t *Extractor) GetDocumentPart(args *ExtractorGetDocumentPartArgs, resp *Ex
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Extractor.GetDocumentPart: %s", resp.Error)
 		return nil
 	}
 
@@ -174,11 +185,13 @@ func (t *Extractor) GetDocumentPart(args *ExtractorGetDocumentPartArgs, resp *Ex
 
 	if e.ee == nil {
 		resp.Error = "unknown id"
+		log.Printf("Extractor.GetDocumentPart: %s", resp.Error)
 		return nil
 	}
 
 	if e.ee.documentOriginal == nil {
 		resp.Error = "DDC not parsed"
+		log.Printf("Extractor.GetDocumentPart: %s", resp.Error)
 		return nil
 	}
 
@@ -222,6 +235,7 @@ func (t *Extractor) GetSignature(args *ExtractorGetSignatureArgs, resp *Extracto
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Extractor.GetSignature: %s", resp.Error)
 		return nil
 	}
 
@@ -230,11 +244,13 @@ func (t *Extractor) GetSignature(args *ExtractorGetSignatureArgs, resp *Extracto
 
 	if e.ee == nil {
 		resp.Error = "unknown id"
+		log.Printf("Extractor.GetSignature: %s", resp.Error)
 		return nil
 	}
 
 	if e.ee.signatures == nil {
 		resp.Error = "DDC not parsed"
+		log.Printf("Extractor.GetSignature: %s", resp.Error)
 		return nil
 	}
 

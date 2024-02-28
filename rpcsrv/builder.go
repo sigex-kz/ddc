@@ -2,6 +2,7 @@ package rpcsrv
 
 import (
 	"bytes"
+	"log"
 
 	"github.com/sigex-kz/ddc"
 )
@@ -79,6 +80,7 @@ func (t *Builder) AppendDocumentPart(args *BuilderAppendDocumentPartArgs, resp *
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.AppendDocumentPart: %s", resp.Error)
 		return nil
 	}
 
@@ -87,12 +89,14 @@ func (t *Builder) AppendDocumentPart(args *BuilderAppendDocumentPartArgs, resp *
 
 	if e.be == nil {
 		resp.Error = "unknown id"
+		log.Printf("Builder.AppendDocumentPart: %s", resp.Error)
 		return nil
 	}
 
 	_, err = e.be.embeddedFileBuffer.Write(args.Bytes)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.AppendDocumentPart: %s", resp.Error)
 		return nil
 	}
 
@@ -119,12 +123,14 @@ func (t *Builder) AppendSignature(args *BuilderAppendSignatureArgs, resp *Builde
 	err := clamAVScan(args.SignatureInfo.Body)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.AppendSignature: %s", resp.Error)
 		return nil
 	}
 
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.AppendSignature: %s", resp.Error)
 		return nil
 	}
 
@@ -133,6 +139,7 @@ func (t *Builder) AppendSignature(args *BuilderAppendSignatureArgs, resp *Builde
 
 	if e.be == nil {
 		resp.Error = "unknown id"
+		log.Printf("Builder.AppendSignature: %s", resp.Error)
 		return nil
 	}
 
@@ -175,6 +182,7 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.Build: %s", resp.Error)
 		return nil
 	}
 
@@ -184,17 +192,20 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	err = clamAVScan(e.be.embeddedFileBuffer.Bytes())
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.Build: %s", resp.Error)
 		return nil
 	}
 
 	if e.be == nil {
 		resp.Error = "unknown id"
+		log.Printf("Builder.Build: %s", resp.Error)
 		return nil
 	}
 
 	ddcBuilder, err := ddc.NewBuilder(&e.be.di)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.Build: %s", resp.Error)
 		return nil
 	}
 
@@ -205,12 +216,14 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	}
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.Build: %s", resp.Error)
 		return nil
 	}
 
 	err = ddcBuilder.Build(!args.WithoutDocumentVisualization, !args.WithoutSignaturesVisualization, args.CreationDate, args.BuilderName, args.HowToVerify, &e.be.ddcFileBuffer)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.Build: %s", resp.Error)
 		return nil
 	}
 
@@ -243,6 +256,7 @@ func (t *Builder) GetDDCPart(args *BuilderGetDDCPartArgs, resp *BuilderGetDDCPar
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
+		log.Printf("Builder.GetDDCPart: %s", resp.Error)
 		return nil
 	}
 
@@ -251,6 +265,7 @@ func (t *Builder) GetDDCPart(args *BuilderGetDDCPartArgs, resp *BuilderGetDDCPar
 
 	if e.be == nil {
 		resp.Error = "unknown id"
+		log.Printf("Builder.GetDDCPart: %s", resp.Error)
 		return nil
 	}
 
