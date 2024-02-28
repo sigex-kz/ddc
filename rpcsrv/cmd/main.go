@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sigex-kz/ddc/rpcsrv"
@@ -63,8 +64,12 @@ func main() {
 			mux.Handle("/metrics", promhttp.Handler())
 
 			prometheusServer = &http.Server{
-				Addr:    fmt.Sprintf(":%v", *prometheusPortFlag),
-				Handler: mux,
+				Addr:              fmt.Sprintf(":%v", *prometheusPortFlag),
+				Handler:           mux,
+				ReadHeaderTimeout: 1 * time.Second,
+				ReadTimeout:       1 * time.Second,
+				WriteTimeout:      2 * time.Second,
+				IdleTimeout:       120 * time.Second,
 			}
 
 			promErr := prometheusServer.ListenAndServe()
