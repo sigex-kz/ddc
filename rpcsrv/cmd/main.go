@@ -2,9 +2,9 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -56,10 +56,21 @@ func main() {
 		panic(err)
 	}
 
+	var prometheusServer *(http.Server)
 	if *prometheusPortFlag != "" {
 		go func() {
-			http.Handle("/metrics", promhttp.Handler())
-			log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", *prometheusPortFlag), nil))
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", promhttp.Handler())
+
+			prometheusServer = &http.Server{
+				Addr:    fmt.Sprintf(":%v", *prometheusPortFlag),
+				Handler: mux,
+			}
+
+			promErr := prometheusServer.ListenAndServe()
+			if promErr != nil && !errors.Is(promErr, http.ErrServerClosed) {
+				panic(promErr)
+			}
 		}()
 	}
 
@@ -72,6 +83,10 @@ func main() {
 		panic(err)
 
 	case <-osSignalChannel:
+		err = prometheusServer.Close()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			panic(err)
+		}
 		return
 	}
 }
