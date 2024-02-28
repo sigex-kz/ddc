@@ -4,11 +4,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sigex-kz/ddc/rpcsrv"
 )
 
@@ -25,6 +27,7 @@ var portFlag = flag.String("port", "4567", "port to launch RPC server on")
 var versionFlag = flag.Bool("version", false, "Show version")
 var clamdNetworkFlag = flag.String("clamd-network-type", "unix", "type of network socket to use to connect to clamd (ClamAV)")
 var clamdSocketFlag = flag.String("clamd-socket", "", "socket to use to connect to clamd (e.g. \"/var/run/clamav/clamd.ctl\"), disable ClamAV integration if empty")
+var prometheusPortFlag = flag.String("prometheus-port", "9001", "port to expose prometheus metrics on, disable if empty")
 
 func main() {
 	if AppVersion == "" {
@@ -50,6 +53,11 @@ func main() {
 	err := rpcsrv.Start("tcp", fmt.Sprintf(":%v", *portFlag), errChan)
 	if err != nil {
 		panic(err)
+	}
+
+	if *prometheusPortFlag != "" {
+		http.Handle("/metrics", promhttp.Handler())
+		http.ListenAndServe(fmt.Sprintf(":%v", *prometheusPortFlag), nil)
 	}
 
 	osSignalChannel := make(chan os.Signal, 1)
