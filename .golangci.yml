@@ -143,7 +143,6 @@ linters-settings:
     # Which checks should be disabled; can't be combined with 'enabled-checks'; default is empty
     disabled-checks:
       - dupImport # https://github.com/go-critic/go-critic/issues/845
-      - timeCmpSimplify # https://github.com/go-critic/go-critic/issues/1257
       - uncheckedInlineErr # false positives on if checked errors
 
     # Enable multiple checks by tags, run `GL_DEBUG=gocritic golangci-lint run` to see all tags and checks.
