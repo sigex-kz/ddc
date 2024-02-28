@@ -4,6 +4,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -56,8 +57,10 @@ func main() {
 	}
 
 	if *prometheusPortFlag != "" {
-		http.Handle("/metrics", promhttp.Handler())
-		http.ListenAndServe(fmt.Sprintf(":%v", *prometheusPortFlag), nil)
+		go func() {
+			http.Handle("/metrics", promhttp.Handler())
+			log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", *prometheusPortFlag), nil))
+		}()
 	}
 
 	osSignalChannel := make(chan os.Signal, 1)
@@ -71,5 +74,4 @@ func main() {
 	case <-osSignalChannel:
 		return
 	}
-
 }
