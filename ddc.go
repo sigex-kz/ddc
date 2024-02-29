@@ -8,11 +8,11 @@ import (
 	"io"
 	"strings"
 
-	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	pdfcpumodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	pdfcputypes "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/vsenko/gofpdf"
+	pdfcpuapi "github.com/vsenko/pdfcpu/pkg/api"
+	"github.com/vsenko/pdfcpu/pkg/pdfcpu"
+	pdfcpumodel "github.com/vsenko/pdfcpu/pkg/pdfcpu/model"
+	pdfcputypes "github.com/vsenko/pdfcpu/pkg/pdfcpu/types"
 )
 
 const (
@@ -465,8 +465,7 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		}
 
 		wm.PDF = ddc.embeddedPDF
-		wm.PdfMultiStartPageNrDest = ddc.infoBlockNumPages + 1
-		wm.PdfMultiStartPageNrSrc = 1
+		wm.SkipPages = ddc.infoBlockNumPages
 
 		pageInDDC := fmt.Sprintf("%v-%v", ddc.infoBlockNumPages+1, ddc.infoBlockNumPages+ddc.embeddedPDFNumPages)
 		err = pdfcpuapi.AddWatermarks(bytes.NewReader(pdfBytes.Bytes()), &tempPDFBytes, []string{pageInDDC}, wm, pdfcpumodel.NewDefaultConfiguration())
