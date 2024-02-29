@@ -465,7 +465,8 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		}
 
 		wm.PDF = ddc.embeddedPDF
-		wm.PdfMultiStartPageNrDest = ddc.infoBlockNumPages
+		wm.PdfMultiStartPageNrDest = ddc.infoBlockNumPages + 1
+		wm.PdfMultiStartPageNrSrc = 1
 
 		pageInDDC := fmt.Sprintf("%v-%v", ddc.infoBlockNumPages+1, ddc.infoBlockNumPages+ddc.embeddedPDFNumPages)
 		err = pdfcpuapi.AddWatermarks(bytes.NewReader(pdfBytes.Bytes()), &tempPDFBytes, []string{pageInDDC}, wm, pdfcpumodel.NewDefaultConfiguration())
