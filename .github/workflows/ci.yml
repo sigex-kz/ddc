@@ -41,7 +41,7 @@ jobs:
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -mod vendor -buildvcs=false -ldflags "-X 'main.BuildTimeStamp=$(date +%s)' -X 'main.AppVersion=${{ env.RELEASE_VERSION }}'" -o ddcrpcsrv.exe .
           GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -mod vendor -buildvcs=false -ldflags "-X 'main.BuildTimeStamp=$(date +%s)' -X 'main.AppVersion=${{ env.RELEASE_VERSION }}'" -o ddcrpcsrv-darwin .
       - name: Archive rpcsrv builds
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: rpcsrv-build
           path: rpcsrv/cmd/ddcrpcsrv*
