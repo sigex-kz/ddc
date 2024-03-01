@@ -202,7 +202,6 @@ type Builder struct {
 	embeddedDocFileName string
 
 	// For embedded PDFs
-	embeddedPDF           io.ReadSeeker
 	embeddedPDFNumPages   int
 	embeddedPDFPagesSizes []pdfcputypes.Dim
 
@@ -240,14 +239,6 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 		return err
 	}
 
-	var b bytes.Buffer
-	err = pdfcpuapi.WriteContext(ctx, &b)
-	if err != nil {
-		return err
-	}
-
-	var optimizedPDF io.ReadSeeker = bytes.NewReader(b.Bytes())
-
 	numPages := ctx.PageCount
 	pagesSizes, err := ctx.PageDims()
 	if err != nil {
@@ -258,22 +249,21 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 		return errors.New("document is empty")
 	}
 
-	ddc.embedDoc(pdf, optimizedPDF, numPages, pagesSizes, fileName)
+	ddc.embedDoc(pdf, numPages, pagesSizes, fileName)
 
 	return nil
 }
 
 // EmbedDoc registers a digital document original in any format that should be embedded into DDC
 func (ddc *Builder) EmbedDoc(doc io.ReadSeeker, fileName string) error {
-	ddc.embedDoc(doc, nil, 0, nil, fileName)
+	ddc.embedDoc(doc, 0, nil, fileName)
 	return nil
 }
 
-func (ddc *Builder) embedDoc(doc, optimizedPDF io.ReadSeeker, numPages int, pagesSizes []pdfcputypes.Dim, fileName string) {
+func (ddc *Builder) embedDoc(doc io.ReadSeeker, numPages int, pagesSizes []pdfcputypes.Dim, fileName string) {
 	ddc.embeddedDoc = doc
 	ddc.embeddedDocFileName = fileName
 
-	ddc.embeddedPDF = optimizedPDF
 	ddc.embeddedPDFNumPages = numPages
 	ddc.embeddedPDFPagesSizes = pagesSizes
 }
@@ -370,7 +360,7 @@ func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText strin
 func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationDate, builderName, howToVerify string, w io.Writer) error {
 	var err error
 
-	if visualizeDocument && ddc.embeddedPDF == nil {
+	if visualizeDocument && ddc.embeddedPDFNumPages == 0 {
 		return errors.New("visualization of non-PDF files is not available")
 	}
 
@@ -381,7 +371,7 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	}
 
 	// Attachments
-	err = ddc.attachFiles()
+	err = ddc.attachFiles(false)
 	if err != nil {
 		return err
 	}
@@ -392,14 +382,14 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		return err
 	}
 
-	tempDDC.embedDoc(ddc.embeddedDoc, ddc.embeddedPDF, ddc.embeddedPDFNumPages, ddc.embeddedPDFPagesSizes, ddc.embeddedDocFileName)
+	tempDDC.embedDoc(ddc.embeddedDoc, ddc.embeddedPDFNumPages, ddc.embeddedPDFPagesSizes, ddc.embeddedDocFileName)
 
 	tempDDC.pdf, err = tempDDC.initPdf()
 	if err != nil {
 		return err
 	}
 
-	err = tempDDC.attachFiles()
+	err = tempDDC.attachFiles(true)
 	if err != nil {
 		return err
 	}
@@ -452,10 +442,13 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		return err
 	}
 
+	ctx, err := pdfcpuapi.ReadContext(bytes.NewReader(pdfBytes.Bytes()), pdfcpumodel.NewDefaultConfiguration())
+	if err != nil {
+		return err
+	}
+
 	// Add pages of the embedded PDF
 	if visualizeDocument {
-		var tempPDFBytes bytes.Buffer
-
 		desc := fmt.Sprintf("offset: %v 0 ,rot:0, scale:0.8 rel", constPageLeftMargin)
 
 		var wm *pdfcpumodel.Watermark
@@ -464,19 +457,33 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 			return err
 		}
 
-		wm.PDF = ddc.embeddedPDF
+		wm.PDF = ddc.embeddedDoc
 		wm.SkipPages = ddc.infoBlockNumPages
 
-		pageInDDC := fmt.Sprintf("%v-%v", ddc.infoBlockNumPages+1, ddc.infoBlockNumPages+ddc.embeddedPDFNumPages)
-		err = pdfcpuapi.AddWatermarks(bytes.NewReader(pdfBytes.Bytes()), &tempPDFBytes, []string{pageInDDC}, wm, pdfcpumodel.NewDefaultConfiguration())
+		err = ctx.EnsurePageCount()
 		if err != nil {
 			return err
 		}
 
-		pdfBytes = tempPDFBytes
+		pageInDDC := fmt.Sprintf("%v-%v", ddc.infoBlockNumPages+1, ddc.infoBlockNumPages+ddc.embeddedPDFNumPages)
+		selectedPages := []string{pageInDDC}
+		pages, err := pdfcpuapi.PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+		if err != nil {
+			return err
+		}
+
+		err = pdfcpu.AddWatermarks(ctx, pages, wm)
+		if err != nil {
+			return err
+		}
 	}
 
-	_, err = w.Write(pdfBytes.Bytes())
+	err = pdfcpuapi.ValidateContext(ctx)
+	if err != nil {
+		return err
+	}
+
+	err = pdfcpuapi.WriteContext(ctx, w)
 	if err != nil {
 		return err
 	}
@@ -484,17 +491,20 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 	return nil
 }
 
-func (ddc *Builder) attachFiles() error {
+func (ddc *Builder) attachFiles(dryRun bool) error {
 	ddc.attachments = make([]gofpdf.Attachment, len(ddc.di.Signatures)+1)
 
-	_, err := ddc.embeddedDoc.Seek(0, io.SeekStart)
-	if err != nil {
-		return err
-	}
+	var pdfBytes []byte
+	if !dryRun {
+		_, err := ddc.embeddedDoc.Seek(0, io.SeekStart)
+		if err != nil {
+			return err
+		}
 
-	pdfBytes, err := io.ReadAll(ddc.embeddedDoc)
-	if err != nil {
-		return err
+		pdfBytes, err = io.ReadAll(ddc.embeddedDoc)
+		if err != nil {
+			return err
+		}
 	}
 
 	ddc.attachments[0] = gofpdf.Attachment{
