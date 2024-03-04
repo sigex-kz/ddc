@@ -468,9 +468,9 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 
 		pageInDDC := fmt.Sprintf("%v-%v", ddc.infoBlockNumPages+1, ddc.infoBlockNumPages+ddc.embeddedPDFNumPages)
 		selectedPages := []string{pageInDDC}
-		pages, err := pdfcpuapi.PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
-		if err != nil {
-			return err
+		pages, errPages := pdfcpuapi.PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+		if errPages != nil {
+			return errPages
 		}
 
 		err = pdfcpu.AddWatermarks(ctx, pages, wm)
