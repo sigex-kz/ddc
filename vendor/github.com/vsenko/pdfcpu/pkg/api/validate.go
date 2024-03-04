@@ -63,7 +63,10 @@ func Validate(rs io.ReadSeeker, conf *model.Configuration) error {
 	dur2 := time.Since(from2).Seconds()
 	dur := time.Since(from1).Seconds()
 
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	if log.StatsEnabled() {
+		log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	}
+
 	model.ValidationTimingStats(dur1, dur2, dur)
 
 	// at this stage: no binary breakup available!
@@ -128,7 +131,7 @@ func ValidateFiles(inFiles []string, conf *model.Configuration) error {
 }
 
 // DumpObject writes an object from rs to stdout.
-func DumpObject(rs io.ReadSeeker, objNr int, hex bool, conf *model.Configuration) error {
+func DumpObject(rs io.ReadSeeker, mode, objNr int, conf *model.Configuration) error {
 	if rs == nil {
 		return errors.New("pdfcpu: DumpObject: missing rs")
 	}
@@ -151,13 +154,13 @@ func DumpObject(rs io.ReadSeeker, objNr int, hex bool, conf *model.Configuration
 		return errors.Wrap(err, fmt.Sprintf("validation error (obj#:%d)%s", ctx.CurObj, s))
 	}
 
-	ctx.DumpStream(objNr, hex)
+	ctx.DumpObject(objNr, mode)
 
 	return err
 }
 
 // DumpObjectFile writes an object from rs to stdout.
-func DumpObjectFile(inFile string, objNr int, hex bool, conf *model.Configuration) error {
+func DumpObjectFile(inFile string, mode, objNr int, conf *model.Configuration) error {
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
 	}
@@ -169,5 +172,5 @@ func DumpObjectFile(inFile string, objNr int, hex bool, conf *model.Configuratio
 
 	defer f.Close()
 
-	return DumpObject(f, objNr, hex, conf)
+	return DumpObject(f, mode, objNr, conf)
 }

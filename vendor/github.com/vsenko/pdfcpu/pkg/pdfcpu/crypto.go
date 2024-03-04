@@ -53,7 +53,9 @@ var (
 		model.LISTINFO:                {0, 0},
 		model.OPTIMIZE:                {0, 0},
 		model.SPLIT:                   {1, 0},
+		model.SPLITBYPAGENR:           {1, 0},
 		model.MERGECREATE:             {0, 0},
+		model.MERGECREATEZIP:          {0, 0},
 		model.MERGEAPPEND:             {0, 0},
 		model.EXTRACTIMAGES:           {1, 0},
 		model.EXTRACTFONTS:            {1, 0},
@@ -106,6 +108,15 @@ var (
 		model.RESETFORMFIELDS:         {0, 1},
 		model.EXPORTFORMFIELDS:        {0, 1},
 		model.FILLFORMFIELDS:          {0, 1},
+		model.LISTPAGELAYOUT:          {0, 1},
+		model.SETPAGELAYOUT:           {0, 1},
+		model.RESETPAGELAYOUT:         {0, 1},
+		model.LISTPAGEMODE:            {0, 1},
+		model.SETPAGEMODE:             {0, 1},
+		model.RESETPAGEMODE:           {0, 1},
+		model.LISTVIEWERPREFERENCES:   {0, 1},
+		model.SETVIEWERPREFERENCES:    {0, 1},
+		model.RESETVIEWERPREFERENCES:  {0, 1},
 	}
 
 	ErrUnknownEncryption = errors.New("pdfcpu: PDF 2.0 encryption not supported")
@@ -566,7 +577,7 @@ func supportedCFEntry(d types.Dict) (bool, error) {
 
 func perms(p int) (list []string) {
 
-	list = append(list, fmt.Sprintf("permission bits: %12b", uint32(p)&0x0F3C))
+	list = append(list, fmt.Sprintf("permission bits: %012b (x%03X)", uint32(p)&0x0F3C, uint32(p)&0x0F3C))
 	list = append(list, fmt.Sprintf("Bit  3: %t (print(rev2), print quality(rev>=3))", p&0x0004 > 0))
 	list = append(list, fmt.Sprintf("Bit  4: %t (modify other than controlled by bits 6,9,11)", p&0x0008 > 0))
 	list = append(list, fmt.Sprintf("Bit  5: %t (extract(rev2), extract other than controlled by bit 10(rev>=3))", p&0x0010 > 0))
@@ -661,7 +672,9 @@ func writePermissions(ctx *model.Context, d types.Dict) error {
 }
 
 func logP(enc *model.Enc) {
-
+	if !log.InfoEnabled() {
+		return
+	}
 	for _, s := range perms(enc.P) {
 		log.Info.Println(s)
 	}

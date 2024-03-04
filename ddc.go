@@ -458,7 +458,8 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		}
 
 		wm.PDF = ddc.embeddedDoc
-		wm.SkipPages = ddc.infoBlockNumPages
+		wm.PdfMultiStartPageNrDest = ddc.infoBlockNumPages + 1
+		wm.PdfMultiStartPageNrSrc = 1
 
 		err = ctx.EnsurePageCount()
 		if err != nil {

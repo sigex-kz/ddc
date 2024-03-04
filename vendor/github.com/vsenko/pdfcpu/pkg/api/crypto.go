@@ -21,7 +21,6 @@ import (
 	"os"
 
 	"github.com/pkg/errors"
-	"github.com/vsenko/pdfcpu/pkg/log"
 	"github.com/vsenko/pdfcpu/pkg/pdfcpu/model"
 )
 
@@ -57,9 +56,9 @@ func EncryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 	tmpFile := inFile + ".tmp"
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		log.CLI.Printf("writing %s...\n", outFile)
+		logWritingTo(outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFile)
+		logWritingTo(inFile)
 	}
 
 	if f2, err = os.Create(tmpFile); err != nil {
@@ -71,9 +70,7 @@ func EncryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -122,9 +119,9 @@ func DecryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 	tmpFile := inFile + ".tmp"
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		log.CLI.Printf("writing %s...\n", outFile)
+		logWritingTo(outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFile)
+		logWritingTo(inFile)
 	}
 
 	if f2, err = os.Create(tmpFile); err != nil {
@@ -136,9 +133,7 @@ func DecryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -193,9 +188,9 @@ func ChangeUserPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *m
 	tmpFile := inFile + ".tmp"
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		log.CLI.Printf("writing %s...\n", outFile)
+		logWritingTo(outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFile)
+		logWritingTo(inFile)
 	}
 
 	if f2, err = os.Create(tmpFile); err != nil {
@@ -207,9 +202,7 @@ func ChangeUserPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *m
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -263,9 +256,9 @@ func ChangeOwnerPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *
 	tmpFile := inFile + ".tmp"
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		log.CLI.Printf("writing %s...\n", outFile)
+		logWritingTo(outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFile)
+		logWritingTo(inFile)
 	}
 
 	if f2, err = os.Create(tmpFile); err != nil {
@@ -276,9 +269,7 @@ func ChangeOwnerPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {

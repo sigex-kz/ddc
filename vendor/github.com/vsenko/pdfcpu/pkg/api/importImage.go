@@ -94,7 +94,9 @@ func ImportImages(rs io.ReadSeeker, w io.Writer, imgs []io.Reader, imp *pdfcpu.I
 		return err
 	}
 
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	if log.StatsEnabled() {
+		log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	}
 
 	return nil
 }
@@ -129,6 +131,12 @@ func prepImgFiles(imgFiles []string, f1 *os.File) ([]io.ReadCloser, []io.Reader,
 	return rc, rr, nil
 }
 
+func logImportImages(s, outFile string) {
+	if log.CLIEnabled() {
+		log.CLI.Printf("%s to %s...\n", s, outFile)
+	}
+}
+
 // ImportImagesFile appends PDF pages containing images to outFile which will be created if necessary.
 func ImportImagesFile(imgFiles []string, outFile string, imp *pdfcpu.Import, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
@@ -142,9 +150,9 @@ func ImportImagesFile(imgFiles []string, outFile string, imp *pdfcpu.Import, con
 		}
 		rs = f1
 		tmpFile += ".tmp"
-		log.CLI.Printf("appending to %s...\n", outFile)
+		logImportImages("appending", outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", outFile)
+		logImportImages("writing", outFile)
 	}
 
 	rc, rr, err := prepImgFiles(imgFiles, f1)

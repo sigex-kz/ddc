@@ -87,9 +87,9 @@ func Create(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configurati
 func handleOutFilePDF(inFilePDF, outFilePDF string, tmpFile *string) {
 	if outFilePDF != "" && inFilePDF != outFilePDF {
 		*tmpFile = outFilePDF
-		log.CLI.Printf("writing %s...\n", outFilePDF)
+		logWritingTo(outFilePDF)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFilePDF)
+		logWritingTo(inFilePDF)
 	}
 }
 
@@ -97,7 +97,6 @@ func handleOutFilePDF(inFilePDF, outFilePDF string, tmpFile *string) {
 // If inFilePDF is present, new PDF content will be appended including any empty pages needed.
 // inFileJSON represents PDF page content which may include form data.
 func CreateFile(inFilePDF, inFileJSON, outFilePDF string, conf *model.Configuration) (err error) {
-
 	var f0, f1, f2 *os.File
 
 	if f0, err = os.Open(inFileJSON); err != nil {
@@ -128,9 +127,7 @@ func CreateFile(inFilePDF, inFileJSON, outFilePDF string, conf *model.Configurat
 				f1.Close()
 			}
 			f0.Close()
-			if outFilePDF == "" || inFilePDF == outFilePDF {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {

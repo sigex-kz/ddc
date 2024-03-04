@@ -28,6 +28,7 @@ import (
 	"github.com/vsenko/pdfcpu/pkg/pdfcpu/model"
 )
 
+// Attachments returns rs's attachments.
 func Attachments(rs io.ReadSeeker, conf *model.Configuration) ([]model.Attachment, error) {
 	if rs == nil {
 		return nil, errors.New("pdfcpu: Attachments: missing rs")
@@ -84,7 +85,9 @@ func AddAttachments(rs io.ReadSeeker, w io.Writer, files []string, coll bool, co
 			desc = s[1]
 		}
 
-		log.CLI.Printf("adding %s\n", fileName)
+		if log.CLIEnabled() {
+			log.CLI.Printf("adding %s\n", fileName)
+		}
 		f, err := os.Open(fileName)
 		if err != nil {
 			return err
@@ -143,9 +146,7 @@ func AddAttachmentsFile(inFile, outFile string, files []string, coll bool, conf 
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -227,9 +228,7 @@ func RemoveAttachmentsFile(inFile, outFile string, files []string, conf *model.C
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -274,7 +273,7 @@ func ExtractAttachments(rs io.ReadSeeker, outDir string, fileNames []string, con
 
 	for _, a := range aa {
 		fileName := filepath.Join(outDir, a.FileName)
-		log.CLI.Printf("writing %s\n", fileName)
+		logWritingTo(fileName)
 		f, err := os.OpenFile(fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
 		if err != nil {
 			return err

@@ -82,6 +82,9 @@ func ValidateContext(ctx *model.Context) error {
 
 // OptimizeContext optimizes ctx.
 func OptimizeContext(ctx *model.Context) error {
+	if log.CLIEnabled() {
+		log.CLI.Println("optimizing...")
+	}
 	return pdfcpu.OptimizeXRefTable(ctx)
 }
 
@@ -136,10 +139,15 @@ func readAndValidate(rs io.ReadSeeker, conf *model.Configuration, from1 time.Tim
 	return ctx, dur1, dur2, nil
 }
 
+// ReadValidateAndOptimize returns the model.Context of rs ready for processing.
 func ReadValidateAndOptimize(rs io.ReadSeeker, conf *model.Configuration, from1 time.Time) (ctx *model.Context, dur1, dur2, dur3 float64, err error) {
 	ctx, dur1, dur2, err = readAndValidate(rs, conf, from1)
 	if err != nil {
 		return nil, 0, 0, 0, err
+	}
+
+	if ctx.Version() == model.V20 {
+		return nil, 0, 0, 0, pdfcpu.ErrUnsupportedVersion
 	}
 
 	from3 := time.Now()
@@ -153,11 +161,19 @@ func ReadValidateAndOptimize(rs io.ReadSeeker, conf *model.Configuration, from1 
 }
 
 func logOperationStats(ctx *model.Context, op string, durRead, durVal, durOpt, durWrite, durTotal float64) {
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	if log.StatsEnabled() {
+		log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	}
 	model.TimingStats(op, durRead, durVal, durOpt, durWrite, durTotal)
 	if ctx.Read.FileSize > 0 {
 		ctx.Read.LogStats(ctx.Optimized)
 		ctx.Write.LogStats()
+	}
+}
+
+func logWritingTo(s string) {
+	if log.CLIEnabled() {
+		log.CLI.Printf("writing %s...\n", s)
 	}
 }
 

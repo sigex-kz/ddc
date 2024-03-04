@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/vsenko/pdfcpu/pkg/log"
 	"github.com/vsenko/pdfcpu/pkg/pdfcpu/color"
 	"github.com/vsenko/pdfcpu/pkg/pdfcpu/model"
 	"github.com/vsenko/pdfcpu/pkg/pdfcpu/types"
@@ -495,7 +496,9 @@ func removeNamedDests(ctx *model.Context, item *types.IndirectRef) error {
 			return err
 		}
 		if !ok {
-			println("unable remove dest name: " + s)
+			if log.DebugEnabled() {
+				log.Debug.Println("removeNamedDests: unable to remove dest name: " + s)
+			}
 		}
 
 		first := d["First"]

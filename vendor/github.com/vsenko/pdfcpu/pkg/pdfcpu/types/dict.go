@@ -61,6 +61,11 @@ func (d Dict) Insert(key string, value Object) (ok bool) {
 	return ok
 }
 
+// InsertBool adds a new bool entry to this PDFDict.
+func (d Dict) InsertBool(key string, value bool) {
+	d.Insert(key, Boolean(value))
+}
+
 // InsertInt adds a new int entry to this PDFDict.
 func (d Dict) InsertInt(key string, value int) {
 	d.Insert(key, Integer(value))
@@ -538,7 +543,9 @@ func (d Dict) PDFString() string {
 			continue
 		}
 
-		log.Info.Fatalf("PDFDict.PDFString(): entry of unknown object type: %T %[1]v\n", v)
+		if log.InfoEnabled() {
+			log.Info.Fatalf("PDFDict.PDFString(): entry of unknown object type: %T %[1]v\n", v)
+		}
 	}
 
 	logstr = append(logstr, ">>")

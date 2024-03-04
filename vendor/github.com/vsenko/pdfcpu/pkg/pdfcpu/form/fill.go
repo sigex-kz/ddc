@@ -610,7 +610,7 @@ func fillBtn(
 		return nil
 	}
 
-	if len(d.ArrayEntry("Kids")) > 0 && primitives.FieldFlags(*ff)&primitives.FieldRadio > 0 {
+	if len(d.ArrayEntry("Kids")) > 0 {
 		if err := fillRadioButtonGroup(ctx, d, id, name, locked, format, fillDetails, ok); err != nil {
 			return err
 		}
@@ -1115,6 +1115,13 @@ func FillForm(
 		if pages, err = addImages(ctx, imgs); err != nil {
 			return false, nil, err
 		}
+	}
+
+	// pdfcpu provides all appearance streams for form fields.
+	// Yet for some files and viewers form fields don't get rendered.
+	// In these cases you can order the viewer to provide form field appearance streams.
+	if ctx.NeedAppearances {
+		xRefTable.Form["NeedAppearances"] = types.Boolean(true)
 	}
 
 	return ok, pages, nil

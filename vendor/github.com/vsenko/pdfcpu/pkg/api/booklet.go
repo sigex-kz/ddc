@@ -67,7 +67,9 @@ func Booklet(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nu
 	}
 	conf.Cmd = model.BOOKLET
 
-	log.Info.Printf("%s", nup)
+	if log.InfoEnabled() {
+		log.Info.Printf("%s", nup)
+	}
 
 	var (
 		ctx *model.Context
@@ -84,6 +86,10 @@ func Booklet(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nu
 
 		if ctx, _, _, err = readAndValidate(rs, conf, time.Now()); err != nil {
 			return err
+		}
+
+		if ctx.Version() == model.V20 {
+			return pdfcpu.ErrUnsupportedVersion
 		}
 
 		if err := ctx.EnsurePageCount(); err != nil {
@@ -117,7 +123,6 @@ func Booklet(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nu
 
 // BookletFile rearranges PDF pages or images into a booklet layout and writes the result to outFile.
 func BookletFile(inFiles []string, outFile string, selectedPages []string, nup *model.NUp, conf *model.Configuration) (err error) {
-
 	var f1, f2 *os.File
 
 	// booklet from a PDF
@@ -129,7 +134,7 @@ func BookletFile(inFiles []string, outFile string, selectedPages []string, nup *
 		f1.Close()
 		return err
 	}
-	log.CLI.Printf("writing %s...\n", outFile)
+	logWritingTo(outFile)
 
 	defer func() {
 		if err != nil {

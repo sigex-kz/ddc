@@ -38,20 +38,34 @@ const (
 	ValidationNone
 )
 
+// See table 22 - User access permissions
+type PermissionFlags int
+
+const (
+	UnusedFlag1              PermissionFlags = 1 << iota // Bit 1:  unused
+	UnusedFlag2                                          // Bit 2:  unused
+	PermissionPrintRev2                                  // Bit 3:  Print (security handlers rev.2), draft print (security handlers >= rev.3)
+	PermissionModify                                     // Bit 4:  Modify contents by operations other than controlled by bits 6, 9, 11.
+	PermissionExtract                                    // Bit 5:  Copy, extract text & graphics
+	PermissionModAnnFillForm                             // Bit 6:  Add or modify annotations, fill form fields, in conjunction with bit 4 create/mod form fields.
+	UnusedFlag7                                          // Bit 7:  unused
+	UnusedFlag8                                          // Bit 8:  unused
+	PermissionFillRev3                                   // Bit 9:  Fill form fields (security handlers >= rev.3)
+	PermissionExtractRev3                                // Bit 10: Copy, extract text & graphics (security handlers >= rev.3) (unused since PDF 2.0)
+	PermissionAssembleRev3                               // Bit 11: Assemble document (security handlers >= rev.3)
+	PermissionPrintRev3                                  // Bit 12: Print (security handlers >= rev.3)
+)
+
+const (
+	PermissionsNone  = PermissionFlags(0xF0C3)
+	PermissionsPrint = PermissionsNone + PermissionPrintRev2 + PermissionPrintRev3
+	PermissionsAll   = PermissionFlags(0xFFFF)
+)
+
 const (
 
 	// StatsFileNameDefault is the standard stats filename.
 	StatsFileNameDefault = "stats.csv"
-
-	// PermissionsAll enables all user access permission bits.
-	PermissionsAll int16 = -1 // 0xFFFF
-
-	// PermissionsPrint disables all user access permissions bits except for printing.
-	PermissionsPrint int16 = -1849 // 0xF8C7
-
-	// PermissionsNone disables all user access permissions bits.
-	PermissionsNone int16 = -3901 // 0xF0C3
-
 )
 
 // CommandMode specifies the operation being executed.
@@ -63,7 +77,9 @@ const (
 	LISTINFO
 	OPTIMIZE
 	SPLIT
+	SPLITBYPAGENR
 	MERGECREATE
+	MERGECREATEZIP
 	MERGEAPPEND
 	EXTRACTIMAGES
 	EXTRACTFONTS
@@ -128,6 +144,15 @@ const (
 	POSTER
 	NDOWN
 	CUT
+	LISTPAGELAYOUT
+	SETPAGELAYOUT
+	RESETPAGELAYOUT
+	LISTPAGEMODE
+	SETPAGEMODE
+	RESETPAGEMODE
+	LISTVIEWERPREFERENCES
+	SETVIEWERPREFERENCES
+	RESETVIEWERPREFERENCES
 )
 
 // Configuration of a Context.
@@ -186,7 +211,7 @@ type Configuration struct {
 	EncryptKeyLength int
 
 	// Supplied user access permissions, see Table 22.
-	Permissions int16
+	Permissions PermissionFlags // int16
 
 	// Command being executed.
 	Cmd CommandMode
@@ -200,14 +225,14 @@ type Configuration struct {
 	// Date format.
 	DateFormat string
 
-	// Buffersize for locating PDF header <= 100
-	HeaderBufSize int
-
 	// Optimize duplicate content streams across pages.
 	OptimizeDuplicateContentStreams bool
 
 	// Merge creates bookmarks
 	CreateBookmarks bool
+
+	// PDF Viewer is expected to supply appearance streams for form fields.
+	NeedAppearances bool
 }
 
 // ConfigPath defines the location of pdfcpu's configuration directory.
@@ -277,12 +302,12 @@ func newDefaultConfiguration() *Configuration {
 		WriteXRefStream:                 true,
 		EncryptUsingAES:                 true,
 		EncryptKeyLength:                256,
-		Permissions:                     PermissionsNone,
+		Permissions:                     PermissionsPrint,
 		TimestampFormat:                 "2006-01-02 15:04",
 		DateFormat:                      "2006-01-02",
-		HeaderBufSize:                   100,
 		OptimizeDuplicateContentStreams: false,
 		CreateBookmarks:                 true,
+		NeedAppearances:                 false,
 	}
 }
 
@@ -348,9 +373,9 @@ func (c Configuration) String() string {
 		"Unit :             %s\n"+
 		"TimestampFormat:	%s\n"+
 		"DateFormat:		%s\n"+
-		"HeaderBufSize:		%d\n"+
 		"OptimizeDuplicateContentStreams %t\n"+
-		"CreateBookmarks %t\n",
+		"CreateBookmarks %t\n"+
+		"NeedAppearances %t\n",
 		path,
 		c.CheckFileNameExt,
 		c.Reader15,
@@ -365,9 +390,9 @@ func (c Configuration) String() string {
 		c.UnitString(),
 		c.TimestampFormat,
 		c.DateFormat,
-		c.HeaderBufSize,
 		c.OptimizeDuplicateContentStreams,
 		c.CreateBookmarks,
+		c.NeedAppearances,
 	)
 }
 
@@ -412,10 +437,24 @@ func (c *Configuration) UnitString() string {
 	return s
 }
 
+// SetUnit configures the display unit.
+func (c *Configuration) SetUnit(s string) {
+	switch s {
+	case "points":
+		c.Unit = types.POINTS
+	case "inches":
+		c.Unit = types.INCHES
+	case "cm":
+		c.Unit = types.CENTIMETRES
+	case "mm":
+		c.Unit = types.MILLIMETRES
+	}
+}
+
 // ApplyReducedFeatureSet returns true if complex entries like annotations shall not be written.
 func (c *Configuration) ApplyReducedFeatureSet() bool {
 	switch c.Cmd {
-	case SPLIT, TRIM, EXTRACTPAGES, MERGECREATE, MERGEAPPEND, IMPORTIMAGES:
+	case SPLIT, TRIM, EXTRACTPAGES, IMPORTIMAGES:
 		return true
 	}
 	return false

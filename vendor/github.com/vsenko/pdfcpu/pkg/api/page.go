@@ -60,7 +60,9 @@ func InsertPages(rs io.ReadSeeker, w io.Writer, selectedPages []string, before b
 		return err
 	}
 
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	if log.StatsEnabled() {
+		log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	}
 
 	if conf.ValidationMode != model.ValidationNone {
 		if err = ValidateContext(ctx); err != nil {
@@ -72,7 +74,9 @@ func InsertPages(rs io.ReadSeeker, w io.Writer, selectedPages []string, before b
 		return err
 	}
 
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	if log.StatsEnabled() {
+		log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	}
 
 	return nil
 }
@@ -88,9 +92,9 @@ func InsertPagesFile(inFile, outFile string, selectedPages []string, before bool
 	tmpFile := inFile + ".tmp"
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		log.CLI.Printf("writing %s...\n", outFile)
+		logWritingTo(outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFile)
+		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
 		f1.Close()
@@ -101,9 +105,7 @@ func InsertPagesFile(inFile, outFile string, selectedPages []string, before bool
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -179,9 +181,9 @@ func RemovePagesFile(inFile, outFile string, selectedPages []string, conf *model
 	tmpFile := inFile + ".tmp"
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		log.CLI.Printf("writing %s...\n", outFile)
+		logWritingTo(outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFile)
+		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
 		f1.Close()
@@ -192,9 +194,7 @@ func RemovePagesFile(inFile, outFile string, selectedPages []string, conf *model
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -248,6 +248,10 @@ func PageDims(rs io.ReadSeeker, conf *model.Configuration) ([]types.Dim, error) 
 
 	ctx, err := ReadContext(rs, conf)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := ValidateContext(ctx); err != nil {
 		return nil, err
 	}
 

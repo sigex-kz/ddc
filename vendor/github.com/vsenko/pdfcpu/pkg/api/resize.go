@@ -66,20 +66,21 @@ func Resize(rs io.ReadSeeker, w io.Writer, selectedPages []string, resize *model
 }
 
 // ResizeFile applies resizeConf for selected pages of inFile and writes result to outFile.
-func ResizeFile(inFile, outFile string, selectedPages []string, resize *model.Resize, conf *model.Configuration) error {
-	log.CLI.Printf("resizing %s\n", inFile)
+func ResizeFile(inFile, outFile string, selectedPages []string, resize *model.Resize, conf *model.Configuration) (err error) {
+	if log.CLIEnabled() {
+		log.CLI.Printf("resizing %s\n", inFile)
+	}
 
 	tmpFile := inFile + ".tmp"
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		log.CLI.Printf("writing %s...\n", outFile)
+		logWritingTo(outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFile)
+		logWritingTo(inFile)
 	}
 
 	var (
 		f1, f2 *os.File
-		err    error
 	)
 
 	if f1, err = os.Open(inFile); err != nil {
@@ -95,9 +96,7 @@ func ResizeFile(inFile, outFile string, selectedPages []string, resize *model.Re
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -110,6 +109,11 @@ func ResizeFile(inFile, outFile string, selectedPages []string, resize *model.Re
 			err = os.Rename(tmpFile, inFile)
 		}
 	}()
+
+	if conf == nil {
+		conf = model.NewDefaultConfiguration()
+	}
+	conf.Cmd = model.RESIZE
 
 	return Resize(f1, f2, selectedPages, resize, conf)
 }

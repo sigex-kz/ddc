@@ -17,6 +17,7 @@ limitations under the License.
 package validate
 
 import (
+	"strings"
 	"unicode/utf8"
 
 	"github.com/pkg/errors"
@@ -180,7 +181,9 @@ func validateDocumentInfoObject(xRefTable *model.XRefTable) error {
 		return nil
 	}
 
-	log.Validate.Println("*** validateDocumentInfoObject begin ***")
+	if log.ValidateEnabled() {
+		log.Validate.Println("*** validateDocumentInfoObject begin ***")
+	}
 
 	hasModDate, err := validateDocumentInfoDict(xRefTable, *xRefTable.Info)
 	if err != nil {
@@ -196,7 +199,19 @@ func validateDocumentInfoObject(xRefTable *model.XRefTable) error {
 		return errors.Errorf("validateDocumentInfoObject: missing required entry \"ModDate\"")
 	}
 
-	log.Validate.Println("*** validateDocumentInfoObject end ***")
+	if log.ValidateEnabled() {
+		log.Validate.Println("*** validateDocumentInfoObject end ***")
+	}
 
 	return nil
+}
+
+// DocumentPageLayout returns true for valid page layout values.
+func DocumentPageLayout(s string) bool {
+	return types.MemberOf(strings.ToLower(s), []string{"singlepage", "twocolumnleft", "twocolumnright", "twopageleft", "twopageright"})
+}
+
+// DocumentPageMode returns true for valid page mode values.
+func DocumentPageMode(s string) bool {
+	return types.MemberOf(strings.ToLower(s), []string{"usenone", "useoutlines", "usethumbs", "fullscreen", "useoc", "useattachments"})
 }

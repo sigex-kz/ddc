@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/vsenko/pdfcpu/pkg/log"
 	"github.com/vsenko/pdfcpu/pkg/pdfcpu"
 	"github.com/vsenko/pdfcpu/pkg/pdfcpu/model"
 )
@@ -69,13 +68,12 @@ func Collect(rs io.ReadSeeker, w io.Writer, selectedPages []string, conf *model.
 
 // CollectFile creates a custom PDF page sequence for inFile and writes the result to outFile.
 func CollectFile(inFile, outFile string, selectedPages []string, conf *model.Configuration) (err error) {
-
 	tmpFile := inFile + ".tmp"
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		log.CLI.Printf("writing %s...\n", outFile)
+		logWritingTo(outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFile)
+		logWritingTo(inFile)
 	}
 
 	var f1, f2 *os.File
@@ -93,9 +91,7 @@ func CollectFile(inFile, outFile string, selectedPages []string, conf *model.Con
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {

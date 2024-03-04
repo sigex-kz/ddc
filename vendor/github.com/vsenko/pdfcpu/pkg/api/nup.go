@@ -28,33 +28,33 @@ import (
 )
 
 // PDFNUpConfig returns an NUp configuration for Nup-ing PDF files.
-func PDFNUpConfig(val int, desc string) (*model.NUp, error) {
-	return pdfcpu.PDFNUpConfig(val, desc)
+func PDFNUpConfig(val int, desc string, conf *model.Configuration) (*model.NUp, error) {
+	return pdfcpu.PDFNUpConfig(val, desc, conf)
 }
 
 // ImageNUpConfig returns an NUp configuration for Nup-ing image files.
-func ImageNUpConfig(val int, desc string) (*model.NUp, error) {
-	return pdfcpu.ImageNUpConfig(val, desc)
+func ImageNUpConfig(val int, desc string, conf *model.Configuration) (*model.NUp, error) {
+	return pdfcpu.ImageNUpConfig(val, desc, conf)
 }
 
 // PDFGridConfig returns a grid configuration for Grid-ing PDF files.
-func PDFGridConfig(rows, cols int, desc string) (*model.NUp, error) {
-	return pdfcpu.PDFGridConfig(rows, cols, desc)
+func PDFGridConfig(rows, cols int, desc string, conf *model.Configuration) (*model.NUp, error) {
+	return pdfcpu.PDFGridConfig(rows, cols, desc, conf)
 }
 
 // ImageGridConfig returns a grid configuration for Grid-ing image files.
-func ImageGridConfig(rows, cols int, desc string) (*model.NUp, error) {
-	return pdfcpu.ImageGridConfig(rows, cols, desc)
+func ImageGridConfig(rows, cols int, desc string, conf *model.Configuration) (*model.NUp, error) {
+	return pdfcpu.ImageGridConfig(rows, cols, desc, conf)
 }
 
 // PDFBookletConfig returns an NUp configuration for Booklet-ing PDF files.
-func PDFBookletConfig(val int, desc string) (*model.NUp, error) {
-	return pdfcpu.PDFBookletConfig(val, desc)
+func PDFBookletConfig(val int, desc string, conf *model.Configuration) (*model.NUp, error) {
+	return pdfcpu.PDFBookletConfig(val, desc, conf)
 }
 
 // ImageBookletConfig returns an NUp configuration for Booklet-ing image files.
-func ImageBookletConfig(val int, desc string) (*model.NUp, error) {
-	return pdfcpu.ImageBookletConfig(val, desc)
+func ImageBookletConfig(val int, desc string, conf *model.Configuration) (*model.NUp, error) {
+	return pdfcpu.ImageBookletConfig(val, desc, conf)
 }
 
 // NUpFromImage creates a single page n-up PDF for one image
@@ -98,7 +98,9 @@ func NUp(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nup *m
 	}
 	conf.Cmd = model.NUP
 
-	log.Info.Printf("%s", nup)
+	if log.InfoEnabled() {
+		log.Info.Printf("%s", nup)
+	}
 
 	var (
 		ctx *model.Context
@@ -115,6 +117,10 @@ func NUp(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nup *m
 
 		if ctx, _, _, err = readAndValidate(rs, conf, time.Now()); err != nil {
 			return err
+		}
+
+		if ctx.Version() == model.V20 {
+			return pdfcpu.ErrUnsupportedVersion
 		}
 
 		if err := ctx.EnsurePageCount(); err != nil {
@@ -144,7 +150,9 @@ func NUp(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nup *m
 		return err
 	}
 
-	log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	if log.StatsEnabled() {
+		log.Stats.Printf("XRefTable:\n%s\n", ctx)
+	}
 
 	return nil
 }
@@ -166,7 +174,7 @@ func NUpFile(inFiles []string, outFile string, selectedPages []string, nup *mode
 		}
 		return err
 	}
-	log.CLI.Printf("writing %s...\n", outFile)
+	logWritingTo(outFile)
 
 	defer func() {
 		if err != nil {
@@ -174,6 +182,7 @@ func NUpFile(inFiles []string, outFile string, selectedPages []string, nup *mode
 			if f1 != nil {
 				f1.Close()
 			}
+			os.Remove(outFile)
 			return
 		}
 		if err = f2.Close(); err != nil {

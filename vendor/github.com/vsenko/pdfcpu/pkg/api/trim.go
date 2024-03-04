@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/vsenko/pdfcpu/pkg/log"
 	"github.com/vsenko/pdfcpu/pkg/pdfcpu/model"
 )
 
@@ -82,9 +81,9 @@ func TrimFile(inFile, outFile string, selectedPages []string, conf *model.Config
 	tmpFile := inFile + ".tmp"
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		log.CLI.Printf("writing %s...\n", outFile)
+		logWritingTo(outFile)
 	} else {
-		log.CLI.Printf("writing %s...\n", inFile)
+		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
 		f1.Close()
@@ -95,9 +94,7 @@ func TrimFile(inFile, outFile string, selectedPages []string, conf *model.Config
 		if err != nil {
 			f2.Close()
 			f1.Close()
-			if outFile == "" || inFile == outFile {
-				os.Remove(tmpFile)
-			}
+			os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {

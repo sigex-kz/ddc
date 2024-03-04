@@ -17,6 +17,7 @@ limitations under the License.
 package types
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -50,7 +51,9 @@ func decodeUTF16String(b []byte) (string, error) {
 	// Convert UTF-16 to UTF-8
 	// We only accept big endian byte order.
 	if !IsUTF16BE(b) {
-		log.Debug.Printf("decodeUTF16String: not UTF16BE: %s\n", hex.Dump(b))
+		if log.DebugEnabled() {
+			log.Debug.Printf("decodeUTF16String: not UTF16BE: %s\n", hex.Dump(b))
+		}
 		return "", ErrInvalidUTF16BE
 	}
 
@@ -132,6 +135,7 @@ func StringLiteralToString(sl StringLiteral) (string, error) {
 		return decodeUTF16String(bb)
 	}
 	// if no acceptable UTF16 encoding found, ensure utf8 encoding.
+	bb = bytes.TrimPrefix(bb, []byte{239, 187, 191})
 	s := string(bb)
 	if !utf8.ValidString(s) {
 		s = CP1252ToUTF8(s)

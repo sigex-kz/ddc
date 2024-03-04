@@ -33,13 +33,42 @@ import (
 	"github.com/vsenko/pdfcpu/pkg/pdfcpu/types"
 )
 
+func writeObjects(ctx *model.Context) error {
+	// Write root object(aka the document catalog) and page tree.
+	if err := writeRootObject(ctx); err != nil {
+		return err
+	}
+
+	if log.WriteEnabled() {
+		log.Write.Printf("offset after writeRootObject: %d\n", ctx.Write.Offset)
+	}
+
+	// Write document information dictionary.
+	if err := writeDocumentInfoDict(ctx); err != nil {
+		return err
+	}
+
+	if log.WriteEnabled() {
+		log.Write.Printf("offset after writeInfoObject: %d\n", ctx.Write.Offset)
+	}
+
+	// Write offspec additional streams as declared in pdf trailer.
+	if err := writeAdditionalStreams(ctx); err != nil {
+		return err
+	}
+
+	return writeEncryptDict(ctx)
+}
+
 // Write generates a PDF file for the cross reference table contained in Context.
 func Write(ctx *model.Context) (err error) {
 	// Create a writer for dirname and filename if not already supplied.
 	if ctx.Write.Writer == nil {
 
 		fileName := filepath.Join(ctx.Write.DirName, ctx.Write.FileName)
-		log.CLI.Printf("writing to %s\n", fileName)
+		if log.CLIEnabled() {
+			log.CLI.Printf("writing to %s\n", fileName)
+		}
 
 		file, err := os.Create(fileName)
 		if err != nil {
@@ -80,28 +109,11 @@ func Write(ctx *model.Context) (err error) {
 		ctx.RootDict.Delete("Version")
 	}
 
-	log.Write.Printf("offset after writeHeader: %d\n", ctx.Write.Offset)
-
-	// Write root object(aka the document catalog) and page tree.
-	if err = writeRootObject(ctx); err != nil {
-		return err
+	if log.WriteEnabled() {
+		log.Write.Printf("offset after writeHeader: %d\n", ctx.Write.Offset)
 	}
 
-	log.Write.Printf("offset after writeRootObject: %d\n", ctx.Write.Offset)
-
-	// Write document information dictionary.
-	if err = writeDocumentInfoDict(ctx); err != nil {
-		return err
-	}
-
-	log.Write.Printf("offset after writeInfoObject: %d\n", ctx.Write.Offset)
-
-	// Write offspec additional streams as declared in pdf trailer.
-	if err = writeAdditionalStreams(ctx); err != nil {
-		return err
-	}
-
-	if err = writeEncryptDict(ctx); err != nil {
+	if err := writeObjects(ctx); err != nil {
 		return err
 	}
 
@@ -133,7 +145,6 @@ func Write(ctx *model.Context) (err error) {
 
 // WriteIncrement writes a PDF increment..
 func WriteIncrement(ctx *model.Context) error {
-
 	// Write all modified objects that are part of this increment.
 	for _, i := range ctx.Write.ObjNrs {
 		if err := writeFlatObject(ctx, i); err != nil {
@@ -149,7 +160,6 @@ func WriteIncrement(ctx *model.Context) error {
 }
 
 func prepareContextForWriting(ctx *model.Context) error {
-
 	if err := ensureInfoDictAndFileID(ctx); err != nil {
 		return err
 	}
@@ -158,7 +168,6 @@ func prepareContextForWriting(ctx *model.Context) error {
 }
 
 func writeAdditionalStreams(ctx *model.Context) error {
-
 	if ctx.AdditionalStreams == nil {
 		return nil
 	}
@@ -171,7 +180,6 @@ func writeAdditionalStreams(ctx *model.Context) error {
 }
 
 func ensureFileID(ctx *model.Context) error {
-
 	fid, err := fileID(ctx)
 	if err != nil {
 		return err
@@ -195,7 +203,6 @@ func ensureFileID(ctx *model.Context) error {
 }
 
 func ensureInfoDictAndFileID(ctx *model.Context) error {
-
 	if err := ensureInfoDict(ctx); err != nil {
 		return err
 	}
@@ -205,7 +212,6 @@ func ensureInfoDictAndFileID(ctx *model.Context) error {
 
 // Write root entry to disk.
 func writeRootEntry(ctx *model.Context, d types.Dict, dictName, entryName string, statsAttr int) error {
-
 	o, err := writeEntry(ctx, d, dictName, entryName)
 	if err != nil {
 		return err
@@ -220,7 +226,6 @@ func writeRootEntry(ctx *model.Context, d types.Dict, dictName, entryName string
 
 // Write root entry to object stream.
 func writeRootEntryToObjStream(ctx *model.Context, d types.Dict, dictName, entryName string, statsAttr int) error {
-
 	ctx.Write.WriteToObjectStream = true
 
 	if err := writeRootEntry(ctx, d, dictName, entryName, statsAttr); err != nil {
@@ -232,10 +237,9 @@ func writeRootEntryToObjStream(ctx *model.Context, d types.Dict, dictName, entry
 
 // Write page tree.
 func writePages(ctx *model.Context, rootDict types.Dict) error {
-
 	// Page tree root (the top "Pages" dict) must be indirect reference.
-	ir := rootDict.IndirectRefEntry("Pages")
-	if ir == nil {
+	indRef := rootDict.IndirectRefEntry("Pages")
+	if indRef == nil {
 		return errors.New("pdfcpu: writePages: missing indirect obj for pages dict")
 	}
 
@@ -244,69 +248,14 @@ func writePages(ctx *model.Context, rootDict types.Dict) error {
 
 	// Write page tree.
 	p := 0
-	if _, _, err := writePagesDict(ctx, ir, &p); err != nil {
+	if _, _, err := writePagesDict(ctx, indRef, &p); err != nil {
 		return err
 	}
 
 	return stopObjectStream(ctx)
 }
 
-func writeRootObject(ctx *model.Context) error {
-
-	// => 7.7.2 Document Catalog
-
-	xRefTable := ctx.XRefTable
-	catalog := *xRefTable.Root
-	objNumber := int(catalog.ObjectNumber)
-	genNumber := int(catalog.GenerationNumber)
-
-	log.Write.Printf("*** writeRootObject: begin offset=%d *** %s\n", ctx.Write.Offset, catalog)
-
-	// Ensure corresponding and accurate name tree object graphs.
-	// if !ctx.ApplyReducedFeatureSet() {
-	if err := ctx.BindNameTrees(); err != nil {
-		return err
-	}
-	// }
-
-	d, err := xRefTable.DereferenceDict(catalog)
-	if err != nil {
-		return err
-	}
-
-	if d == nil {
-		return errors.Errorf("pdfcpu: writeRootObject: unable to dereference root dict")
-	}
-
-	dictName := "rootDict"
-
-	// if ctx.ApplyReducedFeatureSet() {
-	// 	log.Write.Println("writeRootObject - reducedFeatureSet:exclude complex entries.")
-	// 	d.Delete("Names")
-	// 	d.Delete("Dests")
-	// 	d.Delete("Outlines")
-	// 	d.Delete("OpenAction")
-	// 	d.Delete("AcroForm")
-	// 	d.Delete("StructTreeRoot")
-	// 	d.Delete("OCProperties")
-	// }
-
-	if err = writeDictObject(ctx, objNumber, genNumber, d); err != nil {
-		return err
-	}
-
-	log.Write.Printf("writeRootObject: %s\n", d)
-
-	log.Write.Printf("writeRootObject: new offset after rootDict = %d\n", ctx.Write.Offset)
-
-	if err = writeRootEntry(ctx, d, dictName, "Version", model.RootVersion); err != nil {
-		return err
-	}
-
-	if err = writePages(ctx, d); err != nil {
-		return err
-	}
-
+func writeRootAttrsBatch1(ctx *model.Context, d types.Dict, dictName string) error {
 	for _, e := range []struct {
 		entryName string
 		statsAttr int
@@ -326,15 +275,15 @@ func writeRootObject(ctx *model.Context) error {
 		{"AcroForm", model.RootAcroForm},
 		{"Metadata", model.RootMetadata},
 	} {
-		if err = writeRootEntry(ctx, d, dictName, e.entryName, e.statsAttr); err != nil {
+		if err := writeRootEntry(ctx, d, dictName, e.entryName, e.statsAttr); err != nil {
 			return err
 		}
 	}
 
-	if err = writeRootEntryToObjStream(ctx, d, dictName, "StructTreeRoot", model.RootStructTreeRoot); err != nil {
-		return err
-	}
+	return nil
+}
 
+func writeRootAttrsBatch2(ctx *model.Context, d types.Dict, dictName string) error {
 	for _, e := range []struct {
 		entryName string
 		statsAttr int
@@ -351,19 +300,95 @@ func writeRootObject(ctx *model.Context) error {
 		{"Collection", model.RootCollection},
 		{"NeedsRendering", model.RootNeedsRendering},
 	} {
-		if err = writeRootEntry(ctx, d, dictName, e.entryName, e.statsAttr); err != nil {
+		if err := writeRootEntry(ctx, d, dictName, e.entryName, e.statsAttr); err != nil {
 			return err
 		}
 	}
 
-	log.Write.Printf("*** writeRootObject: end offset=%d ***\n", ctx.Write.Offset)
+	return nil
+}
+
+func writeRootObject(ctx *model.Context) error {
+	// => 7.7.2 Document Catalog
+
+	xRefTable := ctx.XRefTable
+	catalog := *xRefTable.Root
+	objNumber := int(catalog.ObjectNumber)
+	genNumber := int(catalog.GenerationNumber)
+
+	if log.WriteEnabled() {
+		log.Write.Printf("*** writeRootObject: begin offset=%d *** %s\n", ctx.Write.Offset, catalog)
+	}
+
+	// Ensure corresponding and accurate name tree object graphs.
+	if !ctx.ApplyReducedFeatureSet() {
+		if err := ctx.BindNameTrees(); err != nil {
+			return err
+		}
+	}
+
+	d, err := xRefTable.DereferenceDict(catalog)
+	if err != nil {
+		return err
+	}
+
+	if d == nil {
+		return errors.Errorf("pdfcpu: writeRootObject: unable to dereference root dict")
+	}
+
+	dictName := "rootDict"
+
+	if ctx.ApplyReducedFeatureSet() {
+		log.Write.Println("writeRootObject - reducedFeatureSet:exclude complex entries.")
+		d.Delete("Names")
+		d.Delete("Dests")
+		d.Delete("Outlines")
+		d.Delete("OpenAction")
+		//d.Delete("AcroForm")
+		d.Delete("StructTreeRoot")
+		d.Delete("OCProperties")
+	}
+
+	if err = writeDictObject(ctx, objNumber, genNumber, d); err != nil {
+		return err
+	}
+
+	if log.WriteEnabled() {
+		log.Write.Printf("writeRootObject: %s\n", d)
+		log.Write.Printf("writeRootObject: new offset after rootDict = %d\n", ctx.Write.Offset)
+	}
+
+	if err = writeRootEntry(ctx, d, dictName, "Version", model.RootVersion); err != nil {
+		return err
+	}
+
+	if err = writePages(ctx, d); err != nil {
+		return err
+	}
+
+	if err := writeRootAttrsBatch1(ctx, d, dictName); err != nil {
+		return err
+	}
+
+	if err = writeRootEntryToObjStream(ctx, d, dictName, "StructTreeRoot", model.RootStructTreeRoot); err != nil {
+		return err
+	}
+
+	if err := writeRootAttrsBatch2(ctx, d, dictName); err != nil {
+		return err
+	}
+
+	if log.WriteEnabled() {
+		log.Write.Printf("*** writeRootObject: end offset=%d ***\n", ctx.Write.Offset)
+	}
 
 	return nil
 }
 
 func writeTrailerDict(ctx *model.Context) error {
-
-	log.Write.Printf("writeTrailerDict begin\n")
+	if log.WriteEnabled() {
+		log.Write.Printf("writeTrailerDict begin\n")
+	}
 
 	w := ctx.Write
 	xRefTable := ctx.XRefTable
@@ -400,14 +425,17 @@ func writeTrailerDict(ctx *model.Context) error {
 		return err
 	}
 
-	log.Write.Printf("writeTrailerDict end\n")
+	if log.WriteEnabled() {
+		log.Write.Printf("writeTrailerDict end\n")
+	}
 
 	return nil
 }
 
 func writeXRefSubsection(ctx *model.Context, start int, size int) error {
-
-	log.Write.Printf("writeXRefSubsection: start=%d size=%d\n", start, size)
+	if log.WriteEnabled() {
+		log.Write.Printf("writeXRefSubsection: start=%d size=%d\n", start, size)
+	}
 
 	w := ctx.Write
 
@@ -445,14 +473,15 @@ func writeXRefSubsection(ctx *model.Context, start int, size int) error {
 		}
 	}
 
-	log.Write.Printf("\n%s\n", strings.Join(lines, ""))
-	log.Write.Printf("writeXRefSubsection: end\n")
+	if log.WriteEnabled() {
+		log.Write.Printf("\n%s\n", strings.Join(lines, ""))
+		log.Write.Printf("writeXRefSubsection: end\n")
+	}
 
 	return nil
 }
 
 func deleteRedundantObject(ctx *model.Context, objNr int) {
-
 	if len(ctx.Write.SelectedPages) == 0 &&
 		(ctx.Optimize.IsDuplicateFontObject(objNr) || ctx.Optimize.IsDuplicateImageObject(objNr)) {
 		ctx.FreeObject(objNr)
@@ -464,15 +493,38 @@ func deleteRedundantObject(ctx *model.Context, objNr int) {
 	}
 
 }
-func deleteRedundantObjects(ctx *model.Context) {
 
+func detectLinearizationObjs(xRefTable *model.XRefTable, entry *model.XRefTableEntry, i int) {
+	if _, ok := entry.Object.(types.StreamDict); ok {
+
+		if *entry.Offset == *xRefTable.OffsetPrimaryHintTable {
+			xRefTable.LinearizationObjs[i] = true
+			if log.WriteEnabled() {
+				log.Write.Printf("deleteRedundantObjects: primaryHintTable at obj #%d\n", i)
+			}
+		}
+
+		if xRefTable.OffsetOverflowHintTable != nil &&
+			*entry.Offset == *xRefTable.OffsetOverflowHintTable {
+			xRefTable.LinearizationObjs[i] = true
+			if log.WriteEnabled() {
+				log.Write.Printf("deleteRedundantObjects: overflowHintTable at obj #%d\n", i)
+			}
+		}
+
+	}
+}
+
+func deleteRedundantObjects(ctx *model.Context) {
 	if ctx.Optimize == nil {
 		return
 	}
 
 	xRefTable := ctx.XRefTable
 
-	log.Write.Printf("deleteRedundantObjects begin: Size=%d\n", *xRefTable.Size)
+	if log.WriteEnabled() {
+		log.Write.Printf("deleteRedundantObjects begin: Size=%d\n", *xRefTable.Size)
+	}
 
 	for i := 0; i < *xRefTable.Size; i++ {
 
@@ -492,7 +544,9 @@ func deleteRedundantObjects(ctx *model.Context) {
 			// Resources may be cross referenced from different objects
 			// eg. font descriptors may be shared by different font dicts.
 			// Try to remove this object from the list of the potential duplicate objects.
-			log.Write.Printf("deleteRedundantObjects: remove duplicate obj #%d\n", i)
+			if log.WriteEnabled() {
+				log.Write.Printf("deleteRedundantObjects: remove duplicate obj #%d\n", i)
+			}
 			delete(ctx.Optimize.DuplicateFontObjs, i)
 			delete(ctx.Optimize.DuplicateImageObjs, i)
 			delete(ctx.Optimize.DuplicateInfoObjects, i)
@@ -505,32 +559,18 @@ func deleteRedundantObjects(ctx *model.Context) {
 			// This block applies to pre existing objects only.
 			// Since there is no type entry for stream dicts associated with linearization dicts
 			// we have to check every StreamDict that has not been written.
-			if _, ok := entry.Object.(types.StreamDict); ok {
-
-				if *entry.Offset == *xRefTable.OffsetPrimaryHintTable {
-					xRefTable.LinearizationObjs[i] = true
-					log.Write.Printf("deleteRedundantObjects: primaryHintTable at obj #%d\n", i)
-				}
-
-				if xRefTable.OffsetOverflowHintTable != nil &&
-					*entry.Offset == *xRefTable.OffsetOverflowHintTable {
-					xRefTable.LinearizationObjs[i] = true
-					log.Write.Printf("deleteRedundantObjects: overflowHintTable at obj #%d\n", i)
-				}
-
-			}
-
+			detectLinearizationObjs(xRefTable, entry, i)
 		}
 
 		deleteRedundantObject(ctx, i)
-
 	}
 
-	log.Write.Println("deleteRedundantObjects end")
+	if log.WriteEnabled() {
+		log.Write.Println("deleteRedundantObjects end")
+	}
 }
 
 func sortedWritableKeys(ctx *model.Context) []int {
-
 	var keys []int
 
 	for i, e := range ctx.Table {
@@ -546,11 +586,12 @@ func sortedWritableKeys(ctx *model.Context) []int {
 
 // After inserting the last object write the cross reference table to disk.
 func writeXRefTable(ctx *model.Context) error {
-
 	keys := sortedWritableKeys(ctx)
 
 	objCount := len(keys)
-	log.Write.Printf("xref has %d entries\n", objCount)
+	if log.WriteEnabled() {
+		log.Write.Printf("xref has %d entries\n", objCount)
+	}
 
 	if _, err := ctx.Write.WriteString("xref"); err != nil {
 		return err
@@ -608,7 +649,6 @@ func writeXRefTable(ctx *model.Context) error {
 
 // int64ToBuf returns a byte slice with length byteCount representing integer i.
 func int64ToBuf(i int64, byteCount int) (buf []byte) {
-
 	j := 0
 	var b []byte
 
@@ -633,8 +673,9 @@ func int64ToBuf(i int64, byteCount int) (buf []byte) {
 }
 
 func createXRefStream(ctx *model.Context, i1, i2, i3 int, objNrs []int) ([]byte, *types.Array, error) {
-
-	log.Write.Println("createXRefStream begin")
+	if log.WriteEnabled() {
+		log.Write.Println("createXRefStream begin")
+	}
 
 	xRefTable := ctx.XRefTable
 
@@ -644,7 +685,9 @@ func createXRefStream(ctx *model.Context, i1, i2, i3 int, objNrs []int) ([]byte,
 	)
 
 	objCount := len(objNrs)
-	log.Write.Printf("createXRefStream: xref has %d entries\n", objCount)
+	if log.WriteEnabled() {
+		log.Write.Printf("createXRefStream: xref has %d entries\n", objCount)
+	}
 
 	start := objNrs[0]
 	size := 0
@@ -658,7 +701,9 @@ func createXRefStream(ctx *model.Context, i1, i2, i3 int, objNrs []int) ([]byte,
 		if entry.Free {
 
 			// unused
-			log.Write.Printf("createXRefStream: unused i=%d nextFreeAt:%d gen:%d\n", j, int(*entry.Offset), int(*entry.Generation))
+			if log.WriteEnabled() {
+				log.Write.Printf("createXRefStream: unused i=%d nextFreeAt:%d gen:%d\n", j, int(*entry.Offset), int(*entry.Generation))
+			}
 
 			s1 = int64ToBuf(0, i1)
 			s2 = int64ToBuf(*entry.Offset, i2)
@@ -667,7 +712,9 @@ func createXRefStream(ctx *model.Context, i1, i2, i3 int, objNrs []int) ([]byte,
 		} else if entry.Compressed {
 
 			// in use, compressed into object stream
-			log.Write.Printf("createXRefStream: compressed i=%d at objstr %d[%d]\n", j, int(*entry.ObjectStream), int(*entry.ObjectStreamInd))
+			if log.WriteEnabled() {
+				log.Write.Printf("createXRefStream: compressed i=%d at objstr %d[%d]\n", j, int(*entry.ObjectStream), int(*entry.ObjectStreamInd))
+			}
 
 			s1 = int64ToBuf(2, i1)
 			s2 = int64ToBuf(int64(*entry.ObjectStream), i2)
@@ -681,7 +728,9 @@ func createXRefStream(ctx *model.Context, i1, i2, i3 int, objNrs []int) ([]byte,
 			}
 
 			// in use, uncompressed
-			log.Write.Printf("createXRefStream: used i=%d offset:%d gen:%d\n", j, int(off), int(*entry.Generation))
+			if log.WriteEnabled() {
+				log.Write.Printf("createXRefStream: used i=%d offset:%d gen:%d\n", j, int(off), int(*entry.Generation))
+			}
 
 			s1 = int64ToBuf(1, i1)
 			s2 = int64ToBuf(off, i2)
@@ -689,7 +738,9 @@ func createXRefStream(ctx *model.Context, i1, i2, i3 int, objNrs []int) ([]byte,
 
 		}
 
-		log.Write.Printf("createXRefStream: written: %x %x %x \n", s1, s2, s3)
+		if log.WriteEnabled() {
+			log.Write.Printf("createXRefStream: written: %x %x %x \n", s1, s2, s3)
+		}
 
 		buf = append(buf, s1...)
 		buf = append(buf, s2...)
@@ -711,7 +762,9 @@ func createXRefStream(ctx *model.Context, i1, i2, i3 int, objNrs []int) ([]byte,
 	a = append(a, types.Integer(start))
 	a = append(a, types.Integer(size))
 
-	log.Write.Println("createXRefStream end")
+	if log.WriteEnabled() {
+		log.Write.Println("createXRefStream end")
+	}
 
 	return buf, &a, nil
 }
@@ -739,8 +792,9 @@ func newXRefStreamDict(ctx *model.Context) *types.XRefStreamDict {
 }
 
 func writeXRefStream(ctx *model.Context) error {
-
-	log.Write.Println("writeXRefStream begin")
+	if log.WriteEnabled() {
+		log.Write.Println("writeXRefStream begin")
+	}
 
 	xRefTable := ctx.XRefTable
 	xRefStreamDict := newXRefStreamDict(ctx)
@@ -793,7 +847,9 @@ func writeXRefStream(ctx *model.Context) error {
 		return err
 	}
 
-	log.Write.Printf("writeXRefStream: xRefStreamDict: %s\n", xRefStreamDict)
+	if log.WriteEnabled() {
+		log.Write.Printf("writeXRefStream: xRefStreamDict: %s\n", xRefStreamDict)
+	}
 
 	if err = writeStreamDictObject(ctx, objNumber, 0, xRefStreamDict.StreamDict); err != nil {
 		return err
@@ -817,23 +873,24 @@ func writeXRefStream(ctx *model.Context) error {
 		return err
 	}
 
-	log.Write.Println("writeXRefStream end")
+	if log.WriteEnabled() {
+		log.Write.Println("writeXRefStream end")
+	}
 
 	return nil
 }
 
 func writeEncryptDict(ctx *model.Context) error {
-
 	// Bail out unless we really have to write encrypted.
 	if ctx.Encrypt == nil || ctx.EncKey == nil {
 		return nil
 	}
 
-	ir := *ctx.Encrypt
-	objNumber := int(ir.ObjectNumber)
-	genNumber := int(ir.GenerationNumber)
+	indRef := *ctx.Encrypt
+	objNumber := int(indRef.ObjectNumber)
+	genNumber := int(indRef.GenerationNumber)
 
-	d, err := ctx.DereferenceDict(ir)
+	d, err := ctx.DereferenceDict(indRef)
 	if err != nil {
 		return err
 	}
@@ -842,7 +899,6 @@ func writeEncryptDict(ctx *model.Context) error {
 }
 
 func setupEncryption(ctx *model.Context) error {
-
 	var err error
 
 	if ok := validateAlgorithm(ctx); !ok {
@@ -852,7 +908,7 @@ func setupEncryption(ctx *model.Context) error {
 	d := newEncryptDict(
 		ctx.EncryptUsingAES,
 		ctx.EncryptKeyLength,
-		ctx.Permissions,
+		int16(ctx.Permissions),
 	)
 
 	if ctx.E, err = supportedEncryption(ctx, d); err != nil {
@@ -889,7 +945,6 @@ func setupEncryption(ctx *model.Context) error {
 }
 
 func updateEncryption(ctx *model.Context) error {
-
 	if ctx.Encrypt == nil {
 		return errors.New("pdfcpu: This file is not encrypted - nothing written.")
 	}
@@ -946,7 +1001,6 @@ func updateEncryption(ctx *model.Context) error {
 }
 
 func handleEncryption(ctx *model.Context) error {
-
 	if ctx.Cmd == model.ENCRYPT || ctx.Cmd == model.DECRYPT {
 
 		if ctx.Cmd == model.DECRYPT {
@@ -964,7 +1018,9 @@ func handleEncryption(ctx *model.Context) error {
 			if ctx.EncryptUsingAES {
 				alg = "AES"
 			}
-			log.CLI.Printf("using %s-%d\n", alg, ctx.EncryptKeyLength)
+			if log.CLIEnabled() {
+				log.CLI.Printf("using %s-%d\n", alg, ctx.EncryptKeyLength)
+			}
 		}
 
 	} else if ctx.UserPWNew != nil || ctx.OwnerPWNew != nil || ctx.Cmd == model.SETPERMISSIONS {
@@ -985,7 +1041,6 @@ func handleEncryption(ctx *model.Context) error {
 }
 
 func writeXRef(ctx *model.Context) error {
-
 	if ctx.WriteXRefStream {
 		// Write cross reference stream and generate objectstreams.
 		return writeXRefStream(ctx)
