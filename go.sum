@@ -44,8 +44,8 @@ github.com/stretchr/testify v1.2.2/go.mod h1:a8OnRcib4nhh0OaRAV+Yts87kKdq0PP7pXf
 github.com/vsenko/gofpdf v1.5.0 h1:TaDSBjkqHW736HBmTdq1982fXvcvNWhXiF4QgqeSXH0=
 github.com/vsenko/gofpdf v1.5.0/go.mod h1:BFQ8uHD26EelBsGsyMQrdnd1ipzkhnnhvs8n3H7U/2Q=
 github.com/vsenko/gofpdi v1.0.16/go.mod h1:kQTfuN8h/Zxw3gUiBhYX8Az/S1m1/Xi3kediwcKJBuA=
-github.com/vsenko/pdfcpu v0.6.1 h1:V8Jz5AN84P35AMbY4x6/tFBnAYApgdkUEzfhytU9n48=
-github.com/vsenko/pdfcpu v0.6.1/go.mod h1:DYHk4YcU2IUIg6WQz2W7pZz277OGTQrPyGSM3rtaEwg=
+github.com/vsenko/pdfcpu v0.6.2 h1:h/GipfU+YCj4p4BLTueUdtePNropxziiutnrVHH4wS8=
+github.com/vsenko/pdfcpu v0.6.2/go.mod h1:DYHk4YcU2IUIg6WQz2W7pZz277OGTQrPyGSM3rtaEwg=
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
 golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
