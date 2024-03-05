@@ -4,9 +4,9 @@ go 1.21
 
 require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
+	github.com/pdfcpu/pdfcpu v0.7.0
 	github.com/prometheus/client_golang v1.19.0
 	github.com/vsenko/gofpdf v1.5.0
-	github.com/vsenko/pdfcpu v0.6.2
 )
 
 require (
