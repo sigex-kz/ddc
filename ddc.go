@@ -938,20 +938,7 @@ type AttachedFile struct {
 
 // ExtractAttachments from DDC and return them as structures
 func ExtractAttachments(ddcPdf io.ReadSeeker) (documentOriginal *AttachedFile, signatures []AttachedFile, err error) {
-	conf := pdfcpumodel.NewDefaultConfiguration()
-	conf.Cmd = pdfcpumodel.EXTRACTATTACHMENTS
-
-	ctx, err := pdfcpuapi.ReadContext(ddcPdf, conf)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	err = pdfcpuapi.ValidateContext(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	attachments, err := ctx.ExtractAttachments(nil)
+	attachments, err := pdfcpuapi.ExtractAttachmentsRaw(ddcPdf, "", nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
