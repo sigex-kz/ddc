@@ -147,6 +147,11 @@ func validateNames(xRefTable *model.XRefTable, rootDict types.Dict, required boo
 			continue
 		}
 
+		if xRefTable.Names[treeName] != nil {
+			// Already internalized.
+			continue
+		}
+
 		d, err := xRefTable.DereferenceDict(value)
 		if err != nil {
 			return err
@@ -160,10 +165,8 @@ func validateNames(xRefTable *model.XRefTable, rootDict types.Dict, required boo
 			return err
 		}
 
-		// Internalize this name tree.
-		// If no validation takes place, name trees have to be internalized via xRefTable.LocateNameTree
-		// TODO Move this out of validation into Read.
 		if tree != nil {
+			// Internalize.
 			xRefTable.Names[treeName] = tree
 		}
 
@@ -216,17 +219,15 @@ func validatePageLayout(xRefTable *model.XRefTable, rootDict types.Dict, require
 }
 
 func pageModeValidator(v model.Version) func(s string) bool {
-	modes := []string{"UseNone", "UseOutlines", "UseThumbs", "FullScreen"}
+	// "None" is out of spec - but no need to repair.
+	modes := []string{"UseNone", "UseOutlines", "UseThumbs", "FullScreen", "None"}
 	if v >= model.V15 {
 		modes = append(modes, "UseOC")
 	}
 	if v >= model.V16 {
 		modes = append(modes, "UseAttachments")
 	}
-	validate := func(s string) bool {
-		return types.MemberOf(s, modes)
-	}
-	return validate
+	return func(s string) bool { return types.MemberOf(s, modes) }
 }
 
 func validatePageMode(xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {

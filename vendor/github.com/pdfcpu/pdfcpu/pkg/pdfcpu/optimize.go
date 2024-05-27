@@ -1350,7 +1350,7 @@ func fixReferencesToFreeObjects(ctx *model.Context) error {
 	return fixDirectObject(ctx, ctx.RootDict)
 }
 
-func cacheFormFonts(ctx *model.Context) error {
+func CacheFormFonts(ctx *model.Context) error {
 
 	d, err := primitives.FormFontResDict(ctx.XRefTable)
 	if err != nil {
@@ -1443,14 +1443,7 @@ func OptimizeXRefTable(ctx *model.Context) error {
 		return err
 	}
 
-	// Cache form fonts.
-	// TODO optimize form fonts.
-	if err := cacheFormFonts(ctx); err != nil {
-		return err
-	}
-
-	if ctx.Cmd == model.OPTIMIZE {
-		// Consolidate resource dicts.
+	if ctx.Cmd == model.OPTIMIZE && ctx.Conf.OptimizeResourceDicts {
 		// Extra step with potential for performance hit when processing large files.
 		if err := optimizeResourceDicts(ctx); err != nil {
 			return err

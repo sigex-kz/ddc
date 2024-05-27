@@ -155,14 +155,38 @@ func ReadAndValidate(rs io.ReadSeeker, conf *model.Configuration) (ctx *model.Co
 	return ctx, nil
 }
 
-// ReadValidateAndOptimize returns an optimized model.Context of rs ready for processing.
+func cmdAssumingOptimization(cmd model.CommandMode) bool {
+	return cmd == model.OPTIMIZE ||
+		cmd == model.FILLFORMFIELDS ||
+		cmd == model.RESETFORMFIELDS ||
+		cmd == model.LISTIMAGES ||
+		cmd == model.EXTRACTIMAGES ||
+		cmd == model.EXTRACTFONTS
+}
+
+// ReadValidateAndOptimize returns an optimized model.Context of rs ready for processing a specific command.
+// conf.Cmd is expected to be configured properly.
 func ReadValidateAndOptimize(rs io.ReadSeeker, conf *model.Configuration) (ctx *model.Context, err error) {
+	if conf == nil {
+		return nil, errors.New("pdfcpu: ReadValidateAndOptimize: missing conf")
+	}
+
 	ctx, err = ReadAndValidate(rs, conf)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = OptimizeContext(ctx); err != nil {
+	// With the exception of commands utilizing structs provided the Optimize step
+	// command optimization of the cross reference table is optional but usually recommended.
+	// For large or complex files it may make sense to skip optimization and set conf.Optimize = false.
+	if cmdAssumingOptimization(conf.Cmd) || conf.Optimize {
+		if err = OptimizeContext(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	// TODO move to form related commands.
+	if err := pdfcpu.CacheFormFonts(ctx); err != nil {
 		return nil, err
 	}
 
@@ -190,7 +214,6 @@ func Write(ctx *model.Context, w io.Writer, conf *model.Configuration) error {
 }
 
 func WriteIncr(ctx *model.Context, rws io.ReadWriteSeeker, conf *model.Configuration) error {
-
 	if log.StatsEnabled() {
 		log.Stats.Printf("XRefTable:\n%s\n", ctx)
 	}

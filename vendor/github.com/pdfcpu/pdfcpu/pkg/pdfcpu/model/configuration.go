@@ -227,6 +227,12 @@ type Configuration struct {
 	// Date format.
 	DateFormat string
 
+	// Optimize.
+	Optimize bool
+
+	// Optimize page resources via content stream analysis.
+	OptimizeResourceDicts bool
+
 	// Optimize duplicate content streams across pages.
 	OptimizeDuplicateContentStreams bool
 
@@ -329,6 +335,8 @@ func newDefaultConfiguration() *Configuration {
 		Permissions:                     PermissionsPrint,
 		TimestampFormat:                 "2006-01-02 15:04",
 		DateFormat:                      "2006-01-02",
+		Optimize:                        true,
+		OptimizeResourceDicts:           true,
 		OptimizeDuplicateContentStreams: false,
 		CreateBookmarks:                 true,
 		NeedAppearances:                 false,
@@ -383,20 +391,24 @@ func (c Configuration) String() string {
 		path = c.Path
 	}
 	return fmt.Sprintf("pdfcpu configuration:\n"+
-		"Path:              %s\n"+
-		"CheckFileNameExt:  %t\n"+
-		"Reader15:          %t\n"+
-		"DecodeAllStreams:  %t\n"+
-		"ValidationMode:    %s\n"+
-		"Eol:               %s\n"+
-		"WriteObjectStream: %t\n"+
-		"WriteXrefStream:   %t\n"+
-		"EncryptUsingAES:   %t\n"+
-		"EncryptKeyLength:  %d\n"+
-		"Permissions:       %d\n"+
-		"Unit :             %s\n"+
-		"TimestampFormat:	%s\n"+
-		"DateFormat:		%s\n"+
+		"Path:                %s\n"+
+		"CheckFileNameExt:    %t\n"+
+		"Reader15:            %t\n"+
+		"DecodeAllStreams:    %t\n"+
+		"ValidationMode:      %s\n"+
+		"PostProcessValidate: %t\n"+
+		"ValidateLinks:       %t\n"+
+		"Eol:                 %s\n"+
+		"WriteObjectStream:   %t\n"+
+		"WriteXrefStream:     %t\n"+
+		"EncryptUsingAES:     %t\n"+
+		"EncryptKeyLength:    %d\n"+
+		"Permissions:         %d\n"+
+		"Unit :               %s\n"+
+		"TimestampFormat:	  %s\n"+
+		"DateFormat:		  %s\n"+
+		"Optimize %t\n"+
+		"OptimizeResourceDicts %t\n"+
 		"OptimizeDuplicateContentStreams %t\n"+
 		"CreateBookmarks %t\n"+
 		"NeedAppearances %t\n",
@@ -405,6 +417,8 @@ func (c Configuration) String() string {
 		c.Reader15,
 		c.DecodeAllStreams,
 		c.ValidationModeString(),
+		c.PostProcessValidate,
+		c.ValidateLinks,
 		c.EolString(),
 		c.WriteObjectStream,
 		c.WriteXRefStream,
@@ -414,6 +428,8 @@ func (c Configuration) String() string {
 		c.UnitString(),
 		c.TimestampFormat,
 		c.DateFormat,
+		c.Optimize,
+		c.OptimizeResourceDicts,
 		c.OptimizeDuplicateContentStreams,
 		c.CreateBookmarks,
 		c.NeedAppearances,
