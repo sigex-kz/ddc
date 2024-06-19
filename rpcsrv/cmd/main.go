@@ -88,9 +88,11 @@ func main() {
 		panic(err)
 
 	case <-osSignalChannel:
-		err = prometheusServer.Close()
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			panic(err)
+		if prometheusServer != nil {
+			err = prometheusServer.Close()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				panic(err)
+			}
 		}
 		return
 	}
