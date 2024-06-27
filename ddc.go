@@ -300,7 +300,7 @@ func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText strin
 
 	if ddc.di.ID != "" {
 		ddc.pdf.SetXY(constPageLeftMargin, constPageTopMargin)
-		ddc.pdf.SetFont(constFontRegular, "", 8)
+		ddc.pdf.SetFont(constFontRegular, "", 10)
 		ddc.pdf.CellFormat(constContentMaxWidth-constIDQRSize, constHeaderHeight-1, ddc.di.ID, "", 1, "RB", false, 0, "")
 
 		imgOptions := gofpdf.ImageOptions{
