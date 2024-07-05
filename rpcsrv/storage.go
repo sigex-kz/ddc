@@ -15,7 +15,7 @@ import (
 
 const (
 	constStorageCleanupInterval = 30
-	constStorageEntryTTL        = 5 * 60
+	constStorageEntryTTL        = 30 * 60
 )
 
 type builderEntry struct {
