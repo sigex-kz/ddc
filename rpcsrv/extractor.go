@@ -52,7 +52,7 @@ func (t *Extractor) AppendDDCPart(args *ExtractorAppendDDCPartArgs, resp *Extrac
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Extractor.AppendDDCPart: %s", resp.Error)
+		log.Printf("Extractor.AppendDDCPart: %+v", resp.Error)
 		return nil
 	}
 
@@ -68,7 +68,7 @@ func (t *Extractor) AppendDDCPart(args *ExtractorAppendDDCPartArgs, resp *Extrac
 	_, err = e.ee.ddcFileBuffer.Write(args.Part)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Extractor.AppendDDCPart: %s", resp.Error)
+		log.Printf("Extractor.AppendDDCPart: %+v", resp.Error)
 		return nil
 	}
 
@@ -96,7 +96,7 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) er
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Extractor.Parse: %s", resp.Error)
+		log.Printf("Extractor.Parse: %+v", resp.Error)
 		return nil
 	}
 
@@ -106,7 +106,7 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) er
 	err = clamAVScan(e.ee.ddcFileBuffer.Bytes())
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Extractor.Parse: %s", resp.Error)
+		log.Printf("Extractor.Parse: %+v", resp.Error)
 		return nil
 	}
 
@@ -119,14 +119,14 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) er
 	documentOriginal, signatures, err := ddc.ExtractAttachments(bytes.NewReader(e.ee.ddcFileBuffer.Bytes()))
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Extractor.Parse: %s", resp.Error)
+		log.Printf("Extractor.Parse: %+v", resp.Error)
 		return nil
 	}
 
 	err = clamAVScan(documentOriginal.Bytes)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Extractor.Parse: %s", resp.Error)
+		log.Printf("Extractor.Parse: %+v", resp.Error)
 		return nil
 	}
 
@@ -134,7 +134,7 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) er
 		err = clamAVScan(s.Bytes)
 		if err != nil {
 			resp.Error = err.Error()
-			log.Printf("Extractor.Parse: %s", resp.Error)
+			log.Printf("Extractor.Parse: %+v", resp.Error)
 			return nil
 		}
 	}
@@ -176,7 +176,7 @@ func (t *Extractor) GetDocumentPart(args *ExtractorGetDocumentPartArgs, resp *Ex
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Extractor.GetDocumentPart: %s", resp.Error)
+		log.Printf("Extractor.GetDocumentPart: %+v", resp.Error)
 		return nil
 	}
 
@@ -235,7 +235,7 @@ func (t *Extractor) GetSignature(args *ExtractorGetSignatureArgs, resp *Extracto
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Extractor.GetSignature: %s", resp.Error)
+		log.Printf("Extractor.GetSignature: %+v", resp.Error)
 		return nil
 	}
 

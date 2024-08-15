@@ -80,7 +80,7 @@ func (t *Builder) AppendDocumentPart(args *BuilderAppendDocumentPartArgs, resp *
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.AppendDocumentPart: %s", resp.Error)
+		log.Printf("Builder.AppendDocumentPart: %+v", resp.Error)
 		return nil
 	}
 
@@ -96,7 +96,7 @@ func (t *Builder) AppendDocumentPart(args *BuilderAppendDocumentPartArgs, resp *
 	_, err = e.be.embeddedFileBuffer.Write(args.Bytes)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.AppendDocumentPart: %s", resp.Error)
+		log.Printf("Builder.AppendDocumentPart: %+v", resp.Error)
 		return nil
 	}
 
@@ -123,14 +123,14 @@ func (t *Builder) AppendSignature(args *BuilderAppendSignatureArgs, resp *Builde
 	err := clamAVScan(args.SignatureInfo.Body)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.AppendSignature: %s", resp.Error)
+		log.Printf("Builder.AppendSignature: %+v", resp.Error)
 		return nil
 	}
 
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.AppendSignature: %s", resp.Error)
+		log.Printf("Builder.AppendSignature: %+v", resp.Error)
 		return nil
 	}
 
@@ -182,7 +182,7 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.Build: %s", resp.Error)
+		log.Printf("Builder.Build: %+v", resp.Error)
 		return nil
 	}
 
@@ -192,7 +192,7 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	err = clamAVScan(e.be.embeddedFileBuffer.Bytes())
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.Build: %s", resp.Error)
+		log.Printf("Builder.Build: %+v", resp.Error)
 		return nil
 	}
 
@@ -205,7 +205,7 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	ddcBuilder, err := ddc.NewBuilder(&e.be.di)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.Build: %s", resp.Error)
+		log.Printf("Builder.Build: %+v", resp.Error)
 		return nil
 	}
 
@@ -216,14 +216,14 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	}
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.Build: %s", resp.Error)
+		log.Printf("Builder.Build: %+v", resp.Error)
 		return nil
 	}
 
 	err = ddcBuilder.Build(!args.WithoutDocumentVisualization, !args.WithoutSignaturesVisualization, args.CreationDate, args.BuilderName, args.HowToVerify, &e.be.ddcFileBuffer)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.Build: %s", resp.Error)
+		log.Printf("Builder.Build: %+v", resp.Error)
 		return nil
 	}
 
@@ -256,7 +256,7 @@ func (t *Builder) GetDDCPart(args *BuilderGetDDCPartArgs, resp *BuilderGetDDCPar
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("Builder.GetDDCPart: %s", resp.Error)
+		log.Printf("Builder.GetDDCPart: %+v", resp.Error)
 		return nil
 	}
 
