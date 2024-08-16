@@ -212,6 +212,12 @@ func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	if args.WithoutDocumentVisualization {
 		err = ddcBuilder.EmbedDoc(bytes.NewReader(e.be.embeddedFileBuffer.Bytes()), e.be.embeddedFileName)
 	} else {
+		if e.be.embeddedFileBuffer.Len() == 0 {
+			resp.Error = "empty PDF file provided for document visualization"
+			log.Printf("Builder.Build: %s", resp.Error)
+			return nil
+		}
+
 		err = ddcBuilder.EmbedPDF(bytes.NewReader(e.be.embeddedFileBuffer.Bytes()), e.be.embeddedFileName)
 	}
 	if err != nil {

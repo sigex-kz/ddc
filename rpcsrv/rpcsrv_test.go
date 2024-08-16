@@ -363,6 +363,157 @@ func TestPingPong(t *testing.T) {
 	}
 }
 
+func TestWithEmptyDocument(t *testing.T) {
+
+	// Configure ClamAV
+
+	ClamAVConfigure("unix", "/var/run/clamav/clamd.ctl")
+
+	// Start server
+
+	errChan := make(chan error)
+	go func(errChan chan error) {
+		srvErr := <-errChan
+		t.Log(srvErr)
+	}(errChan)
+
+	err := Start(network, address, errChan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() {
+		stopErr := Stop()
+		if stopErr != nil {
+			t.Fatal(stopErr)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}()
+
+	client, err := jsonrpc.Dial(network, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Load test data
+
+	jsonBytes, err := os.ReadFile("../tests-data/fullfeatured-di.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	di := ddc.DocumentInfo{}
+	err = json.Unmarshal(jsonBytes, &di)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty document
+	embeddedPdfBytes := make([]byte, 0)
+
+	// Register builder id
+
+	brArgs := BuilderRegisterArgs{
+		Title:       di.Title,
+		Description: di.Description,
+		ID:          di.ID,
+		IDQRCode:    di.IDQRCode,
+		FileName:    "embed.pdf",
+	}
+	brResp := BuilderRegisterResp{}
+
+	err = client.Call("Builder.Register", &brArgs, &brResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if brResp.Error != "" {
+		t.Fatal(brResp.Error)
+	}
+
+	if brResp.ID == "" {
+		t.Fatal("received bad id")
+	}
+
+	// Send PDF to embed
+
+	badpArgs := BuilderAppendDocumentPartArgs{
+		ID: brResp.ID,
+	}
+	badpResp := BuilderAppendDocumentPartResp{}
+
+	for n := 0; ; n++ {
+		if n*docChunkSize > len(embeddedPdfBytes) {
+			break
+		}
+
+		if (n+1)*docChunkSize > len(embeddedPdfBytes) {
+			badpArgs.Bytes = embeddedPdfBytes[n*docChunkSize:]
+		} else {
+			badpArgs.Bytes = embeddedPdfBytes[n*docChunkSize : (n+1)*docChunkSize]
+		}
+
+		err = client.Call("Builder.AppendDocumentPart", &badpArgs, &badpResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if badpResp.Error != "" {
+			t.Fatal(badpResp.Error)
+		}
+	}
+
+	// Send signatures
+
+	for _, s := range di.Signatures {
+		basArgs := BuilderAppendSignatureArgs{
+			ID:            brResp.ID,
+			SignatureInfo: s,
+		}
+		basResp := BuilderAppendSignatureResp{}
+
+		err = client.Call("Builder.AppendSignature", &basArgs, &basResp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if basResp.Error != "" {
+			t.Fatal(basResp.Error)
+		}
+	}
+
+	// Build
+
+	bbArgs := BuilderBuildArgs{
+		ID:           brResp.ID,
+		CreationDate: "2021.01.31 13:45:00 UTC+6",
+		BuilderName:  "RPC builder",
+		HowToVerify:  "Somehow",
+	}
+	bbResp := BuilderBuildResp{}
+
+	err = client.Call("Builder.Build", &bbArgs, &bbResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bbResp.Error != "empty PDF file provided for document visualization" {
+		t.Fatal("should fail because of the empty PDF")
+	}
+
+	// Drop builder
+
+	bdArgs := BuilderDropArgs{
+		ID: brResp.ID,
+	}
+	bdResp := BuilderDropResp{}
+
+	err = client.Call("Builder.Drop", &bdArgs, &bdResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bdResp.Error != "" {
+		t.Fatal(bdResp.Error)
+	}
+}
+
 func TestWithoutDocumentVisualization(t *testing.T) {
 
 	// Configure ClamAV

@@ -103,6 +103,12 @@ func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) er
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
+	if e.ee.ddcFileBuffer.Len() == 0 {
+		resp.Error = "empty file provided for parsing"
+		log.Printf("Extractor.Parse: %s", resp.Error)
+		return nil
+	}
+
 	err = clamAVScan(e.ee.ddcFileBuffer.Bytes())
 	if err != nil {
 		resp.Error = err.Error()
