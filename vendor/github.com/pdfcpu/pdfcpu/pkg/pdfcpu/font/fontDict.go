@@ -232,15 +232,6 @@ func coreFontDict(xRefTable *model.XRefTable, coreFontName string) (*types.Indir
 	if coreFontName != "Symbol" && coreFontName != "ZapfDingbats" {
 		d.InsertName("Encoding", "WinAnsiEncoding")
 	}
-	// if coreFontName == "Helvetica" {
-	// 	indRef, err := PDFDocEncoding(xRefTable)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	d.Insert("Encoding", *indRef)
-	// } else if coreFontName != "Symbol" && coreFontName != "ZapfDingbats" {
-	// 	d.InsertName("Encoding", "WinAnsiEncoding")
-	// }
 	return xRefTable.IndRefForNewObject(d)
 }
 
@@ -1083,7 +1074,16 @@ func Lang(xRefTable *model.XRefTable, d types.Dict) (string, error) {
 		return s, nil
 	}
 
-	arr := d.ArrayEntry("DescendantFonts")
+	o, found = d.Find("DescendantFonts")
+	if !found {
+		return "", ErrCorruptFontDict
+	}
+
+	arr, err := xRefTable.DereferenceArray(o)
+	if err != nil {
+		return "", err
+	}
+
 	indRef := arr[0].(types.IndirectRef)
 	d1, err := xRefTable.DereferenceDict(indRef)
 	if err != nil {

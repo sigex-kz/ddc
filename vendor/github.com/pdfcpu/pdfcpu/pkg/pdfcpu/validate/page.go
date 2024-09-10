@@ -17,6 +17,8 @@ limitations under the License.
 package validate
 
 import (
+	"strings"
+
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
@@ -102,13 +104,29 @@ func validatePageContents(xRefTable *model.XRefTable, d types.Dict) (hasContents
 
 		}
 
-		if !hasContents {
-			err := errors.Errorf("validatePageContents: empty page content array detected")
-			if xRefTable.ValidationMode == model.ValidationStrict {
-				return false, err
-			}
-			reportSpecViolation(xRefTable, err)
+		if hasContents {
+			break
 		}
+
+		if xRefTable.ValidationMode == model.ValidationStrict {
+			return false, errors.Errorf("validatePageContents: empty page content array detected")
+		}
+
+		// Digest empty array.
+		d["Contents"] = nil
+		model.ShowRepaired("corrupt page dict \"Contents\"")
+
+	case types.StringLiteral:
+
+		s := strings.TrimSpace(o.Value())
+
+		if len(s) > 0 || xRefTable.ValidationMode == model.ValidationStrict {
+			return false, errors.Errorf("validatePageContents: page content must be stream dict or array, got: %T", o)
+		}
+
+		// Digest empty string literal.
+		d["Contents"] = nil
+		model.ShowRepaired("corrupt page dict \"Contents\"")
 
 	default:
 		return false, errors.Errorf("validatePageContents: page content must be stream dict or array, got: %T", o)
@@ -479,7 +497,7 @@ func validatePageEntryTabs(xRefTable *model.XRefTable, d types.Dict, required bo
 	validateTabs := func(s string) bool { return types.MemberOf(s, []string{"R", "C", "S", "A", "W"}) }
 
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		sinceVersion = model.V14
+		sinceVersion = model.V13
 	}
 	_, err := validateNameEntry(xRefTable, d, "pagesDict", "Tabs", required, sinceVersion, validateTabs)
 
@@ -954,6 +972,17 @@ func pagesDictKids(xRefTable *model.XRefTable, d types.Dict) types.Array {
 	return kids
 }
 
+func validateParent(pageNodeDict types.Dict, objNr int) error {
+	parentIndRef := pageNodeDict.IndirectRefEntry("Parent")
+	if parentIndRef == nil {
+		return errors.New("pdfcpu: validatePagesDict: missing parent node")
+	}
+	if parentIndRef.ObjectNumber.Value() != objNr {
+		return errors.New("pdfcpu: validatePagesDict: corrupt parent node")
+	}
+	return nil
+}
+
 func processPagesKids(xRefTable *model.XRefTable, kids types.Array, objNr int, hasResources, hasMediaBox bool, curPage *int) (types.Array, error) {
 	var a types.Array
 
@@ -987,12 +1016,8 @@ func processPagesKids(xRefTable *model.XRefTable, kids types.Array, objNr int, h
 			return nil, errors.New("pdfcpu: validatePagesDict: corrupt page node")
 		}
 
-		parentIndRef := pageNodeDict.IndirectRefEntry("Parent")
-		if parentIndRef == nil {
-			return nil, errors.New("pdfcpu: validatePagesDict: missing parent node")
-		}
-		if parentIndRef.ObjectNumber.Value() != objNr {
-			return nil, errors.New("pdfcpu: validatePagesDict: corrupt parent node")
+		if err := validateParent(pageNodeDict, objNr); err != nil {
+			return nil, err
 		}
 
 		dictType, err := dictTypeForPageNodeDict(pageNodeDict)

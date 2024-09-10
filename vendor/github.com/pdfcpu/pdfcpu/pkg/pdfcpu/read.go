@@ -631,19 +631,26 @@ func processXRefStream(ctx *model.Context, xsd *types.XRefStreamDict, objNr, gen
 
 	*offset += offExtra
 
-	entry :=
-		model.XRefTableEntry{
-			Free:       false,
-			Offset:     offset,
-			Generation: genNr,
-			Object:     *xsd}
-
-	if log.ReadEnabled() {
-		log.Read.Printf("processXRefStream: Insert new xRefTable entry for Object %d\n", *objNr)
+	if entry, ok := ctx.Table[*objNr]; ok && *entry.Offset == *offset {
+		entry.Object = *xsd
 	}
 
-	ctx.Table[*objNr] = &entry
-	ctx.Read.XRefStreams[*objNr] = true
+	//////////////////
+	// entry :=
+	// 	model.XRefTableEntry{
+	// 		Free:       false,
+	// 		Offset:     offset,
+	// 		Generation: genNr,
+	// 		Object:     *xsd}
+
+	// if log.ReadEnabled() {
+	// 	log.Read.Printf("processXRefStream: Insert new xRefTable entry for Object %d\n", *objNr)
+	// }
+
+	// ctx.Table[*objNr] = &entry
+	// ctx.Read.XRefStreams[*objNr] = true
+	///////////////////
+
 	prevOffset = xsd.PreviousOffset
 
 	if log.ReadEnabled() {
@@ -1019,81 +1026,31 @@ func scanTrailerDictStart(s *bufio.Scanner, line *string) error {
 }
 
 func scanTrailerDictRemainder(s *bufio.Scanner, line string, buf bytes.Buffer) (string, error) {
-	var err error
-	var i, j, k int
+	var (
+		i   int
+		err error
+	)
 
-	buf.WriteString(line)
-	buf.WriteString("\x0a")
-	// log.Read.Printf("scanTrailer dictBuf after start tag: <%s>\n", line)
-
-	line = line[2:]
-
-	for {
-
-		if len(line) == 0 {
-			if line, err = scanLine(s); err != nil {
-				return "", err
-			}
-			buf.WriteString(line)
-			buf.WriteString("\x0a")
-			// log.Read.Printf("scanTrailer dictBuf next line: <%s>\n", line)
+	for i = strings.Index(line, "startxref"); i < 0; {
+		if log.ReadEnabled() {
+			log.Read.Printf("line: <%s>\n", line)
 		}
-
-		i = strings.Index(line, "<<")
-		if i < 0 {
-			// No <<
-			j = strings.Index(line, ">>")
-			if j >= 0 {
-				// Yes >>
-				if k == 0 {
-					// Check for dict
-					ok, err := isDict(buf.String())
-					if err == nil && ok {
-						return buf.String(), nil
-					}
-				} else {
-					k--
-				}
-				line = line[j+2:]
-				continue
-			}
-			// No >>
-			line, err = scanLine(s)
-			if err != nil {
-				return "", err
-			}
-			buf.WriteString(line)
-			buf.WriteString("\x0a")
-			//	log.Read.Printf("scanTrailer dictBuf next line: <%s>\n", line)
-		} else {
-			// Yes <<
-			j = strings.Index(line, ">>")
-			if j < 0 {
-				// No >>
-				k++
-				line = line[i+2:]
-			} else {
-				// Yes >>
-				if i < j {
-					// handle <<
-					k++
-					line = line[i+2:]
-				} else {
-					// handle >>
-					if k == 0 {
-						// Check for dict
-						ok, err := isDict(buf.String())
-						if err == nil && ok {
-							return buf.String(), nil
-						}
-					} else {
-						k--
-					}
-					line = line[j+2:]
-				}
-			}
+		buf.WriteString(line)
+		buf.WriteString("\x0a")
+		if line, err = scanLine(s); err != nil {
+			return "", err
 		}
+		i = strings.Index(line, "startxref")
 	}
+
+	line = line[:i]
+	if log.ReadEnabled() {
+		log.Read.Printf("line: <%s>\n", line)
+	}
+	buf.WriteString(line[:i])
+	buf.WriteString("\x0a")
+
+	return buf.String(), nil
 }
 
 func scanTrailer(s *bufio.Scanner, line string) (string, error) {
@@ -1102,12 +1059,10 @@ func scanTrailer(s *bufio.Scanner, line string) (string, error) {
 		log.Read.Printf("line: <%s>\n", line)
 	}
 
-	// Scan for dict start tag "<<".
 	if err := scanTrailerDictStart(s, &line); err != nil {
 		return "", err
 	}
 
-	// Scan for dict end tag ">>" but account for inner dicts.
 	return scanTrailerDictRemainder(s, line, buf)
 }
 
@@ -1340,7 +1295,10 @@ func parseAndLoad(c context.Context, ctx *model.Context, line string, offset *in
 		Offset:     offset,
 		Generation: generation}
 
-	ctx.Table[*objNr] = &entry
+	if !ctx.XRefTable.Exists(*objNr) {
+		ctx.Table[*objNr] = &entry
+	}
+
 	o, err := ParseObjectWithContext(c, ctx, *entry.Offset, *objNr, *entry.Generation)
 	if err != nil {
 		return err
@@ -1363,17 +1321,17 @@ func parseAndLoad(c context.Context, ctx *model.Context, line string, offset *in
 	return nil
 }
 
-func showRep() {
-	msg := "repaired: xreftable"
-	if log.DebugEnabled() {
-		log.Debug.Println("pdfcpu " + msg)
+func processObject(c context.Context, ctx *model.Context, line string, offset *int64) (*bufio.Scanner, error) {
+	if err := parseAndLoad(c, ctx, line, offset); err != nil {
+		return nil, err
 	}
-	if log.ReadEnabled() {
-		log.Read.Println("pdfcpu " + msg)
+	rd, err := newPositionedReader(ctx.Read.RS, offset)
+	if err != nil {
+		return nil, err
 	}
-	if log.CLIEnabled() {
-		log.CLI.Println(msg)
-	}
+	s := bufio.NewScanner(rd)
+	s.Split(scan.Lines)
+	return s, nil
 }
 
 // bypassXrefSection is a fix for digesting corrupt xref sections.
@@ -1423,7 +1381,7 @@ func bypassXrefSection(c context.Context, ctx *model.Context, offExtra int64, wa
 				if i >= 0 {
 					_, err = processTrailer(c, ctx, s, string(bb), nil, offExtra)
 					if err == nil {
-						showRep()
+						model.ShowRepaired("xreftable")
 					}
 					return err
 				}
@@ -1445,15 +1403,10 @@ func bypassXrefSection(c context.Context, ctx *model.Context, offExtra int64, wa
 		i = strings.Index(line, "obj")
 		if i >= 0 {
 			if i > 2 && strings.Index(line, "endobj") != i-3 {
-				if err := parseAndLoad(c, ctx, line, &offset); err != nil {
-					return err
-				}
-				rd, err = newPositionedReader(ctx.Read.RS, &offset)
+				s, err = processObject(c, ctx, line, &offset)
 				if err != nil {
 					return err
 				}
-				s = bufio.NewScanner(rd)
-				s.Split(scan.Lines)
 				continue
 			}
 		}
@@ -2088,21 +2041,21 @@ func ParseObjectWithContext(c context.Context, ctx *model.Context, offset int64,
 
 	case types.StringLiteral:
 		if ctx.EncKey != nil {
-			bb, err := decryptString(o.Value(), objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
+			sl, err := decryptStringLiteral(o, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
 			if err != nil {
 				return nil, err
 			}
-			return types.NewHexLiteral(bb), nil
+			return *sl, nil
 		}
 		return o, nil
 
 	case types.HexLiteral:
 		if ctx.EncKey != nil {
-			bb, err := decryptHexLiteral(o, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
+			hl, err := decryptHexLiteral(o, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
 			if err != nil {
 				return nil, err
 			}
-			return types.NewHexLiteral(bb), nil
+			return *hl, nil
 		}
 		return o, nil
 
@@ -2280,6 +2233,14 @@ func readStreamContent(rd io.Reader, streamLength int) ([]byte, error) {
 	return buf, nil
 }
 
+func ensureStreamLength(sd *types.StreamDict, rawContent []byte, fixLength bool) {
+	l := int64(len(rawContent))
+	if fixLength || sd.StreamLength == nil || l != *sd.StreamLength {
+		sd.StreamLength = &l
+		sd.Dict["Length"] = types.Integer(l)
+	}
+}
+
 // loadEncodedStreamContent loads the encoded stream content into sd.
 func loadEncodedStreamContent(c context.Context, ctx *model.Context, sd *types.StreamDict, fixLength bool) error {
 	if log.ReadEnabled() {
@@ -2327,11 +2288,7 @@ func loadEncodedStreamContent(c context.Context, ctx *model.Context, sd *types.S
 		return err
 	}
 
-	l := int64(len(rawContent))
-	if fixLength || sd.StreamLength == nil || l != *sd.StreamLength {
-		sd.StreamLength = &l
-		sd.Dict["Length"] = types.Integer(l)
-	}
+	ensureStreamLength(sd, rawContent, fixLength)
 
 	sd.Raw = rawContent
 
@@ -2761,64 +2718,78 @@ func dereferenceObject(c context.Context, ctx *model.Context, objNr int) error {
 	return nil
 }
 
+func dereferenceObjectsSorted(c context.Context, ctx *model.Context) error {
+	xRefTable := ctx.XRefTable
+	var keys []int
+	for k := range xRefTable.Table {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+
+	for _, objNr := range keys {
+		if err := c.Err(); err != nil {
+			return err
+		}
+		if err := dereferenceObject(c, ctx, objNr); err != nil {
+			return err
+		}
+	}
+
+	for _, objNr := range keys {
+		entry := xRefTable.Table[objNr]
+		if entry.Free || entry.Compressed {
+			continue
+		}
+		if err := c.Err(); err != nil {
+			return err
+		}
+		model.ProcessRefCounts(xRefTable, entry.Object)
+	}
+
+	return nil
+}
+
+func dereferenceObjectsRaw(c context.Context, ctx *model.Context) error {
+	xRefTable := ctx.XRefTable
+	for objNr := range xRefTable.Table {
+		if err := c.Err(); err != nil {
+			return err
+		}
+		if err := dereferenceObject(c, ctx, objNr); err != nil {
+			return err
+		}
+	}
+
+	for objNr := range xRefTable.Table {
+		entry := xRefTable.Table[objNr]
+		if entry.Free || entry.Compressed {
+			continue
+		}
+		if err := c.Err(); err != nil {
+			return err
+		}
+		model.ProcessRefCounts(xRefTable, entry.Object)
+	}
+
+	return nil
+}
+
 // Dereferences all objects including compressed objects from object streams.
 func dereferenceObjects(c context.Context, ctx *model.Context) error {
 	if log.ReadEnabled() {
 		log.Read.Println("dereferenceObjects: begin")
 	}
 
-	xRefTable := ctx.XRefTable
+	var err error
 
 	if log.StatsEnabled() {
-
-		var keys []int
-		for k := range xRefTable.Table {
-			keys = append(keys, k)
-		}
-		sort.Ints(keys)
-
-		for _, objNr := range keys {
-			if err := c.Err(); err != nil {
-				return err
-			}
-			if err := dereferenceObject(c, ctx, objNr); err != nil {
-				return err
-			}
-		}
-
-		for _, objNr := range keys {
-			entry := xRefTable.Table[objNr]
-			if entry.Free || entry.Compressed {
-				continue
-			}
-			if err := c.Err(); err != nil {
-				return err
-			}
-			model.ProcessRefCounts(xRefTable, entry.Object)
-		}
-
+		err = dereferenceObjectsSorted(c, ctx)
 	} else {
+		err = dereferenceObjectsRaw(c, ctx)
+	}
 
-		for objNr := range xRefTable.Table {
-			if err := c.Err(); err != nil {
-				return err
-			}
-			if err := dereferenceObject(c, ctx, objNr); err != nil {
-				return err
-			}
-		}
-
-		for objNr := range xRefTable.Table {
-			entry := xRefTable.Table[objNr]
-			if entry.Free || entry.Compressed {
-				continue
-			}
-			if err := c.Err(); err != nil {
-				return err
-			}
-			model.ProcessRefCounts(xRefTable, entry.Object)
-		}
-
+	if err != nil {
+		return err
 	}
 
 	if log.ReadEnabled() {

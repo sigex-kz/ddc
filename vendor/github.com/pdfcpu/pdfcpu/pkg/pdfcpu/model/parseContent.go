@@ -75,9 +75,17 @@ func skipStringLiteral(l *string) error {
 	i := 0
 	for {
 		i = strings.IndexByte(s, byte(')'))
-		if i <= 0 || i > 0 && s[i-1] != '\\' || i > 1 && s[i-2] == '\\' {
+		if i <= 0 || i > 0 && s[i-1] != '\\' {
 			break
 		}
+		k := 0
+		for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
+			k++
+		}
+		if k%2 == 0 {
+			break
+		}
+		// Skip \)
 		s = s[i+1:]
 	}
 	if i < 0 {
@@ -146,10 +154,7 @@ func skipBI(l *string, prn PageResourceNames) error {
 			token := s[:i]
 			if token == "CS" || token == "ColorSpace" {
 				s = s[i:]
-				i, _ = positionToNextWhitespaceOrChar(s, "/")
-				if i < 0 {
-					return errBIExpressionCorrupt
-				}
+				s, _ = trimLeftSpace(s, false)
 				s = s[1:]
 				i, _ = positionToNextWhitespaceOrChar(s, "/")
 				if i < 0 {
@@ -181,6 +186,12 @@ func positionToNextContentToken(line *string, prn PageResourceNames) (bool, erro
 			// whitespace or eol only
 			return true, nil
 		}
+		if l[0] == '%' {
+			// Skip comment.
+			l, _ = positionToNextEOL(l)
+			continue
+		}
+
 		if l[0] == '[' {
 			// Skip TJ expression:
 			// [()...()] TJ

@@ -94,30 +94,12 @@ func (bm Bookmark) Style() int {
 	return i
 }
 
-func positionToFirstBookmark(ctx *model.Context) (types.Dict, *types.IndirectRef, error) {
-
-	// Position to first bookmark on top most level with more than 1 bookmarks.
-	// Default to top most single bookmark level.
-
+func positionToFirstBookmark(ctx *model.Context) (*types.IndirectRef, error) {
 	d := ctx.Outlines
 	if d == nil {
-		return nil, nil, errNoBookmarks
+		return nil, errNoBookmarks
 	}
-
-	first := d.IndirectRefEntry("First")
-	last := d.IndirectRefEntry("Last")
-
-	var err error
-
-	for first != nil && last != nil && *first == *last {
-		if d, err = ctx.DereferenceDict(*first); err != nil {
-			return nil, nil, err
-		}
-		first = d.IndirectRefEntry("First")
-		last = d.IndirectRefEntry("Last")
-	}
-
-	return d, first, nil
+	return d.IndirectRefEntry("First"), nil
 }
 
 func outlineItemTitle(s string) string {
@@ -170,6 +152,42 @@ func PageObjFromDestination(ctx *model.Context, dest types.Object) (*types.Indir
 	return &ir, err
 }
 
+func title(ctx *model.Context, d types.Dict) (string, error) {
+	obj, err := ctx.Dereference(d["Title"])
+	if err != nil {
+		return "", err
+	}
+
+	s, err := model.Text(obj)
+	if err != nil {
+		return "", err
+	}
+
+	return outlineItemTitle(s), nil
+}
+
+func bookmark(d types.Dict, title string, pageFrom int, parent *Bookmark) Bookmark {
+	bm := Bookmark{
+		Title:    title,
+		PageFrom: pageFrom,
+		Parent:   parent,
+		Bold:     false,
+		Italic:   false,
+	}
+
+	if arr := d.ArrayEntry("C"); len(arr) == 3 {
+		col := color.NewSimpleColorForArray(arr)
+		bm.Color = &col
+	}
+
+	if f := d.IntEntry("F"); f != nil {
+		bm.Bold = *f&0x02 > 0
+		bm.Italic = *f&0x01 > 0
+	}
+
+	return bm
+}
+
 // BookmarksForOutlineItem returns the bookmarks tree for an outline item.
 func BookmarksForOutlineItem(ctx *model.Context, item *types.IndirectRef, parent *Bookmark) ([]Bookmark, error) {
 	bms := []Bookmark{}
@@ -186,17 +204,10 @@ func BookmarksForOutlineItem(ctx *model.Context, item *types.IndirectRef, parent
 			return nil, err
 		}
 
-		obj, err := ctx.Dereference(d["Title"])
+		title, err := title(ctx, d)
 		if err != nil {
 			return nil, err
 		}
-
-		s, err := model.Text(obj)
-		if err != nil {
-			return nil, err
-		}
-
-		title := outlineItemTitle(s)
 
 		// Retrieve page number out of a destination via "Dest" or "Goto Action".
 		dest, destFound := d["Dest"]
@@ -213,7 +224,7 @@ func BookmarksForOutlineItem(ctx *model.Context, item *types.IndirectRef, parent
 			dest = act.(types.Dict)["D"]
 		}
 
-		obj, err = ctx.Dereference(dest)
+		obj, err := ctx.Dereference(dest)
 		if err != nil {
 			return nil, err
 		}
@@ -239,32 +250,16 @@ func BookmarksForOutlineItem(ctx *model.Context, item *types.IndirectRef, parent
 			}
 		}
 
-		newBookmark := Bookmark{
-			Title:    title,
-			PageFrom: pageFrom,
-			Parent:   parent,
-			Bold:     false,
-			Italic:   false,
-		}
-
-		if arr := d.ArrayEntry("C"); len(arr) == 3 {
-			col := color.NewSimpleColorForArray(arr)
-			newBookmark.Color = &col
-		}
-
-		if f := d.IntEntry("F"); f != nil {
-			newBookmark.Bold = *f&0x02 > 0
-			newBookmark.Italic = *f&0x01 > 0
-		}
+		bm := bookmark(d, title, pageFrom, parent)
 
 		first := d["First"]
 		if first != nil {
 			indRef := first.(types.IndirectRef)
-			kids, _ := BookmarksForOutlineItem(ctx, &indRef, &newBookmark)
-			newBookmark.Kids = kids
+			kids, _ := BookmarksForOutlineItem(ctx, &indRef, &bm)
+			bm.Kids = kids
 		}
 
-		bms = append(bms, newBookmark)
+		bms = append(bms, bm)
 	}
 
 	return bms, nil
@@ -277,7 +272,7 @@ func Bookmarks(ctx *model.Context) ([]Bookmark, error) {
 		return nil, err
 	}
 
-	_, first, err := positionToFirstBookmark(ctx)
+	first, err := positionToFirstBookmark(ctx)
 	if err != nil {
 		if err != errNoBookmarks {
 			return nil, err
@@ -531,7 +526,7 @@ func removeNamedDests(ctx *model.Context, item *types.IndirectRef) error {
 
 // RemoveBookmarks erases all outlines from ctx.
 func RemoveBookmarks(ctx *model.Context) (bool, error) {
-	_, first, err := positionToFirstBookmark(ctx)
+	first, err := positionToFirstBookmark(ctx)
 	if err != nil {
 		if err != errNoBookmarks {
 			return false, err

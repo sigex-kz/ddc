@@ -63,20 +63,91 @@ func optimizeContentStreamUsage(ctx *model.Context, sd *types.StreamDict, objNr 
 	return nil, nil
 }
 
+func removeEmptyContentStreams(ctx *model.Context, pageDict types.Dict, obj types.Object, pageObjNumber int) error {
+	var contentArr types.Array
+
+	if ir, ok := obj.(types.IndirectRef); ok {
+
+		objNr := ir.ObjectNumber.Value()
+		entry, found := ctx.FindTableEntry(objNr, ir.GenerationNumber.Value())
+		if !found {
+			return errors.Errorf("removeEmptyContentStreams: obj#:%d illegal indRef for Contents\n", pageObjNumber)
+		}
+
+		contentStreamDict, ok := entry.Object.(types.StreamDict)
+		if ok {
+			if err := contentStreamDict.Decode(); err != nil {
+				return err
+			}
+			if len(contentStreamDict.Content) == 0 {
+				pageDict.Delete("Contents")
+			}
+			return nil
+		}
+
+		contentArr, ok = entry.Object.(types.Array)
+		if !ok {
+			return errors.Errorf("removeEmptyContentStreams: obj#:%d page content entry neither stream dict nor array.\n", pageObjNumber)
+		}
+
+	} else if contentArr, ok = obj.(types.Array); !ok {
+		return errors.Errorf("removeEmptyContentStreams: obj#:%d corrupt page content array\n", pageObjNumber)
+	}
+
+	var newContentArr types.Array
+
+	for _, c := range contentArr {
+
+		ir, ok := c.(types.IndirectRef)
+		if !ok {
+			return errors.Errorf("removeEmptyContentStreams: obj#:%d corrupt page content array entry\n", pageObjNumber)
+		}
+
+		objNr := ir.ObjectNumber.Value()
+		entry, found := ctx.FindTableEntry(objNr, ir.GenerationNumber.Value())
+		if !found {
+			return errors.Errorf("removeEmptyContentStreams: obj#:%d illegal indRef for Contents\n", pageObjNumber)
+		}
+
+		contentStreamDict, ok := entry.Object.(types.StreamDict)
+		if !ok {
+			return errors.Errorf("identifyPageContent: obj#:%d page content entry is no stream dict\n", pageObjNumber)
+		}
+
+		if err := contentStreamDict.Decode(); err != nil {
+			return err
+		}
+		if len(contentStreamDict.Content) > 0 {
+			newContentArr = append(newContentArr, c)
+		}
+	}
+
+	pageDict["Contents"] = newContentArr
+
+	return nil
+}
+
 func optimizePageContent(ctx *model.Context, pageDict types.Dict, pageObjNumber int) error {
+	o, found := pageDict.Find("Contents")
+	if !found {
+		return nil
+	}
+
+	if err := removeEmptyContentStreams(ctx, pageDict, o, pageObjNumber); err != nil {
+		return err
+	}
+
+	o, found = pageDict.Find("Contents")
+	if !found {
+		return nil
+	}
+
 	if !ctx.OptimizeDuplicateContentStreams {
 		return nil
 	}
+
 	if log.OptimizeEnabled() {
 		log.Optimize.Println("identifyPageContent begin")
-	}
-
-	o, found := pageDict.Find("Contents")
-	if !found {
-		if log.OptimizeEnabled() {
-			log.Optimize.Println("identifyPageContent end: no \"Contents\"")
-		}
-		return nil
 	}
 
 	var contentArr types.Array
@@ -459,14 +530,14 @@ func optimizeXObjectForm(ctx *model.Context, sd *types.StreamDict, objNr int) (*
 		return nil, nil
 	}
 
-	for _, objNr := range cachedObjNrs {
-		sd1 := f[objNr]
+	for _, objNr1 := range cachedObjNrs {
+		sd1 := f[objNr1]
 		ok, err := model.EqualStreamDicts(sd, sd1, ctx.XRefTable)
 		if err != nil {
 			return nil, err
 		}
 		if ok {
-			ir := types.NewIndirectRef(objNr, 0)
+			ir := types.NewIndirectRef(objNr1, 0)
 			ctx.IncrementRefCount(ir)
 			return ir, nil
 		}
@@ -560,8 +631,8 @@ func optimizeXObjectResourcesDict(ctx *model.Context, rDict types.Dict, pageNumb
 			continue
 		}
 
-		if log.OptimizeEnabled() {
-			log.Optimize.Printf("optimizeXObjectResourcesDict: dereferenced obj:%d\n%s", objNr, sd)
+		if err := ctx.DeleteDictEntry(sd.Dict, "PieceInfo"); err != nil {
+			return err
 		}
 
 		if *sd.Dict.Subtype() == "Image" {
@@ -579,7 +650,6 @@ func optimizeXObjectResourcesDict(ctx *model.Context, rDict types.Dict, pageNumb
 			if err := optimizeForm(ctx, sd, rName, rDict, objNr, pageNumber, pageObjNumber, vis); err != nil {
 				return err
 			}
-			continue
 		}
 
 	}
@@ -686,7 +756,7 @@ func parseResourcesDict(ctx *model.Context, pageDict types.Dict, pageNumber, pag
 	return nil
 }
 
-// Iterate over all pages and optimize resources.
+// Iterate over all pages and optimize content & resources.
 func parsePagesDict(ctx *model.Context, pagesDict types.Dict, pageNumber int) (int, error) {
 	// TODO Integrate resource consolidation based on content stream requirements.
 

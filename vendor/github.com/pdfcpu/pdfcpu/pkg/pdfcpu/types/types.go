@@ -150,6 +150,10 @@ type Point struct {
 	Y float64 `json:"y"`
 }
 
+func NewPoint(x, y float64) Point {
+	return Point{X: x, Y: y}
+}
+
 // Translate modifies p's coordinates.
 func (p *Point) Translate(dx, dy float64) {
 	p.X += dx
@@ -356,6 +360,20 @@ func (r Rectangle) Format(unit DisplayUnit) string {
 // The four vertices are assumed to be specified in counter clockwise order.
 type QuadLiteral struct {
 	P1, P2, P3, P4 Point
+}
+
+func NewQuadLiteralForRect(r *Rectangle) *QuadLiteral {
+	// p1 := Point{X: r.LL.X, Y: r.LL.Y}
+	// p2 := Point{X: r.UR.X, Y: r.LL.Y}
+	// p3 := Point{X: r.UR.X, Y: r.UR.Y}
+	// p4 := Point{X: r.LL.X, Y: r.UR.Y}
+
+	p3 := Point{X: r.LL.X, Y: r.LL.Y}
+	p4 := Point{X: r.UR.X, Y: r.LL.Y}
+	p2 := Point{X: r.UR.X, Y: r.UR.Y}
+	p1 := Point{X: r.LL.X, Y: r.UR.Y}
+
+	return &QuadLiteral{P1: p1, P2: p2, P3: p3, P4: p4}
 }
 
 // Array returns the PDF representation of ql.
@@ -602,5 +620,5 @@ func (d Dim) Portrait() bool {
 }
 
 func (d Dim) String() string {
-	return fmt.Sprintf("%fx%f points", d.Width, d.Height)
+	return fmt.Sprintf("%fx%f", d.Width, d.Height)
 }
