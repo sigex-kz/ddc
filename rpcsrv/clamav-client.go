@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"net"
 )
 
@@ -51,9 +52,13 @@ func clamAVScan(data []byte) error {
 		if remainderSize < chunkSize {
 			thisChunkSize = remainderSize
 		}
+		if thisChunkSize > math.MaxUint32 || thisChunkSize < 0 {
+			panic("thisChunkSize does not fint into uint32")
+		}
+		thisChunkSizeUint32 := uint32(thisChunkSize)
 
 		thisChunkSizeBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(thisChunkSizeBytes, uint32(thisChunkSize))
+		binary.BigEndian.PutUint32(thisChunkSizeBytes, thisChunkSizeUint32)
 		_, err = conn.Write(thisChunkSizeBytes)
 		if err != nil {
 			return err
