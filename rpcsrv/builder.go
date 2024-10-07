@@ -24,6 +24,15 @@ type BuilderRegisterArgs struct {
 	// Optional qr code with the id of the document, should be set if id is set
 	IDQRCode []byte
 
+	// Optional qr code with the link to the document accessible from internet
+	LinkQRCode []byte
+
+	// Optional builder logo, printer on the left side of each page
+	BuilderLogo []byte
+
+	// Optional string printed under the builder logo
+	SubBuilderLogoString string
+
 	// FileName of the original document
 	FileName string
 
@@ -44,12 +53,15 @@ type BuilderRegisterResp struct {
 func (t *Builder) Register(args *BuilderRegisterArgs, resp *BuilderRegisterResp) error {
 	be := builderEntry{
 		di: ddc.DocumentInfo{
-			Title:       args.Title,
-			Description: args.Description,
-			ID:          args.ID,
-			IDQRCode:    args.IDQRCode,
-			Signatures:  []ddc.SignatureInfo{},
-			Language:    args.Language,
+			Title:                args.Title,
+			Description:          args.Description,
+			ID:                   args.ID,
+			IDQRCode:             args.IDQRCode,
+			LinkQRCode:           args.LinkQRCode,
+			BuilderLogo:          args.BuilderLogo,
+			SubBuilderLogoString: args.SubBuilderLogoString,
+			Signatures:           []ddc.SignatureInfo{},
+			Language:             args.Language,
 		},
 
 		embeddedFileName: args.FileName,

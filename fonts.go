@@ -16,3 +16,6 @@ var embeddedFontItalic []byte
 
 //go:embed fonts/LiberationSans-BoldItalic.ttf
 var embeddedFontBoldItalic []byte
+
+//go:embed fonts/LiberationMono-Regular.ttf
+var embeddedFontMonoRegular []byte

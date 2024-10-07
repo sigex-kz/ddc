@@ -29,6 +29,10 @@ const (
 	constContentMaxHeight           = constPageHeight - constPageTopMargin - constPageBottomMargin
 	constHeaderHeight               = 10
 	constIDQRSize                   = constHeaderHeight + 2
+	constLinkQRSize                 = 17
+	constLinkQRTextMargin           = 4.5
+	constBuilderLogoHeight          = 13
+	constBuilderLogoWidth           = 26
 	constFooterHeight               = 10
 	constFooterDescriptionMaxLength = 90
 	constEmbeddedPageMaxWidth       = constContentMaxWidth
@@ -48,12 +52,14 @@ const (
 	constInfoBlockAttachmentsDescriptionColWidth = 75
 	constInfoBlockAttachmentsFileNameColWidth    = constContentMaxWidth - constInfoBlockAttachmentsIndexNumColWidth - constInfoBlockAttachmentsDescriptionColWidth
 
-	constFontRegular    = "LiberationSans-Regular"
-	constFontBold       = "LiberationSans-Bold"
-	constFontItalic     = "LiberationSans-Italic"
-	constFontBoldItalic = "LiberationSans-BoldItalic"
+	constFontRegular     = "LiberationSans-Regular"
+	constFontBold        = "LiberationSans-Bold"
+	constFontItalic      = "LiberationSans-Italic"
+	constFontBoldItalic  = "LiberationSans-BoldItalic"
+	constFontMonoRegular = "LiberationMono-Regular"
 
 	const45ccv = 45
+	const90ccv = 90
 
 	constGrayR = 211
 	constGrayG = 211
@@ -180,6 +186,15 @@ type DocumentInfo struct {
 	// Optional qr code with the id of the document, should be set if id is set
 	IDQRCode []byte `json:"idQRCode"`
 
+	// Optional qr code with the link to the document accessible from internet
+	LinkQRCode []byte `json:"linkQRCode"`
+
+	// Optional builder logo, printer on the left side of each page
+	BuilderLogo []byte `json:"builderLogo"`
+
+	// Optional string printed under the builder logo
+	SubBuilderLogoString string `json:"subBuilderLogoString"`
+
 	// Signatures information
 	Signatures []SignatureInfo `json:"signatures"`
 
@@ -279,6 +294,7 @@ func (ddc *Builder) initPdf() (pdf *gofpdf.Fpdf, err error) {
 	pdf.AddUTF8FontFromBytes(constFontBold, "", embeddedFontBold)
 	pdf.AddUTF8FontFromBytes(constFontItalic, "", embeddedFontItalic)
 	pdf.AddUTF8FontFromBytes(constFontBoldItalic, "", embeddedFontBoldItalic)
+	pdf.AddUTF8FontFromBytes(constFontMonoRegular, "", embeddedFontMonoRegular)
 
 	// Fpdf margins are used only on Info Block pages, configure them with header and footer height to utilize auto page break
 	pdf.SetMargins(constPageLeftMargin, constContentTop, constPageRightMargin)
@@ -348,6 +364,49 @@ func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText strin
 		pageNumberText := fmt.Sprintf(ddc.t("стр. %v из %v"), ddc.pdf.PageNo(), ddc.totalPages)
 		ddc.pdf.CellFormat(constContentMaxWidth, constFooterHeight, pageNumberText, "", 1, "RM", false, 0, "")
 	}
+
+	// Left side
+	ddc.pdf.TransformBegin()
+	ddc.pdf.TransformRotate(const90ccv, 0, constPageHeight)
+
+	if ddc.di.LinkQRCode != nil {
+		imgOptions := gofpdf.ImageOptions{
+			ReadDpi:   true,
+			ImageType: "png",
+		}
+		ddc.pdf.RegisterImageOptionsReader("link-qr-code.png", imgOptions, bytes.NewReader(ddc.di.LinkQRCode))
+		ddc.pdf.ImageOptions("link-qr-code.png", constPageBottomMargin, constPageHeight+constPageTopMargin, constLinkQRSize, constLinkQRSize, false, imgOptions, 0, "")
+		ddc.pdf.ImageOptions("link-qr-code.png", constPageHeight-constPageTopMargin-constLinkQRSize, constPageHeight+constPageTopMargin, constLinkQRSize, constLinkQRSize, false, imgOptions, 0, "")
+
+		ddc.pdf.SetFont(constFontMonoRegular, "", 6)
+		ddc.pdf.SetXY(constPageBottomMargin+constLinkQRSize, constPageHeight+constPageTopMargin+constLinkQRTextMargin)
+		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize, "<-- қол қойылған құжатты тексеріңіз", "", 1, "LT", false, 0, "")
+		ddc.pdf.SetXY(constPageBottomMargin+constLinkQRSize, constPageHeight+constPageTopMargin)
+		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize-constLinkQRTextMargin, "<-- проверить подписанный документ", "", 1, "LB", false, 0, "")
+
+		ddc.pdf.SetFont(constFontMonoRegular, "", 6)
+		ddc.pdf.SetXY(constPageHeight-constPageTopMargin-constLinkQRSize-constContentMaxWidth, constPageHeight+constPageTopMargin+constLinkQRTextMargin)
+		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize, "қол қойылған құжатты тексеріңіз -->", "", 1, "RT", false, 0, "")
+		ddc.pdf.SetXY(constPageHeight-constPageTopMargin-constLinkQRSize-constContentMaxWidth, constPageHeight+constPageTopMargin)
+		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize-constLinkQRTextMargin, "проверить подписанный документ -->", "", 1, "RB", false, 0, "")
+	}
+
+	if ddc.di.BuilderLogo != nil {
+		imgOptions := gofpdf.ImageOptions{
+			ReadDpi:   true,
+			ImageType: "png",
+		}
+		ddc.pdf.RegisterImageOptionsReader("id-qr-code-3.png", imgOptions, bytes.NewReader(ddc.di.BuilderLogo))
+		ddc.pdf.ImageOptions("id-qr-code-3.png", (constPageHeight-constBuilderLogoWidth)/2, constPageHeight+constPageTopMargin, constBuilderLogoWidth, constBuilderLogoHeight, false, imgOptions, 0, "")
+	}
+
+	if ddc.di.SubBuilderLogoString != "" {
+		ddc.pdf.SetFont(constFontMonoRegular, "", 8)
+		ddc.pdf.SetXY((constPageHeight-constContentMaxWidth)/2, constPageHeight+constPageTopMargin)
+		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize, ddc.di.SubBuilderLogoString, "", 1, "CB", false, 0, "")
+	}
+
+	ddc.pdf.TransformEnd()
 
 	if err := ddc.pdf.Error(); err != nil {
 		return err
