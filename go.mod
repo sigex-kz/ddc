@@ -1,12 +1,14 @@
 module github.com/sigex-kz/ddc
 
-go 1.21
+go 1.22
+
+toolchain go1.22.0
 
 require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/pdfcpu/pdfcpu v0.8.1
 	github.com/prometheus/client_golang v1.20.3
 	github.com/vsenko/gofpdf v1.5.0
+	github.com/vsenko/pdfcpu v0.9.2
 )
 
 require (
@@ -23,9 +25,9 @@ require (
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	golang.org/x/image v0.19.0 // indirect
+	golang.org/x/image v0.21.0 // indirect
 	golang.org/x/sys v0.22.0 // indirect
-	golang.org/x/text v0.17.0 // indirect
+	golang.org/x/text v0.19.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

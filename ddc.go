@@ -8,11 +8,11 @@ import (
 	"io"
 	"strings"
 
-	pdfcpuapi "github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	pdfcpumodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	pdfcputypes "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/vsenko/gofpdf"
+	pdfcpuapi "github.com/vsenko/pdfcpu/pkg/api"
+	"github.com/vsenko/pdfcpu/pkg/pdfcpu"
+	pdfcpumodel "github.com/vsenko/pdfcpu/pkg/pdfcpu/model"
+	pdfcputypes "github.com/vsenko/pdfcpu/pkg/pdfcpu/types"
 )
 
 const (
