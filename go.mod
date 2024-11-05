@@ -8,7 +8,7 @@ require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/prometheus/client_golang v1.20.3
 	github.com/vsenko/gofpdf v1.5.0
-	github.com/vsenko/pdfcpu v0.9.2
+	github.com/vsenko/pdfcpu v0.9.4
 )
 
 require (
