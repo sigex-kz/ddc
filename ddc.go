@@ -309,9 +309,14 @@ func (ddc *Builder) initPdf() (pdf *gofpdf.Fpdf, err error) {
 
 func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText string, addPageNumber bool) error {
 	if headerText != "" {
+		position := "LM"
+		if ddc.di.ID != "" && ddc.di.Language == "kk/ru" {
+			position = "LT"
+		}
+
 		ddc.pdf.SetXY(constPageLeftMargin, constPageTopMargin)
 		ddc.pdf.SetFont(constFontRegular, "", 11)
-		ddc.pdf.CellFormat(constContentMaxWidth, constHeaderHeight, headerText, "", 1, "LM", false, 0, "")
+		ddc.pdf.CellFormat(constContentMaxWidth, constHeaderHeight, headerText, "", 1, position, false, 0, "")
 	}
 
 	if ddc.di.ID != "" {
