@@ -65,7 +65,12 @@ func getStoreEntry(id string) (e *entry, err error) {
 		return nil, errors.New("unknown id")
 	}
 
-	return o.(*entry), nil
+	e, ok = o.(*entry)
+	if !ok {
+		panic("unexpected storage issue: storage entry could not be converted to entry type")
+	}
+
+	return e, nil
 }
 
 func deleteStoreEntry(id string) {
