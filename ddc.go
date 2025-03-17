@@ -307,7 +307,17 @@ func (ddc *Builder) initPdf() (pdf *gofpdf.Fpdf, err error) {
 	return pdf, nil
 }
 
-func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText string, addPageNumber bool) error {
+func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText string, addPageNumber, isLandscape bool) error {
+	var contentMaxWidth, pageHeight float64
+
+	if !isLandscape {
+		contentMaxWidth = constContentMaxWidth
+		pageHeight = constPageHeight
+	} else {
+		contentMaxWidth = constPageHeight - constPageLeftMargin - constPageRightMargin
+		pageHeight = constPageWidth
+	}
+
 	if headerText != "" {
 		position := "LM"
 		if ddc.di.ID != "" && ddc.di.Language == "kk/ru" {
@@ -316,32 +326,32 @@ func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText strin
 
 		ddc.pdf.SetXY(constPageLeftMargin, constPageTopMargin)
 		ddc.pdf.SetFont(constFontRegular, "", 11)
-		ddc.pdf.CellFormat(constContentMaxWidth, constHeaderHeight, headerText, "", 1, position, false, 0, "")
+		ddc.pdf.CellFormat(contentMaxWidth, constHeaderHeight, headerText, "", 1, position, false, 0, "")
 	}
 
 	if ddc.di.ID != "" {
 		ddc.pdf.SetXY(constPageLeftMargin, constPageTopMargin)
 		ddc.pdf.SetFont(constFontRegular, "", 10)
-		ddc.pdf.CellFormat(constContentMaxWidth-constIDQRSize, constHeaderHeight-1, ddc.di.ID, "", 1, "RB", false, 0, "")
+		ddc.pdf.CellFormat(contentMaxWidth-constIDQRSize, constHeaderHeight-1, ddc.di.ID, "", 1, "RB", false, 0, "")
 
 		imgOptions := gofpdf.ImageOptions{
 			ReadDpi:   true,
 			ImageType: "png",
 		}
 		ddc.pdf.RegisterImageOptionsReader("id-qr-code.png", imgOptions, bytes.NewReader(ddc.di.IDQRCode))
-		ddc.pdf.ImageOptions("id-qr-code.png", constPageLeftMargin+constContentMaxWidth-constIDQRSize, constPageTopMargin, constIDQRSize, constIDQRSize, false, imgOptions, 0, "")
+		ddc.pdf.ImageOptions("id-qr-code.png", constPageLeftMargin+contentMaxWidth-constIDQRSize, constPageTopMargin, constIDQRSize, constIDQRSize, false, imgOptions, 0, "")
 
-		ddc.pdf.Line(constPageLeftMargin, constPageTopMargin+constHeaderHeight, constPageLeftMargin+constContentMaxWidth-constIDQRSize, constPageTopMargin+constHeaderHeight)
+		ddc.pdf.Line(constPageLeftMargin, constPageTopMargin+constHeaderHeight, constPageLeftMargin+contentMaxWidth-constIDQRSize, constPageTopMargin+constHeaderHeight)
 	} else {
-		ddc.pdf.Line(constPageLeftMargin, constPageTopMargin+constHeaderHeight, constPageLeftMargin+constContentMaxWidth, constPageTopMargin+constHeaderHeight)
+		ddc.pdf.Line(constPageLeftMargin, constPageTopMargin+constHeaderHeight, constPageLeftMargin+contentMaxWidth, constPageTopMargin+constHeaderHeight)
 	}
 
-	ddc.pdf.Line(constPageLeftMargin, constPageHeight-constPageBottomMargin-constFooterHeight, constPageLeftMargin+constContentMaxWidth, constPageHeight-constPageBottomMargin-constFooterHeight)
+	ddc.pdf.Line(constPageLeftMargin, pageHeight-constPageBottomMargin-constFooterHeight, constPageLeftMargin+contentMaxWidth, pageHeight-constPageBottomMargin-constFooterHeight)
 
 	if footerText != "" {
-		ddc.pdf.SetXY(constPageLeftMargin, constPageHeight-constPageBottomMargin-constFooterHeight)
+		ddc.pdf.SetXY(constPageLeftMargin, pageHeight-constPageBottomMargin-constFooterHeight)
 		ddc.pdf.SetFont(constFontRegular, "", 8)
-		ddc.pdf.CellFormat(constContentMaxWidth, constFooterHeight/2, footerText, "", 1, "LB", false, 0, "")
+		ddc.pdf.CellFormat(contentMaxWidth, constFooterHeight/2, footerText, "", 1, "LB", false, 0, "")
 
 		var descriptionBuilder strings.Builder
 		descriptionLength := 0
@@ -360,19 +370,19 @@ func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText strin
 			descriptionLength++
 		}
 		ddc.pdf.SetFont(constFontBold, "", 8)
-		ddc.pdf.CellFormat(constContentMaxWidth, constFooterHeight/2, descriptionBuilder.String(), "", 1, "LT", false, 0, "")
+		ddc.pdf.CellFormat(contentMaxWidth, constFooterHeight/2, descriptionBuilder.String(), "", 1, "LT", false, 0, "")
 	}
 
 	if addPageNumber {
-		ddc.pdf.SetXY(constPageLeftMargin, constPageHeight-constPageBottomMargin-constFooterHeight)
+		ddc.pdf.SetXY(constPageLeftMargin, pageHeight-constPageBottomMargin-constFooterHeight)
 		ddc.pdf.SetFont(constFontRegular, "", 11)
 		pageNumberText := fmt.Sprintf(ddc.t("стр. %v из %v"), ddc.pdf.PageNo(), ddc.totalPages)
-		ddc.pdf.CellFormat(constContentMaxWidth, constFooterHeight, pageNumberText, "", 1, "RM", false, 0, "")
+		ddc.pdf.CellFormat(contentMaxWidth, constFooterHeight, pageNumberText, "", 1, "RM", false, 0, "")
 	}
 
 	// Left side
 	ddc.pdf.TransformBegin()
-	ddc.pdf.TransformRotate(const90ccv, 0, constPageHeight)
+	ddc.pdf.TransformRotate(const90ccv, 0, pageHeight)
 
 	if ddc.di.LinkQRCode != nil {
 		imgOptions := gofpdf.ImageOptions{
@@ -380,19 +390,19 @@ func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText strin
 			ImageType: "png",
 		}
 		ddc.pdf.RegisterImageOptionsReader("link-qr-code.png", imgOptions, bytes.NewReader(ddc.di.LinkQRCode))
-		ddc.pdf.ImageOptions("link-qr-code.png", constPageBottomMargin, constPageHeight+constPageTopMargin, constLinkQRSize, constLinkQRSize, false, imgOptions, 0, "")
-		ddc.pdf.ImageOptions("link-qr-code.png", constPageHeight-constPageTopMargin-constLinkQRSize, constPageHeight+constPageTopMargin, constLinkQRSize, constLinkQRSize, false, imgOptions, 0, "")
+		ddc.pdf.ImageOptions("link-qr-code.png", constPageBottomMargin, pageHeight+constPageTopMargin, constLinkQRSize, constLinkQRSize, false, imgOptions, 0, "")
+		ddc.pdf.ImageOptions("link-qr-code.png", pageHeight-constPageTopMargin-constLinkQRSize, pageHeight+constPageTopMargin, constLinkQRSize, constLinkQRSize, false, imgOptions, 0, "")
 
 		ddc.pdf.SetFont(constFontMonoRegular, "", 6)
-		ddc.pdf.SetXY(constPageBottomMargin+constLinkQRSize, constPageHeight+constPageTopMargin+constLinkQRTextMargin)
+		ddc.pdf.SetXY(constPageBottomMargin+constLinkQRSize, pageHeight+constPageTopMargin+constLinkQRTextMargin)
 		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize, "<-- қол қойылған құжатты тексеріңіз", "", 1, "LT", false, 0, "")
-		ddc.pdf.SetXY(constPageBottomMargin+constLinkQRSize, constPageHeight+constPageTopMargin)
+		ddc.pdf.SetXY(constPageBottomMargin+constLinkQRSize, pageHeight+constPageTopMargin)
 		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize-constLinkQRTextMargin, "<-- проверить подписанный документ", "", 1, "LB", false, 0, "")
 
 		ddc.pdf.SetFont(constFontMonoRegular, "", 6)
-		ddc.pdf.SetXY(constPageHeight-constPageTopMargin-constLinkQRSize-constContentMaxWidth, constPageHeight+constPageTopMargin+constLinkQRTextMargin)
+		ddc.pdf.SetXY(pageHeight-constPageTopMargin-constLinkQRSize-constContentMaxWidth, pageHeight+constPageTopMargin+constLinkQRTextMargin)
 		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize, "қол қойылған құжатты тексеріңіз -->", "", 1, "RT", false, 0, "")
-		ddc.pdf.SetXY(constPageHeight-constPageTopMargin-constLinkQRSize-constContentMaxWidth, constPageHeight+constPageTopMargin)
+		ddc.pdf.SetXY(pageHeight-constPageTopMargin-constLinkQRSize-constContentMaxWidth, pageHeight+constPageTopMargin)
 		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize-constLinkQRTextMargin, "проверить подписанный документ -->", "", 1, "RB", false, 0, "")
 	}
 
@@ -402,12 +412,12 @@ func (ddc *Builder) addHeaderAndFooterToCurrentPage(headerText, footerText strin
 			ImageType: "png",
 		}
 		ddc.pdf.RegisterImageOptionsReader("id-qr-code-3.png", imgOptions, bytes.NewReader(ddc.di.BuilderLogo))
-		ddc.pdf.ImageOptions("id-qr-code-3.png", (constPageHeight-constBuilderLogoWidth)/2, constPageHeight+constPageTopMargin, constBuilderLogoWidth, constBuilderLogoHeight, false, imgOptions, 0, "")
+		ddc.pdf.ImageOptions("id-qr-code-3.png", (pageHeight-constBuilderLogoWidth)/2, pageHeight+constPageTopMargin, constBuilderLogoWidth, constBuilderLogoHeight, false, imgOptions, 0, "")
 	}
 
 	if ddc.di.SubBuilderLogoString != "" {
 		ddc.pdf.SetFont(constFontMonoRegular, "", 8)
-		ddc.pdf.SetXY((constPageHeight-constContentMaxWidth)/2, constPageHeight+constPageTopMargin)
+		ddc.pdf.SetXY((pageHeight-constContentMaxWidth)/2, pageHeight+constPageTopMargin)
 		ddc.pdf.CellFormat(constContentMaxWidth, constLinkQRSize, ddc.di.SubBuilderLogoString, "", 1, "CB", false, 0, "")
 	}
 
@@ -758,12 +768,12 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 		ddc.pdf.SetPage(i)
 
 		if i == 1 {
-			err := ddc.addHeaderAndFooterToCurrentPage("", "", false)
+			err := ddc.addHeaderAndFooterToCurrentPage("", "", false, false)
 			if err != nil {
 				return err
 			}
 		} else {
-			err := ddc.addHeaderAndFooterToCurrentPage("", ddc.t("Карточка электронного документа"), true)
+			err := ddc.addHeaderAndFooterToCurrentPage("", ddc.t("Карточка электронного документа"), true, false)
 			if err != nil {
 				return err
 			}
@@ -779,41 +789,81 @@ func (ddc *Builder) constructInfoBlock(visualizeDocument, visualizeSignatures bo
 
 func (ddc *Builder) constructDocumentVisualization() error {
 	for pageNum := 1; pageNum <= ddc.embeddedPDFNumPages; pageNum++ {
-		ddc.pdf.AddPage()
 
-		err := ddc.addHeaderAndFooterToCurrentPage(ddc.t("Визуализация электронного документа"), ddc.t("Карточка электронного документа"), true)
-		if err != nil {
-			return err
+		// Box location
+		var x, y, w, h float64
+
+		if ddc.embeddedPDFPagesSizes[pageNum-1].Height > ddc.embeddedPDFPagesSizes[pageNum-1].Width {
+			ddc.pdf.AddPageFormat("p", ddc.pdf.GetPageSizeStr("a4"))
+
+			err := ddc.addHeaderAndFooterToCurrentPage(ddc.t("Визуализация электронного документа"), ddc.t("Карточка электронного документа"), true, false)
+			if err != nil {
+				return err
+			}
+
+			embeddedPageScaledWidth := ddc.embeddedPDFPagesSizes[pageNum-1].Width
+			embeddedPageScaledHeight := ddc.embeddedPDFPagesSizes[pageNum-1].Height
+
+			if embeddedPageScaledWidth > constEmbeddedPageMaxWidth {
+				embeddedPageScaledHeight = embeddedPageScaledHeight * constEmbeddedPageMaxWidth / embeddedPageScaledWidth
+				embeddedPageScaledWidth = constEmbeddedPageMaxWidth
+			}
+
+			if embeddedPageScaledHeight > constEmbeddedPageMaxHeight {
+				embeddedPageScaledWidth = embeddedPageScaledWidth * constEmbeddedPageMaxHeight / embeddedPageScaledHeight
+				embeddedPageScaledHeight = constEmbeddedPageMaxHeight
+			}
+
+			xShift := (constEmbeddedPageMaxWidth - embeddedPageScaledWidth) / 2
+			if xShift < 0 {
+				xShift = 0
+			}
+
+			yShift := (constEmbeddedPageMaxHeight - embeddedPageScaledHeight) / 2
+			if yShift < 0 {
+				yShift = 0
+			}
+
+			x = float64(constPageLeftMargin) + xShift
+			y = constPageTopMargin + constHeaderHeight + yShift
+			w = embeddedPageScaledWidth
+			h = embeddedPageScaledHeight
+		} else {
+			ddc.pdf.AddPageFormat("l", ddc.pdf.GetPageSizeStr("a4"))
+
+			err := ddc.addHeaderAndFooterToCurrentPage(ddc.t("Визуализация электронного документа"), ddc.t("Карточка электронного документа"), true, true)
+			if err != nil {
+				return err
+			}
+
+			embeddedPageScaledWidth := ddc.embeddedPDFPagesSizes[pageNum-1].Width
+			embeddedPageScaledHeight := ddc.embeddedPDFPagesSizes[pageNum-1].Height
+
+			if embeddedPageScaledWidth > constEmbeddedPageMaxHeight {
+				embeddedPageScaledHeight = embeddedPageScaledHeight * constEmbeddedPageMaxHeight / embeddedPageScaledWidth
+				embeddedPageScaledWidth = constEmbeddedPageMaxHeight
+			}
+
+			if embeddedPageScaledHeight > (constEmbeddedPageMaxWidth - 2) {
+				embeddedPageScaledWidth = embeddedPageScaledWidth * (constEmbeddedPageMaxWidth - 2) / embeddedPageScaledHeight
+				embeddedPageScaledHeight = (constEmbeddedPageMaxWidth - 2)
+			}
+
+			xShift := (constEmbeddedPageMaxHeight - embeddedPageScaledWidth) / 2
+			if xShift < 0 {
+				xShift = 0
+			}
+
+			yShift := ((constEmbeddedPageMaxWidth-2)-embeddedPageScaledHeight)/2 + 1
+			if yShift < 0 {
+				yShift = 0
+			}
+
+			x = float64(constPageLeftMargin) + xShift
+			y = constPageTopMargin + constHeaderHeight + yShift
+			w = embeddedPageScaledWidth
+			h = embeddedPageScaledHeight
 		}
-
-		// Calculate location
-		embeddedPageScaledWidth := ddc.embeddedPDFPagesSizes[pageNum-1].Width
-		embeddedPageScaledHeight := ddc.embeddedPDFPagesSizes[pageNum-1].Height
-
-		if embeddedPageScaledWidth > constEmbeddedPageMaxWidth {
-			embeddedPageScaledHeight = embeddedPageScaledHeight * constEmbeddedPageMaxWidth / embeddedPageScaledWidth
-			embeddedPageScaledWidth = constEmbeddedPageMaxWidth
-		}
-
-		if embeddedPageScaledHeight > constEmbeddedPageMaxHeight {
-			embeddedPageScaledWidth = embeddedPageScaledWidth * constEmbeddedPageMaxHeight / embeddedPageScaledHeight
-			embeddedPageScaledHeight = constEmbeddedPageMaxHeight
-		}
-
-		xShift := (constEmbeddedPageMaxWidth - embeddedPageScaledWidth) / 2
-		if xShift < 0 {
-			xShift = 0
-		}
-
-		yShift := (constEmbeddedPageMaxHeight - embeddedPageScaledHeight) / 2
-		if yShift < 0 {
-			yShift = 0
-		}
-
-		x := float64(constPageLeftMargin) + xShift
-		y := constPageTopMargin + constHeaderHeight + yShift
-		w := embeddedPageScaledWidth
-		h := embeddedPageScaledHeight
 
 		// Box
 		r, g, b := ddc.pdf.GetDrawColor()
@@ -850,7 +900,7 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 
 		ddc.pdf.AddPage()
 
-		err := ddc.addHeaderAndFooterToCurrentPage(ddc.t("Визуализация электронной цифровой подписи"), ddc.t("Карточка электронного документа"), true)
+		err := ddc.addHeaderAndFooterToCurrentPage(ddc.t("Визуализация электронной цифровой подписи"), ddc.t("Карточка электронного документа"), true, false)
 		if err != nil {
 			return err
 		}
