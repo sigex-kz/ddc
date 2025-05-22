@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"time"
 )
 
 const (
@@ -30,8 +31,14 @@ func clamAVScan(data []byte) error {
 		return nil
 	}
 
-	conn, err := net.Dial(clamAVNetwork, clamAVAddress)
+	conn, err := net.DialTimeout(clamAVNetwork, clamAVAddress, time.Second)
 	if err != nil {
+		for range 10 {
+			conn, err = net.DialTimeout(clamAVNetwork, clamAVAddress, time.Second)
+			if err == nil {
+				break
+			}
+		}
 		return err
 	}
 	defer func() {
