@@ -676,7 +676,7 @@ func createPDFRes(ctx, otherCtx *model.Context, pageNrSrc, pageNrDest int, migra
 	}
 
 	// Retrieve content stream bytes of page dict.
-	pdfRes.Content, err = otherXRefTable.PageContent(d)
+	pdfRes.Content, err = otherXRefTable.PageContent(d, pageNrSrc)
 	if err != nil && err != model.ErrNoContent {
 		return err
 	}
@@ -1100,7 +1100,7 @@ func createExtGStateForStamp(ctx *model.Context, opacity float64) (*types.Indire
 	return ctx.IndRefForNewObject(d)
 }
 
-func insertPageResourcesForWM(ctx *model.Context, pageDict types.Dict, wm model.Watermark, gsID, xoID string) error {
+func insertPageResourcesForWM(pageDict types.Dict, wm model.Watermark, gsID, xoID string) error {
 	resourceDict := types.Dict(
 		map[string]types.Object{
 			"ExtGState": types.Dict(map[string]types.Object{gsID: *wm.ExtGState}),
@@ -1417,7 +1417,7 @@ func addPageWatermark(ctx *model.Context, pageNr int, wm model.Watermark) error 
 		err = updatePageResourcesForWM(ctx, inhPAttrs.Resources, wm, &gsID, &xoID)
 		d.Update("Resources", inhPAttrs.Resources)
 	} else {
-		err = insertPageResourcesForWM(ctx, d, wm, gsID, xoID)
+		err = insertPageResourcesForWM(d, wm, gsID, xoID)
 	}
 	if err != nil {
 		return err

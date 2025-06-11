@@ -394,7 +394,7 @@ func decodeImage(ctx *model.Context, sd *types.StreamDict, filters, lastFilter s
 func img(
 	ctx *model.Context,
 	sd *types.StreamDict,
-	thumb, imgMask bool,
+	thumb bool,
 	resourceID, filters, lastFilter string,
 	objNr int) (*model.Image, error) {
 
@@ -434,7 +434,7 @@ func ExtractImage(ctx *model.Context, sd *types.StreamDict, thumb bool, resource
 		return imageStub(ctx, sd, resourceID, filters, lastFilter, decodeParms, thumb, imgMask, objNr)
 	}
 
-	return img(ctx, sd, thumb, imgMask, resourceID, filters, lastFilter, objNr)
+	return img(ctx, sd, thumb, resourceID, filters, lastFilter, objNr)
 }
 
 // ExtractPageImages extracts all images used by pageNr.
@@ -627,7 +627,7 @@ func ExtractPageContent(ctx *model.Context, pageNr int) (io.Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	bb, err := ctx.PageContent(d)
+	bb, err := ctx.PageContent(d, pageNr)
 	if err != nil && err != model.ErrNoContent {
 		return nil, err
 	}

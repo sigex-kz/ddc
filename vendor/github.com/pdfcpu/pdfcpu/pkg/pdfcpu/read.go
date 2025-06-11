@@ -110,7 +110,7 @@ func ReadWithContext(c context.Context, rs io.ReadSeeker, conf *model.Configurat
 
 	// Make all objects explicitly available (load into memory) in corresponding xRefTable entries.
 	// Also decode any involved object streams.
-	if err = dereferenceXRefTable(c, ctx, conf); err != nil {
+	if err = dereferenceXRefTable(c, ctx); err != nil {
 		return nil, err
 	}
 
@@ -642,7 +642,7 @@ func xRefStreamDict(c context.Context, ctx *model.Context, o types.Object, objNr
 	return model.ParseXRefStreamDict(&sd)
 }
 
-func processXRefStream(ctx *model.Context, xsd *types.XRefStreamDict, objNr, genNr *int, offset *int64, offExtra int64, incr int) (prevOffset *int64, err error) {
+func processXRefStream(ctx *model.Context, xsd *types.XRefStreamDict, objNr *int, offset *int64, offExtra int64, incr int) (prevOffset *int64, err error) {
 	if log.ReadEnabled() {
 		log.Read.Println("processXRefStream: begin")
 	}
@@ -739,7 +739,7 @@ func parseXRefStream(c context.Context, ctx *model.Context, rd io.Reader, offset
 		return nil, err
 	}
 
-	return processXRefStream(ctx, xsd, objNr, genNr, offset, offExtra, incr)
+	return processXRefStream(ctx, xsd, objNr, offset, offExtra, incr)
 }
 
 // Parse an xRefStream for a hybrid PDF file.
@@ -1034,14 +1034,14 @@ func scanLine(s *bufio.Scanner) (s1 string, err error) {
 	return s1, nil
 }
 
-func isDict(s string) (bool, error) {
-	o, err := model.ParseObject(&s)
-	if err != nil {
-		return false, err
-	}
-	_, ok := o.(types.Dict)
-	return ok, nil
-}
+// func isDict(s string) (bool, error) {
+// 	o, err := model.ParseObject(&s)
+// 	if err != nil {
+// 		return false, err
+// 	}
+// 	_, ok := o.(types.Dict)
+// 	return ok, nil
+// }
 
 func scanTrailerDictStart(s *bufio.Scanner, line *string) error {
 	l := *line
@@ -1230,7 +1230,7 @@ func scanForVersion(rs io.ReadSeeker, prefix string) ([]byte, int, error) {
 			i := bytes.IndexByte(curBuf, '%')
 			if i < 0 {
 				// no match, check next block
-				off += bufSize
+				off += len(curBuf)
 				break
 			}
 
@@ -1238,6 +1238,7 @@ func scanForVersion(rs io.ReadSeeker, prefix string) ([]byte, int, error) {
 			if i < len(curBuf)-18 {
 				if !bytes.HasPrefix(curBuf[i:], []byte(prefix)) {
 					// No match, keep checking
+					off += i + 1
 					curBuf = curBuf[i+1:]
 					continue
 				}
@@ -1258,8 +1259,8 @@ func scanForVersion(rs io.ReadSeeker, prefix string) ([]byte, int, error) {
 			buf3 := append(curBuf[i:], buf2[:n]...)
 			if !bytes.HasPrefix(buf3, []byte(prefix)) {
 				// No match, keep checking
+				off += len(curBuf)
 				curBuf = buf2
-				off += bufSize
 				continue
 			}
 			off += i
@@ -2933,7 +2934,7 @@ func identifyRootVersion(xRefTable *model.XRefTable) error {
 
 // Parse all Objects including stream content from file and save to the corresponding xRefTableEntries.
 // This includes processing of object streams and linearization dicts.
-func dereferenceXRefTable(c context.Context, ctx *model.Context, conf *model.Configuration) error {
+func dereferenceXRefTable(c context.Context, ctx *model.Context) error {
 	if log.ReadEnabled() {
 		log.Read.Println("dereferenceXRefTable: begin")
 	}

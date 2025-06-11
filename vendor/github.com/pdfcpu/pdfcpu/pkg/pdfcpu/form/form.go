@@ -336,7 +336,7 @@ func collectRadioButtonGroupOptions(xRefTable *model.XRefTable, d types.Dict) ([
 		}
 	}
 
-	return vv, nil //strings.Join(vv, ","), nil
+	return vv, nil
 }
 
 func collectRadioButtonGroup(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMeta) error {
@@ -537,11 +537,7 @@ func collectTx(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMeta
 		if s1 != nil {
 			s = *s1
 		}
-		v := s
-		if i := strings.Index(s, "\n"); i >= 0 {
-			v = s[:i]
-			v += "\\n"
-		}
+		v := strings.ReplaceAll(s, "\x0A", "\\n")
 		if w := runewidth.StringWidth(v); w > fm.valMax {
 			fm.valMax = w
 		}
@@ -561,12 +557,7 @@ func collectTx(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMeta
 		if s1 != nil {
 			s = *s1
 		}
-		dv := s
-		if i := strings.Index(s, "\n"); i >= 0 {
-			dv = dv[:i]
-			dv += "\\n"
-		}
-
+		dv := strings.ReplaceAll(s, "\x0A", "\\n")
 		if w := runewidth.StringWidth(dv); w > fm.defMax {
 			fm.defMax = w
 		}
@@ -1434,8 +1425,10 @@ func resetCh(ctx *model.Context, d types.Dict, fonts map[string]types.IndirectRe
 		return err
 	}
 
+	da := d.StringEntry("DA")
+
 	if primitives.FieldFlags(*ff)&primitives.FieldCombo == 0 {
-		if err := primitives.EnsureListBoxAP(ctx, d, opts, ind, fonts); err != nil {
+		if err := primitives.EnsureListBoxAP(ctx, d, opts, ind, da, fonts); err != nil {
 			return err
 		}
 	}
@@ -1466,19 +1459,46 @@ func resetTx(ctx *model.Context, d types.Dict, fonts map[string]types.IndirectRe
 		d.Delete("V")
 	}
 
-	isDate := true
+	isDate := false
 	if s != "" {
 		_, err := primitives.DateFormatForDate(s)
 		isDate = err == nil
 	}
 
+	ff := d.IntEntry("Ff")
+	multiLine := ff != nil && uint(primitives.FieldFlags(*ff))&uint(primitives.FieldMultiline) > 0
+	comb := ff != nil && uint(primitives.FieldFlags(*ff))&uint(primitives.FieldComb) > 0
+
+	da := d.StringEntry("DA")
+
+	kids := d.ArrayEntry("Kids")
+	if len(kids) > 0 {
+
+		for _, o := range kids {
+
+			d, err := ctx.DereferenceDict(o)
+			if err != nil {
+				return err
+			}
+
+			if isDate {
+				err = primitives.EnsureDateFieldAP(ctx, d, s, da, fonts)
+			} else {
+				err = primitives.EnsureTextFieldAP(ctx, d, s, multiLine, comb, 0, da, fonts)
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
 	if isDate {
-		err = primitives.EnsureDateFieldAP(ctx, d, s, fonts)
+		err = primitives.EnsureDateFieldAP(ctx, d, s, da, fonts)
 	} else {
-		ff := d.IntEntry("Ff")
-		multiLine := ff != nil && uint(primitives.FieldFlags(*ff))&uint(primitives.FieldMultiline) > 0
-		comb := ff != nil && uint(primitives.FieldFlags(*ff))&uint(primitives.FieldComb) > 0
-		err = primitives.EnsureTextFieldAP(ctx, d, s, multiLine, comb, 0, fonts)
+		err = primitives.EnsureTextFieldAP(ctx, d, s, multiLine, comb, 0, da, fonts)
 	}
 
 	return err
@@ -1637,6 +1657,8 @@ func ensureAP(ctx *model.Context, d types.Dict, fi *fieldInfo, fonts map[string]
 		}
 	}
 
+	da := d.StringEntry("DA")
+
 	if *ft == "Ch" {
 
 		ff := d.IntEntry("Ff")
@@ -1651,7 +1673,7 @@ func ensureAP(ctx *model.Context, d types.Dict, fi *fieldInfo, fonts map[string]
 				v = s
 			}
 
-			if err := primitives.EnsureComboBoxAP(ctx, d, v, fonts); err != nil {
+			if err := primitives.EnsureComboBoxAP(ctx, d, v, da, fonts); err != nil {
 				return err
 			}
 
