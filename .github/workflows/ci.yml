@@ -27,6 +27,11 @@ jobs:
           ps aux
           cat /var/log/clamav/clamav.log
           CGO_ENABLED=0 go test -mod vendor -timeout 30m -count=1 -failfast ./... -v
+      - name: Archive tests output
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-output
+          path: tests-output/*
 
   build:
     if: startsWith( github.ref, 'refs/tags/v')
