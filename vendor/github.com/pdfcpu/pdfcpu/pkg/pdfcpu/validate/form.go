@@ -17,6 +17,7 @@ limitations under the License.
 package validate
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -276,10 +277,33 @@ func cacheSig(xRefTable *model.XRefTable, d types.Dict, dictName string, form bo
 		}
 	}
 
-	arr, err := validateRectangleEntry(xRefTable, d, dictName, "Rect", REQUIRED, model.V10, nil)
-	if err != nil {
-		return err
+	var arr types.Array
+	var err error
+
+	o, ok := d.Find("Kids")
+	if !ok {
+		// terminal field
+		arr, err = validateRectangleEntry(xRefTable, d, dictName, "Rect", REQUIRED, model.V10, nil)
+		if err != nil {
+			return err
+		}
+	} else {
+		// non terminal field
+		kids, err := xRefTable.DereferenceArray(o)
+		if err != nil {
+			return err
+		}
+		// TODO Validation of len(kids) necessary?
+		d1, err := xRefTable.DereferenceDict(kids[0])
+		if err != nil {
+			return err
+		}
+		arr, err = validateRectangleEntry(xRefTable, d1, dictName, "Rect", REQUIRED, model.V10, nil)
+		if err != nil {
+			return err
+		}
 	}
+
 	r := types.RectForArray(arr)
 	sig.Visible = r.Visible() && !dts
 
@@ -301,13 +325,14 @@ func isTextField(ft *types.Name) bool {
 }
 
 func validateV(xRefTable *model.XRefTable, objNr, incr int, d types.Dict, dictName string, terminalNode, textField, oneKid bool) error {
-	v, err := validateEntry(xRefTable, d, dictName, "V", OPTIONAL, model.V10)
+	_, err := validateEntry(xRefTable, d, dictName, "V", OPTIONAL, model.V10)
 	if err != nil {
 		return err
 	}
-	if textField && v != nil && !terminalNode && !oneKid {
-		return errors.New("\"V\" not allowed in non terminal text fields with more than one kid")
-	}
+	// Ignore kids if V is present
+	// if textField && v != nil && !terminalNode && !oneKid {
+	// 	return errors.New("\"V\" not allowed in non terminal text fields with more than one kid")
+	// }
 	if err := cacheSig(xRefTable, d, dictName, true, objNr, incr); err != nil {
 		return err
 	}
@@ -315,13 +340,14 @@ func validateV(xRefTable *model.XRefTable, objNr, incr int, d types.Dict, dictNa
 }
 
 func validateDV(xRefTable *model.XRefTable, d types.Dict, dictName string, terminalNode, textField, oneKid bool) error {
-	dv, err := validateEntry(xRefTable, d, dictName, "DV", OPTIONAL, model.V10)
+	_, err := validateEntry(xRefTable, d, dictName, "DV", OPTIONAL, model.V10)
 	if err != nil {
 		return err
 	}
-	if textField && dv != nil && !terminalNode && !oneKid {
-		return errors.New("\"DV\" not allowed in non terminal text fields with more than one kid")
-	}
+	// Ignore kids if DV is present.
+	// if textField && dv != nil && !terminalNode && !oneKid {
+	// 	return errors.New("\"DV\" not allowed in non terminal text fields with more than one kid")
+	// }
 	return nil
 }
 
@@ -416,7 +442,9 @@ func validateFormFieldKids(xRefTable *model.XRefTable, objNr, incr int, d types.
 	var err error
 	// dict represents a non terminal field.
 	if d.Subtype() != nil && *d.Subtype() == "Widget" {
-		return errors.New("pdfcpu: validateFormFieldKids: non terminal field can not be widget annotation")
+		if xRefTable.ValidationMode == model.ValidationStrict {
+			return errors.New("pdfcpu: validateFormFieldKids: non terminal field can not be widget annotation")
+		}
 	}
 
 	a, err := xRefTable.DereferenceArray(o)
@@ -446,7 +474,11 @@ func validateFormFieldKids(xRefTable *model.XRefTable, objNr, incr int, d types.
 		}
 		valid, err := xRefTable.IsValid(ir)
 		if err != nil {
-			return err
+			if xRefTable.ValidationMode == model.ValidationStrict {
+				return err
+			}
+			model.ShowSkipped(fmt.Sprintf("missing form field kid obj #%s", ir.ObjectNumber.String()))
+			valid = true
 		}
 
 		if !valid {
@@ -495,7 +527,11 @@ func validateFormFields(xRefTable *model.XRefTable, arr types.Array, requiresDA 
 
 		valid, err := xRefTable.IsValid(ir)
 		if err != nil {
-			return err
+			if xRefTable.ValidationMode == model.ValidationStrict {
+				return err
+			}
+			model.ShowSkipped(fmt.Sprintf("missing form field obj #%s", ir.ObjectNumber.String()))
+			valid = true
 		}
 
 		if !valid {

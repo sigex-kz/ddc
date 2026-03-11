@@ -183,17 +183,18 @@ type ReadContext struct {
 	FileSize            int64         // Input file size.
 	RS                  io.ReadSeeker // Input read seeker.
 	EolCount            int           // 1 or 2 characters used for eol.
-	BinaryTotalSize     int64         // total stream data
-	BinaryImageSize     int64         // total image stream data
-	BinaryFontSize      int64         // total font stream data (fontfiles)
-	BinaryImageDuplSize int64         // total obsolet image stream data after optimization
-	BinaryFontDuplSize  int64         // total obsolet font stream data after optimization
-	Linearized          bool          // File is linearized.
-	Hybrid              bool          // File is a hybrid PDF file.
-	UsingObjectStreams  bool          // File is using object streams.
-	ObjectStreams       types.IntSet  // All object numbers of any object streams found which need to be decoded.
-	UsingXRefStreams    bool          // File is using xref streams.
-	XRefStreams         types.IntSet  // All object numbers of any xref streams found.
+	RepairOffset        int64
+	BinaryTotalSize     int64        // total stream data
+	BinaryImageSize     int64        // total image stream data
+	BinaryFontSize      int64        // total font stream data (fontfiles)
+	BinaryImageDuplSize int64        // total obsolet image stream data after optimization
+	BinaryFontDuplSize  int64        // total obsolet font stream data after optimization
+	Linearized          bool         // File is linearized.
+	Hybrid              bool         // File is a hybrid PDF file.
+	UsingObjectStreams  bool         // File is using object streams.
+	ObjectStreams       types.IntSet // All object numbers of any object streams found which need to be decoded.
+	UsingXRefStreams    bool         // File is using xref streams.
+	XRefStreams         types.IntSet // All object numbers of any xref streams found.
 }
 
 func newReadContext(rs io.ReadSeeker) (*ReadContext, error) {
@@ -282,12 +283,13 @@ func (rc *ReadContext) ReadFileSize() int {
 type OptimizationContext struct {
 
 	// Font section
-	PageFonts         []types.IntSet      // For each page a registry of font object numbers.
-	FontObjects       map[int]*FontObject // FontObject lookup table by font object number.
-	FormFontObjects   map[int]*FontObject // FormFontObject lookup table by font object number.
-	Fonts             map[string][]int    // All font object numbers registered for a font name.
-	DuplicateFonts    map[int]types.Dict  // Registry of duplicate font dicts.
-	DuplicateFontObjs types.IntSet        // The set of objects that represents the union of the object graphs of all duplicate font dicts.
+	PageFonts           []types.IntSet      // For each page a registry of font object numbers.
+	FontObjects         map[int]*FontObject // FontObject lookup table by font object number.
+	FormFontObjects     map[int]*FontObject // FormFontObject lookup table by font object number.
+	Fonts               map[string][]int    // All font object numbers registered for a font name.
+	DuplicateFonts      map[int]types.Dict  // Registry of duplicate font dicts.
+	DuplicateFontObjs   types.IntSet        // The set of objects that represents the union of the object graphs of all duplicate font dicts.
+	CorruptFontResDicts []types.Dict        // Corrupted fontDicts encountered during bypassing xreftable.
 
 	// Image section
 	PageImages         []types.IntSet                // For each page a registry of image object numbers.
@@ -307,11 +309,12 @@ type OptimizationContext struct {
 
 func newOptimizationContext() *OptimizationContext {
 	return &OptimizationContext{
-		FontObjects:          map[int]*FontObject{},
-		FormFontObjects:      map[int]*FontObject{},
-		Fonts:                map[string][]int{},
-		DuplicateFonts:       map[int]types.Dict{},
-		DuplicateFontObjs:    types.IntSet{},
+		FontObjects:       map[int]*FontObject{},
+		FormFontObjects:   map[int]*FontObject{},
+		Fonts:             map[string][]int{},
+		DuplicateFonts:    map[int]types.Dict{},
+		DuplicateFontObjs: types.IntSet{},
+
 		ImageObjects:         map[int]*ImageObject{},
 		DuplicateImages:      map[int]*DuplicateImageObject{},
 		DuplicateImageObjs:   types.IntSet{},

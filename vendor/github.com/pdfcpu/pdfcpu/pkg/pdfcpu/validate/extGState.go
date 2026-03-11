@@ -28,7 +28,7 @@ func validateBlendMode(s string) bool {
 
 	// see 11.3.5; table 136
 
-	return types.MemberOf(s, []string{"None", "Normal", "Compatible", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
+	return types.MemberOf(s, []string{"None", "Normal", "Compatible", "Multiply", "Mult", "Screen", "Overlay", "Darken", "Lighten",
 		"ColorDodge", "ColorBurn", "HardLight", "SoftLight", "Difference", "Exclusion",
 		"Hue", "Saturation", "Color", "Luminosity"})
 }
@@ -40,12 +40,14 @@ func validateLineDashPatternEntry(xRefTable *model.XRefTable, d types.Dict, dict
 		return err
 	}
 
-	_, err = validateIntegerArray(xRefTable, a[0])
+	// We are dealing with integers which may be represented by Integer or Float objects.
+
+	_, err = validateNumberArray(xRefTable, a[0])
 	if err != nil {
 		return err
 	}
 
-	_, err = validateInteger(xRefTable, a[1], nil)
+	_, err = validateNumber(xRefTable, a[1])
 
 	return err
 }
@@ -817,7 +819,11 @@ func validateExtGStateDictPart1(xRefTable *model.XRefTable, d types.Dict, dictNa
 	}
 
 	// op, boolean, optional, since V1.3
-	_, err = validateBooleanEntry(xRefTable, d, dictName, "op", OPTIONAL, model.V13, nil)
+	sinceVersion := model.V13
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V12
+	}
+	_, err = validateBooleanEntry(xRefTable, d, dictName, "op", OPTIONAL, sinceVersion, nil)
 	if err != nil {
 		return err
 	}
@@ -874,7 +880,11 @@ func validateExtGStateDictPart2(xRefTable *model.XRefTable, d types.Dict, dictNa
 
 	// HT, dict, stream or name, optional
 	// half tone dictionary or stream or /Default, see 10.5
-	err = validateHalfToneEntry(xRefTable, d, dictName, "HT", OPTIONAL, model.V12)
+	sinceVersion := model.V12
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V11
+	}
+	err = validateHalfToneEntry(xRefTable, d, dictName, "HT", OPTIONAL, sinceVersion)
 	if err != nil {
 		return err
 	}
@@ -886,7 +896,7 @@ func validateExtGStateDictPart2(xRefTable *model.XRefTable, d types.Dict, dictNa
 	}
 
 	// SM, number, optional, since V1.3, smoothness tolerance
-	sinceVersion := model.V13
+	sinceVersion = model.V13
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		sinceVersion = model.V12
 	}
@@ -906,7 +916,7 @@ func validateExtGStateDictPart3(xRefTable *model.XRefTable, d types.Dict, dictNa
 	// BM, name or array, optional, since V1.4
 	sinceVersion := model.V14
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		sinceVersion = model.V13
+		sinceVersion = model.V12
 	}
 	err := validateBlendModeEntry(xRefTable, d, dictName, "BM", OPTIONAL, sinceVersion)
 	if err != nil {
@@ -936,7 +946,7 @@ func validateExtGStateDictPart3(xRefTable *model.XRefTable, d types.Dict, dictNa
 	// ca, number, optional, since V1.4, same as CA but for nonstroking operations.
 	sinceVersion = model.V14
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		sinceVersion = model.V13
+		sinceVersion = model.V11
 	}
 	_, err = validateNumberEntry(xRefTable, d, dictName, "ca", OPTIONAL, sinceVersion, nil)
 	if err != nil {

@@ -265,14 +265,18 @@ func validateFileSpecDictEFAndRF(xRefTable *model.XRefTable, d types.Dict, dictN
 	}
 
 	// EF, required if RF present, dict of embedded file streams, since 1.3
-	efDict, err := validateDictEntry(xRefTable, d, dictName, "EF", rfDict != nil, model.V13, nil)
+	sinceVersion := model.V13
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V11
+	}
+	efDict, err := validateDictEntry(xRefTable, d, dictName, "EF", rfDict != nil, sinceVersion, nil)
 	if err != nil {
 		return err
 	}
 
 	// Type, required if EF, EP or RF present, name
 	validate := func(s string) bool {
-		return s == "Filespec" || (xRefTable.ValidationMode == model.ValidationRelaxed && s == "F")
+		return s == "Filespec" || s == "FileSpec" || (xRefTable.ValidationMode == model.ValidationRelaxed && s == "F")
 	}
 	required := rfDict != nil || efDict != nil || hasEP
 	if _, err = validateNameEntry(xRefTable, d, dictName, "Type", required, model.V10, validate); err != nil {
@@ -366,7 +370,7 @@ func validateFileSpecDictPart2(xRefTable *model.XRefTable, d types.Dict, dictNam
 	// Thumb, optional, thumbnail image, since V2.0
 	sinceVersion = model.V20
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		sinceVersion = model.V17
+		sinceVersion = model.V14
 	}
 	if _, err := validateStreamDictEntry(xRefTable, d, dictName, "Thumb", OPTIONAL, sinceVersion, nil); err != nil {
 		return err

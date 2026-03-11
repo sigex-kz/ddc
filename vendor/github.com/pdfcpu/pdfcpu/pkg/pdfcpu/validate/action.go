@@ -113,16 +113,23 @@ func validateGoToEActionDict(xRefTable *model.XRefTable, d types.Dict, dictName 
 		if xRefTable.ValidationMode == model.ValidationStrict {
 			return err
 		}
-		if err = validateActionDestinationEntry(xRefTable, d, dictName, "Dest", REQUIRED, model.V10); err != nil {
-			return err
+		err = validateActionDestinationEntry(xRefTable, d, dictName, "Dest", REQUIRED, model.V10)
+		if err != nil && xRefTable.ValidationMode == model.ValidationRelaxed {
+			err = nil
+			model.ShowSkipped("GotoEAction: missing \"D\"")
+		} else {
+			d["D"] = d["Dest"]
+			delete(d, "Dest")
+			model.ShowRepaired("GotoEAction destination")
 		}
-		d["D"] = d["Dest"]
-		delete(d, "Dest")
-		model.ShowRepaired("GotoEAction destination")
 	}
 
 	// NewWindow, optional, boolean, since V1.2
-	_, err = validateBooleanEntry(xRefTable, d, dictName, "NewWindow", OPTIONAL, model.V12, nil)
+	sinceVersion := model.V12
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V11
+	}
+	_, err = validateBooleanEntry(xRefTable, d, dictName, "NewWindow", OPTIONAL, sinceVersion, nil)
 	if err != nil {
 		return err
 	}
@@ -574,7 +581,9 @@ func validateNamedActionDict(xRefTable *model.XRefTable, d types.Dict, dictName 
 		}
 
 		// Some known non standard named actions
-		if types.MemberOf(s, []string{"GoToPage", "GoBack", "GoForward", "Find", "Print", "SaveAs", "Quit", "FullScreen"}) {
+		if types.MemberOf(s, []string{
+			"AcroSrch:Query", "Find", "FindAgain", "FindAgainDoc", "FindPrevious", "FindPreviousDoc", "FullScreen", "GoBack", "GoBackDoc",
+			"GoForward", "GoToPage", "Print", "Quit", "SaveAs", "FitPage", "FitWidth", "Close", "CropPages", "ZoomViewIn"}) {
 			return true
 		}
 
@@ -660,7 +669,11 @@ func validateImportDataActionDict(xRefTable *model.XRefTable, d types.Dict, dict
 
 func validateJavaScript(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool) error {
 
-	o, err := validateEntry(xRefTable, d, dictName, entryName, required, model.V13)
+	sinceVersion := model.V13
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V12
+	}
+	o, err := validateEntry(xRefTable, d, dictName, entryName, required, sinceVersion)
 	if err != nil || o == nil {
 		return err
 	}
@@ -809,31 +822,37 @@ func validateGoTo3DViewActionDict(xRefTable *model.XRefTable, d types.Dict, dict
 func validateActionDictCore(xRefTable *model.XRefTable, n *types.Name, d types.Dict) error {
 
 	for k, v := range map[string]struct {
-		validate     func(xRefTable *model.XRefTable, d types.Dict, dictName string) error
-		sinceVersion model.Version
+		validate            func(xRefTable *model.XRefTable, d types.Dict, dictName string) error
+		sinceVersion        model.Version
+		sinceVersionRelaxed model.Version
 	}{
-		"GoTo":        {validateGoToActionDict, model.V10},
-		"GoToR":       {validateGoToRActionDict, model.V10},
-		"GoToE":       {validateGoToEActionDict, model.V16},
-		"Launch":      {validateLaunchActionDict, model.V10},
-		"Thread":      {validateThreadActionDict, model.V10},
-		"URI":         {validateURIActionDict, model.V10},
-		"Sound":       {validateSoundActionDict, model.V12},
-		"Movie":       {validateMovieActionDict, model.V12},
-		"Hide":        {validateHideActionDict, model.V12},
-		"Named":       {validateNamedActionDict, model.V12},
-		"SubmitForm":  {validateSubmitFormActionDict, model.V10},
-		"ResetForm":   {validateResetFormActionDict, model.V12},
-		"ImportData":  {validateImportDataActionDict, model.V12},
-		"JavaScript":  {validateJavaScriptActionDict, model.V13},
-		"SetOCGState": {validateSetOCGStateActionDict, model.V15},
-		"Rendition":   {validateRenditionActionDict, model.V14}, //model.V15
-		"Trans":       {validateTransActionDict, model.V15},
-		"GoTo3DView":  {validateGoTo3DViewActionDict, model.V16},
+		"GoTo":        {validateGoToActionDict, model.V10, model.V10},
+		"GoToR":       {validateGoToRActionDict, model.V10, model.V10},
+		"GoToE":       {validateGoToEActionDict, model.V16, model.V11},
+		"Launch":      {validateLaunchActionDict, model.V10, model.V10},
+		"Thread":      {validateThreadActionDict, model.V10, model.V10},
+		"URI":         {validateURIActionDict, model.V10, model.V10},
+		"Sound":       {validateSoundActionDict, model.V12, model.V12},
+		"Movie":       {validateMovieActionDict, model.V12, model.V12},
+		"Hide":        {validateHideActionDict, model.V12, model.V12},
+		"Named":       {validateNamedActionDict, model.V12, model.V12},
+		"SubmitForm":  {validateSubmitFormActionDict, model.V10, model.V10},
+		"ResetForm":   {validateResetFormActionDict, model.V12, model.V12},
+		"ImportData":  {validateImportDataActionDict, model.V12, model.V12},
+		"JavaScript":  {validateJavaScriptActionDict, model.V13, model.V12},
+		"SetOCGState": {validateSetOCGStateActionDict, model.V15, model.V15},
+		"Rendition":   {validateRenditionActionDict, model.V15, model.V14},
+		"Trans":       {validateTransActionDict, model.V15, model.V15},
+		"GoTo3DView":  {validateGoTo3DViewActionDict, model.V16, model.V16},
 	} {
 		if n.Value() == k {
 
-			err := xRefTable.ValidateVersion(k, v.sinceVersion)
+			sinceVersion := v.sinceVersion
+			if xRefTable.ValidationMode == model.ValidationRelaxed {
+				sinceVersion = v.sinceVersionRelaxed
+			}
+
+			err := xRefTable.ValidateVersion(k, sinceVersion)
 			if err != nil {
 				return err
 			}
@@ -935,7 +954,7 @@ func validateAdditionalActions(xRefTable *model.XRefTable, dict types.Dict, dict
 		case "fieldOrAnnot":
 			// A terminal form field may be merged with a widget annotation.
 			fieldOptions := []string{"K", "F", "V", "C"}
-			annotOptions := []string{"E", "X", "D", "U", "Fo", "Bl", "PO", "PC", "PV", "Pl"}
+			annotOptions := []string{"E", "X", "D", "U", "Fo", "Bl", "PO", "PC", "PV", "PI"}
 			options := append(fieldOptions, annotOptions...)
 			if types.MemberOf(s, options) {
 				return true

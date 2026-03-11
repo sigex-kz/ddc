@@ -132,7 +132,11 @@ func validatePrinterPreferences(xRefTable *model.XRefTable, d types.Dict, dictNa
 	validate = func(s string) bool {
 		return types.MemberOf(s, []string{"Simplex", "DuplexFlipShortEdge", "DuplexFlipLongEdge"})
 	}
-	n, err = validateNameEntry(xRefTable, d, dictName, "Duplex", OPTIONAL, model.V17, validate)
+	sinceVersion = model.V17
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V15
+	}
+	n, err = validateNameEntry(xRefTable, d, dictName, "Duplex", OPTIONAL, sinceVersion, validate)
 	if err != nil {
 		return err
 	}
@@ -140,12 +144,20 @@ func validatePrinterPreferences(xRefTable *model.XRefTable, d types.Dict, dictNa
 		vp.Duplex = model.PaperHandlingFor(n.String())
 	}
 
-	vp.PickTrayByPDFSize, err = validateFlexBooleanEntry(xRefTable, d, dictName, "PickTrayByPDFSize", OPTIONAL, model.V17)
+	sinceVersion = model.V17
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V15
+	}
+	vp.PickTrayByPDFSize, err = validateFlexBooleanEntry(xRefTable, d, dictName, "PickTrayByPDFSize", OPTIONAL, sinceVersion)
 	if err != nil {
 		return err
 	}
 
-	vp.NumCopies, err = validateIntegerEntry(xRefTable, d, dictName, "NumCopies", OPTIONAL, model.V17, func(i int) bool { return i >= 1 })
+	sinceVersion = model.V17
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V15
+	}
+	vp.NumCopies, err = validateIntegerEntry(xRefTable, d, dictName, "NumCopies", OPTIONAL, sinceVersion, func(i int) bool { return i >= 1 })
 	if err != nil {
 		return err
 	}
@@ -215,8 +227,12 @@ func validateViewerPreferences(xRefTable *model.XRefTable, rootDict types.Dict, 
 		return err
 	}
 
+	vv := []string{"UseNone", "UseOutlines", "UseThumbs", "UseOC"}
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		vv = append(vv, "PageOnly")
+	}
 	validate := func(s string) bool {
-		return types.MemberOf(s, []string{"UseNone", "UseOutlines", "UseThumbs", "UseOC"})
+		return types.MemberOf(s, vv)
 	}
 	n, err := validateNameEntry(xRefTable, d, dictName, "NonFullScreenPageMode", OPTIONAL, model.V10, validate)
 	if err != nil {

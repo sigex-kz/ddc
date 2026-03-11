@@ -321,7 +321,7 @@ func validateDictEntry(xRefTable *model.XRefTable, d types.Dict, dictName, entry
 	}
 
 	// Validation
-	if validate != nil && !validate(d) {
+	if validate != nil && len(d) > 0 && !validate(d) {
 		return nil, errors.Errorf("validateDictEntry: dict=%s entry=%s invalid dict entry", dictName, entryName)
 	}
 
@@ -482,6 +482,9 @@ func validateIndRefArrayEntry(xRefTable *model.XRefTable, d types.Dict, dictName
 	}
 
 	for i, o := range a {
+		if o == nil {
+			continue
+		}
 		if _, ok := o.(types.IndirectRef); !ok {
 			return nil, errors.Errorf("pdfcpu: validateIndRefArrayEntry: invalid type at index %d\n", i)
 		}

@@ -24,7 +24,7 @@ import (
 
 var ErrBookmarksRepair = errors.New("pdfcpu: bookmarks repair failed")
 
-func validateTitle(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+func validateOutlineItemDictTitle(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
 	_, err := validateStringEntry(xRefTable, d, dictName, "Title", REQUIRED, model.V10, nil)
 	if err != nil {
 		if xRefTable.ValidationMode == model.ValidationStrict {
@@ -37,32 +37,38 @@ func validateTitle(xRefTable *model.XRefTable, d types.Dict, dictName string) er
 	return nil
 }
 
+func validateOutlineItemDictParent(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+	required := REQUIRED
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		required = OPTIONAL
+	}
+	ir, err := validateIndRefEntry(xRefTable, d, dictName, "Parent", required, model.V10)
+	if err != nil {
+		return err
+	}
+	if ir != nil {
+		if _, err = xRefTable.DereferenceDict(*ir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateOutlineItemDict(xRefTable *model.XRefTable, d types.Dict) error {
 	dictName := "outlineItemDict"
 
 	// Title, required, text string
-	if err := validateTitle(xRefTable, d, dictName); err != nil {
+	if err := validateOutlineItemDictTitle(xRefTable, d, dictName); err != nil {
 		return err
 	}
 
 	// Parent, required, dict indRef
-	ir, err := validateIndRefEntry(xRefTable, d, dictName, "Parent", REQUIRED, model.V10)
-	if err != nil {
+	if err := validateOutlineItemDictParent(xRefTable, d, dictName); err != nil {
 		return err
 	}
-	_, err = xRefTable.DereferenceDict(*ir)
-	if err != nil {
-		return err
-	}
-
-	// // Count, optional, int
-	// _, err = validateIntegerEntry(xRefTable, d, dictName, "Count", OPTIONAL, model.V10, nil)
-	// if err != nil {
-	// 	return err
-	// }
 
 	// SE, optional, dict indRef, since V1.3
-	ir, err = validateIndRefEntry(xRefTable, d, dictName, "SE", OPTIONAL, model.V13)
+	ir, err := validateIndRefEntry(xRefTable, d, dictName, "SE", OPTIONAL, model.V13)
 	if err != nil {
 		return err
 	}
@@ -74,18 +80,20 @@ func validateOutlineItemDict(xRefTable *model.XRefTable, d types.Dict) error {
 	}
 
 	// C, optional, array of 3 numbers, since V1.4
-	version := model.V14
+	sinceVersion := model.V14
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		version = model.V13
+		sinceVersion = model.V13
 	}
-	_, err = validateNumberArrayEntry(xRefTable, d, dictName, "C", OPTIONAL, version, func(a types.Array) bool { return len(a) == 3 })
-	if err != nil {
+	if _, err = validateNumberArrayEntry(xRefTable, d, dictName, "C", OPTIONAL, sinceVersion, func(a types.Array) bool { return len(a) == 3 }); err != nil {
 		return err
 	}
 
 	// F, optional integer, since V1.4
-	_, err = validateIntegerEntry(xRefTable, d, dictName, "F", OPTIONAL, model.V14, nil)
-	if err != nil {
+	sinceVersion = model.V14
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V13
+	}
+	if _, err = validateIntegerEntry(xRefTable, d, dictName, "F", OPTIONAL, sinceVersion, nil); err != nil {
 		return err
 	}
 
@@ -94,10 +102,8 @@ func validateOutlineItemDict(xRefTable *model.XRefTable, d types.Dict) error {
 	if err != nil {
 		return err
 	}
-
 	if destName != "" {
-		_, err = xRefTable.DereferenceDestArray(destName)
-		if err != nil && xRefTable.ValidationMode == model.ValidationRelaxed {
+		if _, err = xRefTable.DereferenceDestArray(destName); err != nil && xRefTable.ValidationMode == model.ValidationRelaxed {
 			model.ShowDigestedSpecViolation("outlineDict with unresolved destination")
 			return nil
 		}
@@ -209,12 +215,14 @@ func validateOutlineTree(xRefTable *model.XRefTable, first, last *types.Indirect
 		}
 		if ok {
 			if count != 0 {
-				return 0, 0, errors.New("pdfcpu: validateOutlineTree: empty outline item dict \"Count\" must be 0")
+				if xRefTable.ValidationMode == model.ValidationStrict {
+					return 0, 0, errors.New("pdfcpu: validateOutlineTree: empty outline item dict \"Count\" must be 0")
+				}
 			}
 			continue
 		}
 
-		if err := scanOutlineItems(xRefTable, firstChild, lastChild, m, fixed); err != nil {
+		if err := scanAndFixOutlineItems(xRefTable, firstChild, lastChild, m, fixed); err != nil {
 			return 0, 0, err
 		}
 
@@ -283,6 +291,11 @@ func firstOfRemainder(xRefTable *model.XRefTable, last *types.IndirectRef, duplO
 		if err != nil {
 			return 0, nil, err
 		}
+		if len(d) == 0 {
+			if xRefTable.ValidationMode == model.ValidationStrict {
+				return 0, nil, errors.New("pdfcpu: validateOutlines: corrupt outline items detected")
+			}
+		}
 		irPrev := d.IndirectRefEntry("Prev")
 		if irPrev == nil {
 			break
@@ -314,74 +327,100 @@ func removeDuplFirst(xRefTable *model.XRefTable, first, last *types.IndirectRef,
 	return nil
 }
 
-func scanOutlineItems(xRefTable *model.XRefTable, first, last *types.IndirectRef, m map[int]bool, fixed *bool) error {
-	var (
-		dOld     types.Dict
-		objNrOld int
-	)
+func handleCircular(xRefTable *model.XRefTable, dict types.Dict, first *types.IndirectRef, fixed *bool) error {
+	if xRefTable.ValidationMode == model.ValidationStrict {
+		return errors.New("pdfcpu: validateOutlines: circular outline items detected")
+	}
+	dict["Prev"] = *first
+	delete(dict, "Next")
+	*fixed = true
+	return nil
+}
 
+func handleCorruptDict(xRefTable *model.XRefTable) error {
+	if xRefTable.ValidationMode == model.ValidationStrict {
+		return errors.New("pdfcpu: validateOutlines: corrupt outline items detected")
+	}
+	return ErrBookmarksRepair
+}
+
+func handleDuplicate(
+	xRefTable *model.XRefTable,
+	ir, first, last *types.IndirectRef,
+	prevDict types.Dict,
+	objNr, prevObjNr int) error {
+
+	if ir == first {
+		return removeDuplFirst(xRefTable, first, last, objNr, prevObjNr)
+	}
+
+	if ir == last {
+		delete(prevDict, "Next")
+		last.ObjectNumber = types.Integer(prevObjNr)
+		return nil
+	}
+
+	nextObjNr, _, _ := firstOfRemainder(xRefTable, last, objNr, prevObjNr)
+	if nextObjNr == 0 {
+		return ErrBookmarksRepair
+	}
+
+	nextRef := prevDict.IndirectRefEntry("Next")
+	if nextRef == nil {
+		return ErrBookmarksRepair
+	}
+
+	prevDict["Next"] = *types.NewIndirectRef(nextObjNr, 0)
+
+	return nil
+}
+
+func scanAndFixOutlineItems(xRefTable *model.XRefTable, first, last *types.IndirectRef, seen map[int]bool, fixed *bool) error {
 	visited := map[int]bool{}
-	objNr := first.ObjectNumber.Value()
+	var prevDict types.Dict
+	var prevObjNr int
 
 	for ir := first; ir != nil; {
+		objNr := ir.ObjectNumber.Value()
+
+		if visited[objNr] {
+			return handleCircular(xRefTable, prevDict, first, fixed)
+		}
 		visited[objNr] = true
-		d1, err := xRefTable.DereferenceDict(*ir)
+
+		dict, err := xRefTable.DereferenceDict(*ir)
 		if err != nil {
 			return err
 		}
-		if ir == first && d1["Prev"] != nil {
+		if len(dict) == 0 {
+			return handleCorruptDict(xRefTable)
+		}
+
+		if ir == first && dict["Prev"] != nil {
+			*fixed = true
 			if xRefTable.ValidationMode == model.ValidationStrict {
 				return errors.New("pdfcpu: validateOutlines: corrupt outline items detected")
 			}
-			delete(d1, "Prev")
-			*fixed = true
+			delete(dict, "Prev")
 		}
-		if m[objNr] {
-			if xRefTable.ValidationMode == model.ValidationStrict {
-				return errors.New("pdfcpu: validateOutlines: recursive outline items detected")
-			}
-			*fixed = true
 
-			if ir == first {
-				// Remove duplicate first.
-				return removeDuplFirst(xRefTable, first, last, objNr, objNrOld)
-			}
+		if seen[objNr] {
+			*fixed = true
+			return handleDuplicate(xRefTable, ir, first, last, prevDict, objNr, prevObjNr)
+		}
 
-			if ir == last {
-				// Remove duplicate last.
-				delete(dOld, "Next")
-				last.ObjectNumber = types.Integer(objNrOld)
-				return nil
-			}
-			nextObjNr, _, _ := firstOfRemainder(xRefTable, last, objNr, objNrOld)
-			if nextObjNr == 0 {
-				return ErrBookmarksRepair
-			}
-			irNext := dOld.IndirectRefEntry("Next")
-			if irNext == nil {
-				return ErrBookmarksRepair
-			}
-			dOld["Next"] = *types.NewIndirectRef(nextObjNr, 0)
-			break
-		}
-		m[objNr] = true
-		objNrOld = objNr
-		dOld = d1
-		if ir = dOld.IndirectRefEntry("Next"); ir != nil {
-			objNr = ir.ObjectNumber.Value()
-			if visited[objNr] {
-				if xRefTable.ValidationMode == model.ValidationStrict {
-					return errors.New("pdfcpu: validateOutlines: circular outline items detected")
-				}
-				dOld["Prev"] = first
-				delete(dOld, "Next")
-				*fixed = true
-				return nil
-			}
-		}
+		seen[objNr] = true
+		prevDict = dict
+		prevObjNr = objNr
+		ir = dict.IndirectRefEntry("Next")
 	}
 
 	return nil
+}
+
+func removeOutlines(xRefTable *model.XRefTable, rootDict types.Dict) {
+	xRefTable.Outlines = nil
+	delete(rootDict, "Outlines")
 }
 
 func validateOutlinesGeneral(xRefTable *model.XRefTable, rootDict types.Dict) (*types.IndirectRef, *types.IndirectRef, *int, error) {
@@ -389,7 +428,7 @@ func validateOutlinesGeneral(xRefTable *model.XRefTable, rootDict types.Dict) (*
 
 	// Type, optional, name
 	_, err := validateNameEntry(xRefTable, d, "outlineDict", "Type", OPTIONAL, model.V10, func(s string) bool {
-		return s == "Outlines" || (xRefTable.ValidationMode == model.ValidationRelaxed && s == "Outline")
+		return s == "Outlines" || (xRefTable.ValidationMode == model.ValidationRelaxed && (s == "Outline" || s == "BMoutlines"))
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -402,12 +441,10 @@ func validateOutlinesGeneral(xRefTable *model.XRefTable, rootDict types.Dict) (*
 		if last != nil {
 			return nil, nil, nil, errors.New("pdfcpu: validateOutlines: invalid, root missing \"First\"")
 		}
-		// empty outlines
-		xRefTable.Outlines = nil
-		rootDict.Delete("Outlines")
+		removeOutlines(xRefTable, rootDict)
 		return nil, nil, nil, nil
 	}
-	if last == nil {
+	if last == nil && xRefTable.ValidationMode == model.ValidationStrict {
 		return nil, nil, nil, errors.New("pdfcpu: validateOutlines: invalid, root missing \"Last\"")
 	}
 
@@ -417,6 +454,46 @@ func validateOutlinesGeneral(xRefTable *model.XRefTable, rootDict types.Dict) (*
 	}
 
 	return first, last, count, nil
+}
+
+func handleCorruptOutlineItems(xRefTable *model.XRefTable, rootDict types.Dict) {
+	model.ShowMsg("validateOutlines: corrupt outline items detected")
+	removeOutlines(xRefTable, rootDict)
+	model.ShowSkipped("bookmarks")
+}
+
+func scanAndFixOutlines(xRefTable *model.XRefTable, rootDict types.Dict, first, last *types.IndirectRef, count *int) error {
+
+	m := map[int]bool{}
+	var fixed bool
+
+	err := scanAndFixOutlineItems(xRefTable, first, last, m, &fixed)
+	if err != nil {
+		if err == ErrBookmarksRepair && xRefTable.ValidationMode == model.ValidationRelaxed {
+			handleCorruptOutlineItems(xRefTable, rootDict)
+			return nil
+		}
+		return err
+	}
+
+	total, visible, err := validateOutlineTree(xRefTable, first, last, m, &fixed)
+	if err != nil {
+		if err == ErrBookmarksRepair && xRefTable.ValidationMode == model.ValidationRelaxed {
+			handleCorruptOutlineItems(xRefTable, rootDict)
+			return nil
+		}
+		return err
+	}
+
+	if err := validateOutlineCount(xRefTable, total, visible, count); err != nil {
+		return err
+	}
+
+	if fixed {
+		model.ShowRepaired("bookmarks")
+	}
+
+	return nil
 }
 
 func validateOutlines(xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {
@@ -433,8 +510,7 @@ func validateOutlines(xRefTable *model.XRefTable, rootDict types.Dict, required 
 	}
 
 	if d == nil {
-		xRefTable.Outlines = nil
-		delete(rootDict, "Outlines")
+		removeOutlines(xRefTable, rootDict)
 		return nil
 	}
 
@@ -448,25 +524,5 @@ func validateOutlines(xRefTable *model.XRefTable, rootDict types.Dict, required 
 		return nil
 	}
 
-	m := map[int]bool{}
-	var fixed bool
-
-	if err := scanOutlineItems(xRefTable, first, last, m, &fixed); err != nil {
-		return err
-	}
-
-	total, visible, err := validateOutlineTree(xRefTable, first, last, m, &fixed)
-	if err != nil {
-		return err
-	}
-
-	if err := validateOutlineCount(xRefTable, total, visible, count); err != nil {
-		return err
-	}
-
-	if fixed {
-		model.ShowRepaired("bookmarks")
-	}
-
-	return nil
+	return scanAndFixOutlines(xRefTable, rootDict, first, last, count)
 }

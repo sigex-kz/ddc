@@ -303,19 +303,18 @@ func collectRadioButtonGroupOptions(xRefTable *model.XRefTable, d types.Dict) ([
 	}
 
 	for _, o := range d.ArrayEntry("Kids") {
+
 		d, err := xRefTable.DereferenceDict(o)
 		if err != nil {
 			return nil, err
 		}
-		d1 := d.DictEntry("AP")
-		if d1 == nil {
-			return nil, errors.New("corrupt form field: missing entry \"AP\"")
+
+		d1, err := locateAPN(xRefTable, d)
+		if err != nil {
+			return nil, err
 		}
-		d2 := d1.DictEntry("N")
-		if d2 == nil {
-			return nil, errors.New("corrupt AP field: missing entry \"N\"")
-		}
-		for k := range d2 {
+
+		for k := range d1 {
 			k, err := types.DecodeName(k)
 			if err != nil {
 				return nil, err
@@ -411,7 +410,8 @@ func collectBtn(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMet
 
 	f.Typ = FTCheckBox
 	if o, found := d.Find("V"); found {
-		if o.(types.Name) != "Off" {
+		n := o.(types.Name)
+		if len(n) > 0 && n != "Off" {
 			v := "Yes"
 			if len(v) > fm.valMax {
 				fm.valMax = len(v)
@@ -527,43 +527,104 @@ func collectCh(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMeta
 	return collectListBox(xRefTable, multi, d, f, fm)
 }
 
-func collectTx(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMeta) error {
+func inheritedV(xRefTable *model.XRefTable, d types.Dict) (string, error) {
 	if o, found := d.Find("V"); found {
 		s1, err := types.StringOrHexLiteral(o)
 		if err != nil {
-			return err
+			return "", err
 		}
-		s := ""
 		if s1 != nil {
-			s = *s1
+			return *s1, nil
 		}
-		v := strings.ReplaceAll(s, "\x0A", "\\n")
+	}
+	indRef := d.IndirectRefEntry("Parent")
+	if indRef == nil {
+		return "", nil
+	}
+	d, err := xRefTable.DereferenceDict(*indRef)
+	if err != nil {
+		return "", err
+	}
+	return inheritedV(xRefTable, d)
+}
+
+func getV(xRefTable *model.XRefTable, d types.Dict) (string, error) {
+	v, err := inheritedV(xRefTable, d)
+	if err != nil {
+		return "", err
+	}
+	return v, nil
+}
+
+func inheritedDV(xRefTable *model.XRefTable, d types.Dict) (string, error) {
+	if o, found := d.Find("DV"); found {
+		o1, err := xRefTable.Dereference(o)
+		if err != nil {
+			return "", err
+		}
+		s1, err := types.StringOrHexLiteral(o1)
+		if err != nil {
+			return "", err
+		}
+		if s1 != nil {
+			return *s1, nil
+		}
+	}
+	indRef := d.IndirectRefEntry("Parent")
+	if indRef == nil {
+		return "", nil
+	}
+	d, err := xRefTable.DereferenceDict(*indRef)
+	if err != nil {
+		return "", err
+	}
+	return inheritedDV(xRefTable, d)
+}
+
+func getDV(xRefTable *model.XRefTable, d types.Dict) (string, error) {
+	dv, err := inheritedDV(xRefTable, d)
+	if err != nil {
+		return "", err
+	}
+	return dv, nil
+}
+
+func cleanTextForListCmd(s string, maxWidth int) string {
+	s = strings.ReplaceAll(s, "\x0A", "\\n")
+	s = strings.ReplaceAll(s, "\x0D", "\\n")
+	if maxWidth > 0 && len(s) > maxWidth {
+		s = s[:maxWidth]
+	}
+	return s
+}
+
+func collectTx(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMeta, maxWidth int) error {
+	v, err := getV(xRefTable, d)
+	if err != nil {
+		return err
+	}
+	if v != "" {
+		v = cleanTextForListCmd(v, maxWidth)
 		if w := runewidth.StringWidth(v); w > fm.valMax {
 			fm.valMax = w
 		}
 		fm.val = true
 		f.V = v
 	}
-	if o, found := d.Find("DV"); found {
-		o1, err := xRefTable.Dereference(o)
-		if err != nil {
-			return err
-		}
-		s1, err := types.StringOrHexLiteral(o1)
-		if err != nil {
-			return err
-		}
-		s := ""
-		if s1 != nil {
-			s = *s1
-		}
-		dv := strings.ReplaceAll(s, "\x0A", "\\n")
+
+	dv, err := getDV(xRefTable, d)
+	if err != nil {
+		return err
+	}
+	if dv != "" {
+		dv = cleanTextForListCmd(dv, maxWidth)
 		if w := runewidth.StringWidth(dv); w > fm.defMax {
 			fm.defMax = w
 		}
 		fm.def = true
 		f.Dv = dv
 	}
+
 	df, err := extractDateFormat(xRefTable, d)
 	if err != nil {
 		return err
@@ -575,7 +636,7 @@ func collectTx(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMeta
 	return nil
 }
 
-func collectField(xRefTable *model.XRefTable, ft string, d types.Dict, f *Field, fm *FieldMeta) error {
+func collectField(xRefTable *model.XRefTable, ft string, d types.Dict, f *Field, fm *FieldMeta, maxWidth int) error {
 	var err error
 
 	switch ft {
@@ -584,7 +645,7 @@ func collectField(xRefTable *model.XRefTable, ft string, d types.Dict, f *Field,
 	case "Ch":
 		err = collectCh(xRefTable, d, f, fm)
 	case "Tx":
-		err = collectTx(xRefTable, d, f, fm)
+		err = collectTx(xRefTable, d, f, fm, maxWidth)
 	}
 
 	return err
@@ -611,7 +672,8 @@ func collectPageField(
 	pageNr int,
 	fi *fieldInfo,
 	fm *FieldMeta,
-	fs *[]Field) error {
+	fs *[]Field,
+	maxWidth int) error {
 
 	foundField := locateField(fs, fi, fm, pageNr)
 
@@ -651,11 +713,7 @@ func collectPageField(
 		if s1 != nil {
 			s = *s1
 		}
-		if len(s) > 80 {
-			s = s[:40]
-		}
-		altName := s
-
+		altName := cleanTextForListCmd(s, maxWidth)
 		if w := runewidth.StringWidth(altName); w > fm.altNameMax {
 			fm.altNameMax = w
 		}
@@ -663,7 +721,7 @@ func collectPageField(
 		f.AltName = altName
 	}
 
-	if err := collectField(xRefTable, *ft, d, &f, fm); err != nil {
+	if err := collectField(xRefTable, *ft, d, &f, fm, maxWidth); err != nil {
 		return err
 	}
 
@@ -680,7 +738,8 @@ func collectPageFields(
 	fields types.Array,
 	p int,
 	fm *FieldMeta,
-	fs *[]Field) error {
+	fs *[]Field,
+	maxWidth int) error {
 
 	indRefs := map[types.IndirectRef]bool{}
 
@@ -710,7 +769,7 @@ func collectPageFields(
 			continue
 		}
 
-		if err := collectPageField(xRefTable, d, p, fi, fm, fs); err != nil {
+		if err := collectPageField(xRefTable, d, p, fi, fm, fs, maxWidth); err != nil {
 			return err
 		}
 	}
@@ -718,7 +777,7 @@ func collectPageFields(
 	return nil
 }
 
-func collectFields(xRefTable *model.XRefTable, fields types.Array, fm *FieldMeta) ([]Field, error) {
+func collectFields(xRefTable *model.XRefTable, fields types.Array, fm *FieldMeta, maxWidth int) ([]Field, error) {
 	var fs []Field
 
 	for p := 1; p <= xRefTable.PageCount; p++ {
@@ -733,7 +792,7 @@ func collectFields(xRefTable *model.XRefTable, fields types.Array, fm *FieldMeta
 			continue
 		}
 
-		if err := collectPageFields(xRefTable, wAnnots, fields, p, fm, &fs); err != nil {
+		if err := collectPageFields(xRefTable, wAnnots, fields, p, fm, &fs, maxWidth); err != nil {
 			return nil, err
 		}
 	}
@@ -961,6 +1020,7 @@ func renderFields(ctx *model.Context, fs []Field, fm *FieldMeta) ([]string, erro
 }
 
 // FormFields returns all form fields present in ctx.
+// maxWidth > 0 limits content for printing.
 func FormFields(ctx *model.Context) ([]Field, *FieldMeta, error) {
 
 	xRefTable := ctx.XRefTable
@@ -972,7 +1032,7 @@ func FormFields(ctx *model.Context) ([]Field, *FieldMeta, error) {
 
 	fm := &FieldMeta{pageMax: 2, idMax: 3, nameMax: 4, altNameMax: 7, defMax: 7, valMax: 5}
 
-	fs, err := collectFields(xRefTable, fields, fm)
+	fs, err := collectFields(xRefTable, fields, fm, ctx.Conf.FormFieldListMaxColWidth)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1313,19 +1373,18 @@ func resetBtn(xRefTable *model.XRefTable, d types.Dict) error {
 	// RadiobuttonGroup
 
 	for _, o := range d.ArrayEntry("Kids") {
+
 		d, err := xRefTable.DereferenceDict(o)
 		if err != nil {
 			return err
 		}
-		d1 := d.DictEntry("AP")
-		if d1 == nil {
-			return errors.New("corrupt form field: missing entry \"AP\"")
+
+		d1, err := locateAPN(xRefTable, d)
+		if err != nil {
+			return err
 		}
-		d2 := d1.DictEntry("N")
-		if d2 == nil {
-			return errors.New("corrupt AP field: missing entry \"N\"")
-		}
-		for k := range d2 {
+
+		for k := range d1 {
 			k, err := types.DecodeName(k)
 			if err != nil {
 				return err
