@@ -5,7 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     container: golangci/golangci-lint:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: |
           git config --global --add safe.directory '*'
           golangci-lint run -v ./...
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     container: golang:trixie
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: |
           apt -qy update
           apt -qy install clamav clamav-daemon
@@ -28,7 +28,7 @@ jobs:
           cat /var/log/clamav/clamav.log
           CGO_ENABLED=0 go test -mod vendor -timeout 30m -count=1 -failfast ./... -v
       - name: Archive tests output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: tests-output
           path: tests-output/*
@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     container: golang:trixie
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
       - run: |
           cd rpcsrv/cmd/
@@ -46,7 +46,7 @@ jobs:
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -mod vendor -buildvcs=false -ldflags "-X 'main.BuildTimeStamp=$(date +%s)' -X 'main.AppVersion=${{ env.RELEASE_VERSION }}'" -o ddcrpcsrv.exe .
           GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -mod vendor -buildvcs=false -ldflags "-X 'main.BuildTimeStamp=$(date +%s)' -X 'main.AppVersion=${{ env.RELEASE_VERSION }}'" -o ddcrpcsrv-darwin .
       - name: Archive rpcsrv builds
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rpcsrv-build
           path: rpcsrv/cmd/ddcrpcsrv*
