@@ -15,7 +15,7 @@ const (
 	network          = "tcp"
 	address          = "127.0.0.1:1234"
 	eicar            = `X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`
-	clamAVEicarFound = "unexpected response from clamd 'stream: Win.Test.EICAR_HDB-1 FOUND\n'"
+	clamAVEicarFound = "unexpected response from clamd 'stream: Eicar-Test-Signature FOUND\n'"
 	docChunkSize     = 1 * 1024 * 1024
 )
 
