@@ -93,7 +93,7 @@ type FieldMeta struct {
 	pageMax, defMax, valMax, idMax, nameMax, altNameMax int
 }
 
-func fields(xRefTable *model.XRefTable) (types.Array, error) {
+func Fields(xRefTable *model.XRefTable) (types.Array, error) {
 
 	if xRefTable.Form == nil {
 		return nil, errors.New("pdfcpu: no form available")
@@ -294,12 +294,12 @@ func parseStringLiteralArray(xRefTable *model.XRefTable, d types.Dict, key strin
 
 func collectRadioButtonGroupOptions(xRefTable *model.XRefTable, d types.Dict) ([]string, error) {
 
-	vv, err := parseOptions(xRefTable, d, OPTIONAL)
+	opts, err := parseOptions(xRefTable, d, OPTIONAL)
 	if err != nil {
 		return nil, err
 	}
-	if len(vv) > 0 {
-		return vv, nil
+	if len(opts) > 0 {
+		return opts, nil
 	}
 
 	for _, o := range d.ArrayEntry("Kids") {
@@ -321,21 +321,21 @@ func collectRadioButtonGroupOptions(xRefTable *model.XRefTable, d types.Dict) ([
 			}
 			if k != "Off" {
 				found := false
-				for _, opt := range vv {
+				for _, opt := range opts {
 					if opt == k {
 						found = true
 						break
 					}
 				}
 				if !found {
-					vv = append(vv, k)
+					opts = append(opts, k)
 				}
 				break
 			}
 		}
 	}
 
-	return vv, nil
+	return opts, nil
 }
 
 func collectRadioButtonGroup(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMeta) error {
@@ -508,12 +508,12 @@ func collectListBox(xRefTable *model.XRefTable, multi bool, d types.Dict, f *Fie
 func collectCh(xRefTable *model.XRefTable, d types.Dict, f *Field, fm *FieldMeta) error {
 	ff := d.IntEntry("Ff")
 
-	vv, err := parseOptions(xRefTable, d, REQUIRED)
+	opts, err := parseOptions(xRefTable, d, OPTIONAL)
 	if err != nil {
 		return err
 	}
 
-	f.Opts = strings.Join(vv, ",")
+	f.Opts = strings.Join(opts, ",")
 	if len(f.Opts) > 0 {
 		fm.opt = true
 	}
@@ -1025,7 +1025,7 @@ func FormFields(ctx *model.Context) ([]Field, *FieldMeta, error) {
 
 	xRefTable := ctx.XRefTable
 
-	fields, err := fields(xRefTable)
+	fields, err := Fields(xRefTable)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1279,7 +1279,7 @@ func RemoveFormFields(ctx *model.Context, fieldIDsOrNames []string) (bool, error
 
 	xRefTable := ctx.XRefTable
 
-	fields, err := fields(xRefTable)
+	fields, err := Fields(xRefTable)
 	if err != nil {
 		return false, err
 	}
@@ -1460,23 +1460,17 @@ func resetMultiListBox(xRefTable *model.XRefTable, d types.Dict, opts []string) 
 
 func resetCh(ctx *model.Context, d types.Dict, fonts map[string]types.IndirectRef) error {
 	ff := d.IntEntry("Ff")
-	if ff == nil {
-		return errors.New("pdfcpu: corrupt form field: missing entry \"Ff\"")
-	}
 
-	opts, err := parseOptions(ctx.XRefTable, d, REQUIRED)
+	opts, err := parseOptions(ctx.XRefTable, d, OPTIONAL)
 	if err != nil {
 		return err
-	}
-	if len(opts) == 0 {
-		return errors.New("pdfcpu: missing Opts")
 	}
 
 	var ind types.Array
 
-	if primitives.FieldFlags(*ff)&primitives.FieldCombo > 0 || primitives.FieldFlags(*ff)&primitives.FieldMultiselect == 0 {
+	if ff != nil && (primitives.FieldFlags(*ff)&primitives.FieldCombo > 0 || primitives.FieldFlags(*ff)&primitives.FieldMultiselect == 0) {
 		ind, err = resetComboBoxOrRegularListBox(d, opts, ff)
-	} else { // primitives.FieldFlags(*ff)&primitives.FieldMultiselect > 0
+	} else {
 		ind, err = resetMultiListBox(ctx.XRefTable, d, opts)
 	}
 
@@ -1486,7 +1480,7 @@ func resetCh(ctx *model.Context, d types.Dict, fonts map[string]types.IndirectRe
 
 	da := d.StringEntry("DA")
 
-	if primitives.FieldFlags(*ff)&primitives.FieldCombo == 0 {
+	if ff != nil && primitives.FieldFlags(*ff)&primitives.FieldCombo == 0 {
 		if err := primitives.EnsureListBoxAP(ctx, d, opts, ind, da, fonts); err != nil {
 			return err
 		}
@@ -1642,7 +1636,7 @@ func ResetFormFields(ctx *model.Context, fieldIDsOrNames []string) (bool, error)
 
 	xRefTable := ctx.XRefTable
 
-	fields, err := fields(xRefTable)
+	fields, err := Fields(xRefTable)
 	if err != nil {
 		return false, err
 	}
@@ -1667,25 +1661,8 @@ func ResetFormFields(ctx *model.Context, fieldIDsOrNames []string) (bool, error)
 		}
 	}
 
-	for fName, indRef := range fonts {
-
-		if len(ctx.UsedGIDs[fName]) == 0 {
-			continue
-		}
-
-		fDict, err := xRefTable.DereferenceDict(indRef)
-		if err != nil {
-			return false, err
-		}
-
-		fr := model.FontResource{}
-		if err := pdffont.IndRefsForUserfontUpdate(xRefTable, fDict, "", &fr); err != nil {
-			return false, pdffont.ErrCorruptFontDict
-		}
-
-		if err := pdffont.UpdateUserfont(xRefTable, fName, fr); err != nil {
-			return false, nil
-		}
+	if err := pdffont.UpdateUserfonts(ctx.XRefTable, fonts); err != nil {
+		return false, err
 	}
 
 	// pdfcpu provides all appearance streams for form fields.
@@ -1808,7 +1785,7 @@ func LockFormFields(ctx *model.Context, fieldIDsOrNames []string) (bool, error) 
 
 	xRefTable := ctx.XRefTable
 
-	fields, err := fields(xRefTable)
+	fields, err := Fields(xRefTable)
 	if err != nil {
 		return false, err
 	}
@@ -1833,25 +1810,8 @@ func LockFormFields(ctx *model.Context, fieldIDsOrNames []string) (bool, error) 
 		}
 	}
 
-	for fName, indRef := range fonts {
-
-		if len(ctx.UsedGIDs[fName]) == 0 {
-			continue
-		}
-
-		fDict, err := xRefTable.DereferenceDict(indRef)
-		if err != nil {
-			return false, err
-		}
-
-		fr := model.FontResource{}
-		if err := pdffont.IndRefsForUserfontUpdate(xRefTable, fDict, "", &fr); err != nil {
-			return false, pdffont.ErrCorruptFontDict
-		}
-
-		if err := pdffont.UpdateUserfont(xRefTable, fName, fr); err != nil {
-			return false, nil
-		}
+	if err := pdffont.UpdateUserfonts(ctx.XRefTable, fonts); err != nil {
+		return false, err
 	}
 
 	// pdfcpu provides all appearance streams for form fields.
@@ -1953,7 +1913,7 @@ func UnlockFormFields(ctx *model.Context, fieldIDsOrNames []string) (bool, error
 
 	xRefTable := ctx.XRefTable
 
-	fields, err := fields(xRefTable)
+	fields, err := Fields(xRefTable)
 	if err != nil {
 		return false, err
 	}

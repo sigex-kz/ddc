@@ -41,6 +41,7 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/validate"
 	"github.com/pkg/errors"
@@ -67,7 +68,8 @@ func logDisclaimerPDF20() {
 }
 
 // ReadContext uses an io.ReadSeeker to build an internal structure holding its cross reference table aka the Context.
-func ReadContext(rs io.ReadSeeker, conf *model.Configuration) (*model.Context, error) {
+func ReadContext(rs io.ReadSeeker, conf *model.Configuration) (ctx *model.Context, err error) {
+	defer fault.Catch(&err)
 	if rs == nil {
 		return nil, errors.New("pdfcpu: ReadContext: missing rs")
 	}
@@ -118,6 +120,25 @@ func OptimizeContext(ctx *model.Context) error {
 	return pdfcpu.OptimizeXRefTable(ctx)
 }
 
+// PatchFile writes bb at offset.
+func PatchFile(fileName string, bb []byte, offset int64) error {
+	f, err := os.OpenFile(fileName, os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return err
+	}
+
+	if _, err := f.WriteAt(bb, offset); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // WriteContext writes ctx to w.
 func WriteContext(ctx *model.Context, w io.Writer) error {
 	if f, ok := w.(*os.File); ok {
@@ -148,12 +169,34 @@ func WriteContextFile(ctx *model.Context, outFile string) error {
 
 // ReadAndValidate returns a model.Context of rs ready for processing.
 func ReadAndValidate(rs io.ReadSeeker, conf *model.Configuration) (ctx *model.Context, err error) {
+	defer fault.Catch(&err)
+
 	if ctx, err = ReadContext(rs, conf); err != nil {
 		return nil, err
 	}
 
 	if err := ValidateContext(ctx); err != nil {
 		return nil, err
+	}
+
+	if conf.Cmd == model.REMOVESIGNATURES || ctx.RemoveSignatures && conf.Cmd.AllowRemoveSignatures() {
+
+		if len(ctx.Signatures) == 0 {
+			if conf.Cmd == model.REMOVESIGNATURES {
+				return nil, errors.New("pdfcpu: no signatures to remove")
+			}
+			if log.CLIEnabled() {
+				log.CLI.Println("no signatures to remove...")
+			}
+			return ctx, nil
+		}
+
+		if log.CLIEnabled() {
+			log.CLI.Println("removing signatures...")
+		}
+		if err := ctx.RemoveAllSignatures(); err != nil {
+			return nil, err
+		}
 	}
 
 	return ctx, nil
@@ -166,7 +209,8 @@ func cmdAssumingOptimization(cmd model.CommandMode) bool {
 		cmd == model.LISTIMAGES ||
 		cmd == model.UPDATEIMAGES ||
 		cmd == model.EXTRACTIMAGES ||
-		cmd == model.EXTRACTFONTS
+		cmd == model.EXTRACTFONTS ||
+		cmd == model.REMOVESIGNATURES
 }
 
 // ReadValidateAndOptimize returns an optimized model.Context of rs ready for processing a specific command.
@@ -208,13 +252,6 @@ func Write(ctx *model.Context, w io.Writer, conf *model.Configuration) error {
 	if log.StatsEnabled() {
 		log.Stats.Printf("XRefTable:\n%s\n", ctx)
 	}
-
-	// Note side effects of validation before writing!
-	// if conf.PostProcessValidate {
-	// 	if err := ValidateContext(ctx); err != nil {
-	// 		return err
-	// 	}
-	// }
 
 	return WriteContext(ctx, w)
 }

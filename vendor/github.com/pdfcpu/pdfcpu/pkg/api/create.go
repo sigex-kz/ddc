@@ -23,6 +23,7 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/create"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
@@ -42,7 +43,9 @@ func CreatePDFFile(xRefTable *model.XRefTable, outFile string, conf *model.Confi
 // Create renders the PDF structure represented by rs into w.
 // If rs is present, new PDF content will be appended including any empty pages needed.
 // rd is a JSON representation of PDF page content which may include form data.
-func Create(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configuration) error {
+func Create(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rd == nil {
 		return errors.New("pdfcpu: Create: missing rd")
 	}
@@ -52,10 +55,7 @@ func Create(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configurati
 	}
 	conf.Cmd = model.CREATE
 
-	var (
-		ctx *model.Context
-		err error
-	)
+	var ctx *model.Context
 
 	if rs != nil {
 		ctx, err = ReadValidateAndOptimize(rs, conf)

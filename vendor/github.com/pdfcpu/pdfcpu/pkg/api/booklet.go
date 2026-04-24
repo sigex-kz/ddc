@@ -22,6 +22,7 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
@@ -56,7 +57,9 @@ func BookletFromImages(conf *model.Configuration, imageFileNames []string, nup *
 }
 
 // Booklet arranges PDF pages on larger sheets of paper and writes the result to w.
-func Booklet(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nup *model.NUp, conf *model.Configuration) error {
+func Booklet(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nup *model.NUp, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: Booklet: missing rs")
 	}
@@ -70,10 +73,7 @@ func Booklet(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nu
 		log.Info.Printf("%s", nup)
 	}
 
-	var (
-		ctx *model.Context
-		err error
-	)
+	var ctx *model.Context
 
 	if nup.ImgInputFile {
 

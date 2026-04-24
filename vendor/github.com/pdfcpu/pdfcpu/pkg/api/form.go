@@ -29,6 +29,7 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/create"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/form"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
@@ -43,7 +44,9 @@ var (
 )
 
 // FormFields returns all form fields of rs.
-func FormFields(rs io.ReadSeeker, conf *model.Configuration) ([]form.Field, error) {
+func FormFields(rs io.ReadSeeker, conf *model.Configuration) (fields []form.Field, err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return nil, errors.New("pdfcpu: FormFields: missing rs")
 	}
@@ -58,13 +61,15 @@ func FormFields(rs io.ReadSeeker, conf *model.Configuration) ([]form.Field, erro
 		return nil, err
 	}
 
-	fields, _, err := form.FormFields(ctx)
+	fields, _, err = form.FormFields(ctx)
 
 	return fields, err
 }
 
 // RemoveFormFields deletes form fields in rs and writes the result to w.
-func RemoveFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) error {
+func RemoveFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: RemoveFormFields: missing rs")
 	}
@@ -131,7 +136,9 @@ func RemoveFormFieldsFile(inFile, outFile string, fieldIDsOrNames []string, conf
 }
 
 // LockFormFields turns form fields in rs into read-only and writes the result to w.
-func LockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) error {
+func LockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: LockFormFields: missing rs")
 	}
@@ -198,7 +205,9 @@ func LockFormFieldsFile(inFile, outFile string, fieldIDsOrNames []string, conf *
 }
 
 // UnlockFormFields makess form fields in rs writeable and writes the result to w.
-func UnlockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) error {
+func UnlockFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: UnlockFormFields: missing rs")
 	}
@@ -265,7 +274,9 @@ func UnlockFormFieldsFile(inFile, outFile string, fieldIDsOrNames []string, conf
 }
 
 // ResetFormFields resets form fields of rs and writes the result to w.
-func ResetFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) error {
+func ResetFormFields(rs io.ReadSeeker, w io.Writer, fieldIDsOrNames []string, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: ResetFormFields: missing rs")
 	}
@@ -332,7 +343,9 @@ func ResetFormFieldsFile(inFile, outFile string, fieldIDsOrNames []string, conf 
 }
 
 // ExportForm extracts form data originating from source from rs.
-func ExportForm(rs io.ReadSeeker, source string, conf *model.Configuration) (*form.FormGroup, error) {
+func ExportForm(rs io.ReadSeeker, source string, conf *model.Configuration) (formGroup *form.FormGroup, err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return nil, errors.New("pdfcpu: ExportForm: missing rs")
 	}
@@ -359,7 +372,9 @@ func ExportForm(rs io.ReadSeeker, source string, conf *model.Configuration) (*fo
 }
 
 // ExportFormJSON extracts form data originating from source from rs and writes the result to w.
-func ExportFormJSON(rs io.ReadSeeker, w io.Writer, source string, conf *model.Configuration) error {
+func ExportFormJSON(rs io.ReadSeeker, w io.Writer, source string, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: ExportFormJSON: missing rs")
 	}
@@ -501,7 +516,9 @@ func fillPostProc(ctx *model.Context, pp []*model.Page) error {
 }
 
 // FillForm populates the form rs with data from rd and writes the result to w.
-func FillForm(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configuration) error {
+func FillForm(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: FillForm: missing rs")
 	}
@@ -550,16 +567,19 @@ func FillForm(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configura
 		return err
 	}
 
-	if log.CLIEnabled() {
-		log.CLI.Println("filling...")
-	}
-
 	ok, pp, err := form.FillForm(ctx, form.FillDetails(&f, nil), f.Pages, form.JSON)
 	if err != nil {
 		return err
 	}
 	if !ok {
+		if log.CLIEnabled() {
+			log.CLI.Println("nothing written")
+		}
 		return ErrNoFormFieldsAffected
+	}
+
+	if log.CLIEnabled() {
+		log.CLI.Println("filling...")
 	}
 
 	if err := fillPostProc(ctx, pp); err != nil {

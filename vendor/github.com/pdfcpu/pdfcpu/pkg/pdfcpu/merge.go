@@ -304,7 +304,7 @@ func handleFormAttributes(ctxSrc, ctxDest *model.Context, dSrc, dDest types.Dict
 
 	// SigFlags: set bit 1 to true only (SignaturesExist)
 	//           set bit 2 to true only (AppendOnly)
-	dDest.Delete("SigFields")
+	dDest.Delete("SigFlags")
 
 	// CO: add all indrefs
 	if err := handleCO(ctxSrc, ctxDest, dSrc, dDest); err != nil {

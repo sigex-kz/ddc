@@ -23,12 +23,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/pdfcpu/pdfcpu/internal/corefont/metrics"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 
 	"github.com/pkg/errors"
@@ -199,6 +199,10 @@ var UserFontDir string
 var UserFontMetrics = map[string]TTFLight{}
 var UserFontMetricsLock = &sync.RWMutex{}
 
+// Lazy loading synchronization
+var loadUserFontsOnce sync.Once
+var loadUserFontsErr error
+
 func load(fileName string, fd *TTFLight) error {
 	//fmt.Printf("reading gob from: %s\n", fileName)
 	f, err := os.Open(fileName)
@@ -228,13 +232,21 @@ func isSupportedFontFile(filename string) bool {
 	return strings.HasSuffix(strings.ToLower(filename), ".gob")
 }
 
-// LoadUserFonts loads any installed TTF or OTF font files.
-func LoadUserFonts() error {
-	//fmt.Printf("loading userFonts from %s\n", UserFontDir)
+// doLoadUserFonts performs the actual font loading logic.
+// This is called exactly once by LoadUserFonts via sync.Once.
+func doLoadUserFonts() error {
+	if UserFontDir == "" {
+		// Font directory not initialized yet, skip loading
+		return nil
+	}
+
+	//fmt.Printf("*** loading userFonts from %s ***\n", UserFontDir)
+
 	files, err := os.ReadDir(UserFontDir)
 	if err != nil {
 		return err
 	}
+
 	for _, f := range files {
 		if !isSupportedFontFile(f.Name()) {
 			continue
@@ -247,6 +259,7 @@ func LoadUserFonts() error {
 		fn = strings.TrimSuffix(f.Name(), path.Ext(f.Name()))
 		//fmt.Printf("loading %s.ttf...\n", fn)
 		//fmt.Printf("Loaded %s:\n%s", fn, ttf)
+
 		UserFontMetricsLock.Lock()
 		UserFontMetrics[fn] = ttf
 		UserFontMetricsLock.Unlock()
@@ -254,11 +267,30 @@ func LoadUserFonts() error {
 	return nil
 }
 
+// LoadUserFonts loads any installed TTF or OTF font files.
+// This function is idempotent - it can be called multiple times safely.
+// The actual loading happens exactly once, protected by sync.Once.
+func LoadUserFonts() error {
+	loadUserFontsOnce.Do(func() {
+		loadUserFontsErr = doLoadUserFonts()
+	})
+	return loadUserFontsErr
+}
+
+// EnsureUserFontsLoaded is a convenience wrapper for callers that cannot handle errors.
+// It loads user fonts lazily and logs any errors to stderr.
+func EnsureUserFontsLoaded() {
+	if err := LoadUserFonts(); err != nil {
+		fmt.Fprintf(os.Stderr, "pdfcpu: warning: failed to load user fonts: %v\n", err)
+	}
+}
+
 // BoundingBox returns the font bounding box for a given font as specified in the corresponding AFM file.
 func BoundingBox(fontName string) *types.Rectangle {
 	if IsCoreFont(fontName) {
 		return metrics.CoreFontMetrics[fontName].FBox
 	}
+	EnsureUserFontsLoaded()
 	UserFontMetricsLock.RLock()
 	defer UserFontMetricsLock.RUnlock()
 	llx := UserFontMetrics[fontName].LLx
@@ -273,13 +305,12 @@ func CharWidth(fontName string, r rune) int {
 	if IsCoreFont(fontName) {
 		return metrics.CoreFontCharWidth(fontName, int(r))
 	}
+	EnsureUserFontsLoaded()
 	UserFontMetricsLock.RLock()
 	defer UserFontMetricsLock.RUnlock()
 	ttf, ok := UserFontMetrics[fontName]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "pdfcpu: user font not loaded: %s\n", fontName)
-		debug.PrintStack()
-		os.Exit(1)
+		fault.Fail("user font not loaded: %s", fontName)
 	}
 
 	pos, ok := ttf.Chars[uint32(r)]
@@ -383,6 +414,7 @@ func CoreFontNames() []string {
 
 // IsUserFont returns true for installed TrueType fonts.
 func IsUserFont(fontName string) bool {
+	EnsureUserFontsLoaded()
 	UserFontMetricsLock.RLock()
 	defer UserFontMetricsLock.RUnlock()
 	_, ok := UserFontMetrics[fontName]
@@ -392,6 +424,7 @@ func IsUserFont(fontName string) bool {
 // UserFontNames return a list of all installed TrueType fonts.
 func UserFontNames() []string {
 	ss := []string{}
+	EnsureUserFontsLoaded()
 	UserFontMetricsLock.RLock()
 	defer UserFontMetricsLock.RUnlock()
 	for fontName := range UserFontMetrics {
@@ -403,6 +436,7 @@ func UserFontNames() []string {
 // UserFontNamesVerbose return a list of all installed TrueType fonts including glyph count.
 func UserFontNamesVerbose() []string {
 	ss := []string{}
+	EnsureUserFontsLoaded()
 	UserFontMetricsLock.RLock()
 	defer UserFontMetricsLock.RUnlock()
 	for fName, ttf := range UserFontMetrics {

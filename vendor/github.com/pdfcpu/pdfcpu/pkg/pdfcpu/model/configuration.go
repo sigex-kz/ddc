@@ -18,7 +18,6 @@ package model
 
 import (
 	"embed"
-	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +26,7 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/font"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
@@ -155,13 +155,21 @@ const (
 	SETVIEWERPREFERENCES
 	RESETVIEWERPREFERENCES
 	ZOOM
-	ADDSIGNATURE
-	VALIDATESIGNATURE
 	LISTCERTIFICATES
 	INSPECTCERTIFICATES
 	IMPORTCERTIFICATES
 	VALIDATESIGNATURES
+	REMOVESIGNATURES
+	ADDSIGNATURE
 )
+
+func (cmd CommandMode) AllowRemoveEncryption() bool {
+	return cmd == OPTIMIZE || cmd == REMOVESIGNATURES
+}
+
+func (cmd CommandMode) AllowRemoveSignatures() bool {
+	return cmd == MERGEAPPEND || cmd == MERGECREATE || cmd == MERGECREATEZIP || cmd == OPTIMIZE
+}
 
 // Configuration of a Context.
 type Configuration struct {
@@ -172,13 +180,13 @@ type Configuration struct {
 
 	Version string
 
-	// Check filename extensions.
+	// Ensure .pdf input file extension.
 	CheckFileNameExt bool
 
-	// Enables PDF V1.5 compatible processing of object streams, xref streams, hybrid PDF files.
+	// Enable PDF V1.5 compatible processing of object streams, xref streams, hybrid PDF files.
 	Reader15 bool
 
-	// Enables decoding of all streams (fontfiles, images..) for logging purposes.
+	// Enable decoding of all streams (fontfiles, images..) for logging purposes.
 	DecodeAllStreams bool
 
 	// Validate against ISO-32000: strict or relaxed.
@@ -193,20 +201,16 @@ type Configuration struct {
 	// End of line char sequence for writing.
 	Eol string
 
-	// Turns on object stream generation.
+	// Turn on object stream generation.
 	// A signal for compressing any new non-stream-object into an object stream.
 	// true enforces WriteXRefStream to true.
 	// false does not prevent xRefStream generation.
 	WriteObjectStream bool
 
-	// Switches between xRefSection (<=V1.4) and objectStream/xRefStream (>=V1.5) writing.
+	// Switch between xRefSection (<=V1.4) and objectStream/xRefStream (>=V1.5) writing.
 	WriteXRefStream bool
 
-	// Turns on stats collection.
-	// TODO Decision - unused.
-	CollectStats bool
-
-	// A CSV-filename holding the statistics.
+	// CSV filename holding input file statistics.
 	StatsFileName string
 
 	// Supplied user password.
@@ -216,6 +220,9 @@ type Configuration struct {
 	// Supplied owner password.
 	OwnerPW    string
 	OwnerPWNew *string
+
+	// Supplied private key password.
+	PrivateKeyPW string
 
 	// EncryptUsingAES ensures AES encryption.
 	// true: AES encryption
@@ -277,6 +284,12 @@ type Configuration struct {
 	// Limit form field content for display purposes when using pdfcpu form list.
 	// If > 0 affects the columns AltName, Default and Value.
 	FormFieldListMaxColWidth int
+
+	// Do not encrypt output files.
+	RemoveEncryption bool
+
+	// Remove existing signatures.
+	RemoveSignatures bool
 }
 
 // ConfigPath defines the location of pdfcpu's configuration directory.
@@ -344,12 +357,13 @@ func onlyHidden(files []os.DirEntry) bool {
 	return true
 }
 
-func initUserFonts() error {
+// ensureFontDirInitialized sets up the font directory without loading fonts.
+// Font loading is deferred until fonts are actually needed.
+func ensureFontDirInitialized() error {
 	files, err := os.ReadDir(font.UserFontDir)
 	if err != nil {
 		return err
 	}
-
 	if onlyHidden(files) {
 		// Ensure Roboto font for form filling.
 		fontname := "Roboto-Regular"
@@ -361,16 +375,16 @@ func initUserFonts() error {
 		}
 	}
 
-	return font.LoadUserFonts()
+	return nil
 }
 
 func initCertificates() error {
-	// NOTE
-	// Load certs managed by The European Union Trusted Lists (EUTL) (https://eidas.ec.europa.eu/efda/trust-services/browse/eidas/tls).
+	// Install certs managed by The European Union Trusted Lists (EUTL) (https://eidas.ec.europa.eu/efda/trust-services/browse/eidas/tls).
+	// The embedded files are unpacked and stored into the pdfcpu config dir.
 	// Additional certificates may be loaded using the corresponding CLI command: pdfcpu certificates import
-	// Certificates will be loaded by corresponding commands where applicable.
+	// Certificates are loaded into memory lazily.
 
-	files, err := os.ReadDir(CertDir)
+	files, err := os.ReadDir(TrustedCertDir)
 	if err != nil {
 		return err
 	}
@@ -383,7 +397,7 @@ func initCertificates() error {
 		return err
 	}
 
-	euDir := filepath.Join(CertDir, "eu")
+	euDir := filepath.Join(TrustedCertDir, "eu")
 	if err := os.MkdirAll(euDir, os.ModePerm); err != nil {
 		return err
 	}
@@ -425,16 +439,21 @@ func EnsureDefaultConfigAt(path string, override bool) error {
 		return err
 	}
 
+	// Initialize pdfcpu config/fonts dir for userfonts then extract and install Roboto as default Unicode font for form filling.
+	// Other userfonts have to be installed via `pdfcpu font install` or copied over from another pdfcpu config dir.
+	// Userfonts are loaded into memory lazily.
 	font.UserFontDir = filepath.Join(configDir, "fonts")
 	if err := os.MkdirAll(font.UserFontDir, os.ModePerm); err != nil {
 		return err
 	}
-	if err := initUserFonts(); err != nil {
+	if err := ensureFontDirInitialized(); err != nil {
 		return err
 	}
 
-	CertDir = filepath.Join(configDir, "certs")
-	if err := os.MkdirAll(CertDir, os.ModePerm); err != nil {
+	// Initialize pdfcpu config/cert dir, then extract and install certificates.
+	// Certificates are loaded into memory lazily.
+	TrustedCertDir = filepath.Join(configDir, "certs")
+	if err := os.MkdirAll(TrustedCertDir, os.ModePerm); err != nil {
 		return err
 	}
 	if err := initCertificates(); err != nil {
@@ -504,8 +523,7 @@ func NewDefaultConfiguration() *Configuration {
 			c := *loadedDefaultConfig
 			return &c
 		}
-		fmt.Fprintf(os.Stderr, "pdfcpu: config problem: %v\n", err)
-		os.Exit(1)
+		fault.Fail("config problem: %w", err)
 	}
 	// Bypass config.yml
 	return newDefaultConfiguration()

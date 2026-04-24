@@ -22,12 +22,15 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pkg/errors"
 )
 
 // Zoom applies resizeConf for selected pages of rs and writes result to w.
-func Zoom(rs io.ReadSeeker, w io.Writer, selectedPages []string, zoom *model.Zoom, conf *model.Configuration) error {
+func Zoom(rs io.ReadSeeker, w io.Writer, selectedPages []string, zoom *model.Zoom, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: Zoom: missing rs")
 	}

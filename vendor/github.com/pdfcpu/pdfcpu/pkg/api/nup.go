@@ -22,6 +22,7 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
@@ -91,7 +92,9 @@ func NUpFromImage(conf *model.Configuration, imageFileNames []string, nup *model
 
 // NUp rearranges PDF pages or images into page grids and writes the result to w.
 // Either rs or imgFiles will be used.
-func NUp(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nup *model.NUp, conf *model.Configuration) error {
+func NUp(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nup *model.NUp, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
 	}
@@ -101,10 +104,7 @@ func NUp(rs io.ReadSeeker, w io.Writer, imgFiles, selectedPages []string, nup *m
 		log.Info.Printf("%s", nup)
 	}
 
-	var (
-		ctx *model.Context
-		err error
-	)
+	var ctx *model.Context
 
 	if nup.ImgInputFile {
 

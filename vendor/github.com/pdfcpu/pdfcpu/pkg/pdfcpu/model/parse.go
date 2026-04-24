@@ -29,6 +29,8 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
+const MAX_RECURSE_LEVEL = 50
+
 var (
 	errArrayCorrupt            = errors.New("pdfcpu: parse: corrupt array")
 	errArrayNotTerminated      = errors.New("pdfcpu: parse: unterminated array")
@@ -47,6 +49,7 @@ var (
 	errXrefStreamCorruptIndex  = errors.New("pdfcpu: parse: xref stream dict corrupt entry Index")
 	errObjStreamMissingN       = errors.New("pdfcpu: parse: obj stream dict missing entry W")
 	errObjStreamMissingFirst   = errors.New("pdfcpu: parse: obj stream dict missing entry First")
+	errMaxRecurseOverflow      = errors.New("hit max recursion depth")
 
 	ErrCorruptObjectOffset = errors.New("pdfcpu: corrupt object offset")
 )
@@ -322,7 +325,10 @@ func ParseObjectAttributes(line *string) (*int, *int, error) {
 	return &objNr, &genNr, nil
 }
 
-func parseArray(c context.Context, line *string) (*types.Array, error) {
+func parseArray(c context.Context, line *string, level int) (*types.Array, error) {
+	if level == MAX_RECURSE_LEVEL {
+		return nil, errMaxRecurseOverflow
+	}
 	if log.ParseEnabled() {
 		log.Parse.Println("ParseObject: value = Array")
 	}
@@ -359,7 +365,7 @@ func parseArray(c context.Context, line *string) (*types.Array, error) {
 
 	for !strings.HasPrefix(l, "]") {
 
-		obj, err := ParseObjectContext(c, &l)
+		obj, err := ParseObjectContext(c, &l, level+1)
 		if err != nil {
 			return nil, err
 		}
@@ -438,9 +444,6 @@ func parseStringLiteral(line *string) (types.Object, error) {
 	// remove enclosing '(', ')'
 	balParStr := l[1:i]
 
-	// Parse string literal, see 7.3.4.2
-	//str := stringLiteral(balParStr)
-
 	// position behind ')'
 	*line = forwardParseBuf(l[i:], 1)
 
@@ -480,7 +483,6 @@ func parseHexLiteral(line *string) (types.Object, error) {
 		// Skip junk
 		*line = forwardParseBuf(l[eov:], 1)
 		return nil, nil
-		//return nil, errHexLiteralCorrupt
 	}
 
 	// position behind '>'
@@ -512,7 +514,7 @@ func parseName(line *string) (*types.Name, error) {
 	if log.ParseEnabled() {
 		log.Parse.Printf("parseNameObject: %s\n", l)
 	}
-	if len(l) < 2 || !strings.HasPrefix(l, "/") {
+	if !strings.HasPrefix(l, "/") {
 		return nil, errNameObjectCorrupt
 	}
 
@@ -565,7 +567,7 @@ func dictString(l string) bool {
 	return len(l) > 0 && !strings.HasPrefix(l, ">>")
 }
 
-func processDictKeys(c context.Context, line *string, relaxed bool) (types.Dict, error) {
+func processDictKeys(c context.Context, line *string, level int, relaxed bool) (types.Dict, error) {
 	l := *line
 	var eol bool
 	d := types.NewDict()
@@ -608,7 +610,7 @@ func processDictKeys(c context.Context, line *string, relaxed bool) (types.Dict,
 			// #252: For dicts with kv pairs terminated by eol we accept a missing value as an empty string.
 			val = types.StringLiteral("")
 		} else {
-			if val, err = ParseObject(&l); err != nil {
+			if val, err = ParseObjectContext(c, &l, level+1); err != nil {
 				return nil, err
 			}
 		}
@@ -637,7 +639,7 @@ func processDictKeys(c context.Context, line *string, relaxed bool) (types.Dict,
 	return d, nil
 }
 
-func parseDict(c context.Context, line *string, relaxed bool) (types.Dict, error) {
+func parseDict(c context.Context, line *string, level int, relaxed bool) (types.Dict, error) {
 	if line == nil || len(*line) == 0 {
 		return nil, errNoDictionary
 	}
@@ -663,7 +665,7 @@ func parseDict(c context.Context, line *string, relaxed bool) (types.Dict, error
 		return nil, errDictionaryNotTerminated
 	}
 
-	d, err := processDictKeys(c, &l, relaxed)
+	d, err := processDictKeys(c, &l, level, relaxed)
 	if err != nil {
 		return nil, err
 	}
@@ -858,7 +860,7 @@ func parseNumericOrIndRef(line *string) (types.Object, error) {
 	return parseIndRef(s, l, l1, line, i, i2)
 }
 
-func parseHexLiteralOrDict(c context.Context, l *string) (val types.Object, err error) {
+func parseHexLiteralOrDict(c context.Context, l *string, level int) (val types.Object, err error) {
 	if len(*l) < 2 {
 		return nil, errBufNotAvailable
 	}
@@ -872,8 +874,14 @@ func parseHexLiteralOrDict(c context.Context, l *string) (val types.Object, err 
 			d   types.Dict
 			err error
 		)
-		if d, err = parseDict(c, l, false); err != nil {
-			if d, err = parseDict(c, l, true); err != nil {
+		if level == MAX_RECURSE_LEVEL {
+			return nil, errMaxRecurseOverflow
+		}
+		if d, err = parseDict(c, l, level, false); err != nil {
+			if err == errMaxRecurseOverflow {
+				return nil, err
+			}
+			if d, err = parseDict(c, l, level, true); err != nil {
 				return nil, err
 			}
 		}
@@ -934,12 +942,12 @@ func parseBooleanOrNull(l string) (types.Object, string, bool) {
 
 // ParseObject parses next Object from string buffer and returns the updated (left clipped) buffer.
 func ParseObject(line *string) (types.Object, error) {
-	return ParseObjectContext(context.Background(), line)
+	return ParseObjectContext(context.Background(), line, 0)
 }
 
 // ParseObjectContext parses next Object from string buffer and returns the updated (left clipped) buffer.
 // If the passed context is cancelled, parsing will be interrupted.
-func ParseObjectContext(c context.Context, line *string) (types.Object, error) {
+func ParseObjectContext(c context.Context, line *string, level int) (types.Object, error) {
 	if noBuf(line) {
 		return nil, errBufNotAvailable
 	}
@@ -963,7 +971,7 @@ func ParseObjectContext(c context.Context, line *string) (types.Object, error) {
 	switch l[0] {
 
 	case '[': // array
-		a, err := parseArray(c, &l)
+		a, err := parseArray(c, &l, level)
 		if err != nil {
 			return nil, err
 		}
@@ -977,7 +985,7 @@ func ParseObjectContext(c context.Context, line *string) (types.Object, error) {
 		value = *nameObj
 
 	case '<': // hex literal or dict
-		value, err = parseHexLiteralOrDict(c, &l)
+		value, err = parseHexLiteralOrDict(c, &l, level)
 		if err != nil {
 			return nil, err
 		}

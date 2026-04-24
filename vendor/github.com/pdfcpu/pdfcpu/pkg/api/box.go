@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
@@ -42,7 +43,9 @@ func Box(s string, u types.DisplayUnit) (*model.Box, error) {
 }
 
 // Boxes returns rs's page boundaries for selected pages of rs.
-func Boxes(rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) ([]model.PageBoundaries, error) {
+func Boxes(rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (pb []model.PageBoundaries, err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return nil, errors.New("pdfcpu: Boxes: missing rs")
 	}
@@ -66,7 +69,9 @@ func Boxes(rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) 
 }
 
 // AddBoxes adds page boundaries for selected pages of rs and writes result to w.
-func AddBoxes(rs io.ReadSeeker, w io.Writer, selectedPages []string, pb *model.PageBoundaries, conf *model.Configuration) error {
+func AddBoxes(rs io.ReadSeeker, w io.Writer, selectedPages []string, pb *model.PageBoundaries, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: AddBoxes: missing rs")
 	}
@@ -139,7 +144,9 @@ func AddBoxesFile(inFile, outFile string, selectedPages []string, pb *model.Page
 }
 
 // RemoveBoxes removes page boundaries as specified in pb for selected pages of rs and writes result to w.
-func RemoveBoxes(rs io.ReadSeeker, w io.Writer, selectedPages []string, pb *model.PageBoundaries, conf *model.Configuration) error {
+func RemoveBoxes(rs io.ReadSeeker, w io.Writer, selectedPages []string, pb *model.PageBoundaries, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: RemoveBoxes: missing rs")
 	}
@@ -213,7 +220,9 @@ func RemoveBoxesFile(inFile, outFile string, selectedPages []string, pb *model.P
 }
 
 // Crop adds crop boxes for selected pages of rs and writes result to w.
-func Crop(rs io.ReadSeeker, w io.Writer, selectedPages []string, b *model.Box, conf *model.Configuration) error {
+func Crop(rs io.ReadSeeker, w io.Writer, selectedPages []string, b *model.Box, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: Crop: missing rs")
 	}

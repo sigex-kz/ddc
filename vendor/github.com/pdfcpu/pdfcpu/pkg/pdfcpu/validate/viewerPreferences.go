@@ -22,6 +22,33 @@ import (
 	"github.com/pkg/errors"
 )
 
+func validateDirection(xRefTable *model.XRefTable, d types.Dict, dictName string, vp *model.ViewerPreferences) error {
+	validate := func(s string) bool {
+		return types.MemberOf(s, []string{"L2R", "R2L"})
+	}
+
+	n, err := validateNameEntry(xRefTable, d, dictName, "Direction", OPTIONAL, model.V13, validate)
+	if err != nil {
+		if xRefTable.ValidationMode == model.ValidationStrict {
+			return err
+		}
+		s, err := validateStringEntry(xRefTable, d, dictName, "Direction", OPTIONAL, model.V13, validate)
+		if err != nil {
+			return err
+		}
+		if s != nil {
+			vp.Direction = model.DirectionFor(*s)
+		}
+		return nil
+	}
+
+	if n != nil {
+		vp.Direction = model.DirectionFor(n.String())
+	}
+
+	return nil
+}
+
 func validatePageBoundaries(xRefTable *model.XRefTable, d types.Dict, dictName string, vp *model.ViewerPreferences) error {
 	validate := func(s string) bool {
 		return types.MemberOf(s, []string{"MediaBox", "CropBox", "BleedBox", "TrimBox", "ArtBox"})
@@ -214,8 +241,29 @@ func validateViewerPreferences(xRefTable *model.XRefTable, rootDict types.Dict, 
 	dictName := "rootDict"
 
 	d, err := validateDictEntry(xRefTable, rootDict, dictName, "ViewerPreferences", required, sinceVersion, nil)
-	if err != nil || d == nil {
-		return err
+	if err != nil {
+		if xRefTable.ValidationMode == model.ValidationStrict {
+			return err
+		}
+		arr, err := validateArrayEntry(xRefTable, rootDict, dictName, "ViewerPreferences", required, sinceVersion, nil)
+		if err != nil || len(arr) == 0 {
+			return err
+		}
+		// For an out-of-spec viewer preferences array, we assume it only contains boolean flags set to true.
+		model.ShowDigestedSpecViolation("viewer preferences array instead of dict")
+		d = types.NewDict()
+		for _, v := range arr {
+			n, ok := v.(types.Name)
+			if !ok {
+				return errors.New("pdfcpu: corrupt viewer preferences")
+			}
+			d[n.Value()] = types.Boolean(true)
+		}
+		return nil
+	}
+
+	if d == nil {
+		return nil
 	}
 
 	vp := model.ViewerPreferences{}
@@ -242,19 +290,8 @@ func validateViewerPreferences(xRefTable *model.XRefTable, rootDict types.Dict, 
 		vp.NonFullScreenPageMode = (*model.NonFullScreenPageMode)(model.PageModeFor(n.String()))
 	}
 
-	validate = func(s string) bool { return types.MemberOf(s, []string{"L2R", "R2L"}) }
-	n, err = validateNameEntry(xRefTable, d, dictName, "Direction", OPTIONAL, model.V13, validate)
-	if err != nil {
-		s, err := validateStringEntry(xRefTable, d, dictName, "Direction", OPTIONAL, model.V13, validate)
-		if err != nil {
-			return err
-		}
-		if s != nil {
-			vp.Direction = model.DirectionFor(*s)
-		}
-	}
-	if vp.Direction == nil && n != nil {
-		vp.Direction = model.DirectionFor(n.String())
+	if err := validateDirection(xRefTable, d, dictName, &vp); err != nil {
+		return err
 	}
 
 	if err := validatePageBoundaries(xRefTable, d, dictName, &vp); err != nil {

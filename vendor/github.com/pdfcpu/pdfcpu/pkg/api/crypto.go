@@ -20,13 +20,16 @@ import (
 	"io"
 	"os"
 
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pkg/errors"
 )
 
 // Encrypt reads a PDF stream from rs and writes the encrypted PDF stream to w.
 // A configuration containing at least the current passwords is required.
-func Encrypt(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) error {
+func Encrypt(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: Encrypt: missing rs")
 	}
@@ -89,7 +92,9 @@ func EncryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 
 // Decrypt reads a PDF stream from rs and writes the encrypted PDF stream to w.
 // A configuration containing at least the current passwords is required.
-func Decrypt(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) error {
+func Decrypt(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: Decrypt: missing rs")
 	}
@@ -152,7 +157,9 @@ func DecryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 
 // ChangeUserPassword reads a PDF stream from rs, changes the user password and writes the encrypted PDF stream to w.
 // A configuration containing the current passwords is required.
-func ChangeUserPassword(rs io.ReadSeeker, w io.Writer, pwOld, pwNew string, conf *model.Configuration) error {
+func ChangeUserPassword(rs io.ReadSeeker, w io.Writer, pwOld, pwNew string, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: ChangeUserPassword: missing rs")
 	}
@@ -221,7 +228,9 @@ func ChangeUserPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *m
 
 // ChangeOwnerPassword reads a PDF stream from rs, changes the owner password and writes the encrypted PDF stream to w.
 // A configuration containing the current passwords is required.
-func ChangeOwnerPassword(rs io.ReadSeeker, w io.Writer, pwOld, pwNew string, conf *model.Configuration) error {
+func ChangeOwnerPassword(rs io.ReadSeeker, w io.Writer, pwOld, pwNew string, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: ChangeOwnerPassword: missing rs")
 	}

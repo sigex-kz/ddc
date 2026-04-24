@@ -21,12 +21,15 @@ import (
 	"os"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pkg/errors"
 )
 
 // Rotate rotates selected pages of rs clockwise by rotation degrees and writes the result to w.
-func Rotate(rs io.ReadSeeker, w io.Writer, rotation int, selectedPages []string, conf *model.Configuration) error {
+func Rotate(rs io.ReadSeeker, w io.Writer, rotation int, selectedPages []string, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: Rotate: missing rs")
 	}

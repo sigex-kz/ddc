@@ -63,7 +63,7 @@ func validatePageLabelDict(xRefTable *model.XRefTable, o types.Object) error {
 	return err
 }
 
-func validateNumberTreeDictNumsEntry(xRefTable *model.XRefTable, d types.Dict, name string) (firstKey, lastKey int, err error) {
+func validateNumberTreeDictNumsEntry(xRefTable *model.XRefTable, d types.Dict, name string, useIDs bool) (firstKey, lastKey int, err error) {
 
 	// Nums: array of the form [key1 value1 key2 value2 ... key n value n]
 	o, found := d.Find("Nums")
@@ -126,7 +126,7 @@ func validateNumberTreeDictNumsEntry(xRefTable *model.XRefTable, d types.Dict, n
 			}
 
 		case "StructTree":
-			err = validateStructTreeRootDictEntryK(xRefTable, o)
+			err = validateStructTreeRootDictEntryK(xRefTable, o, useIDs)
 			if err != nil {
 				return 0, 0, err
 			}
@@ -165,7 +165,7 @@ func validateNumberTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict,
 	return nil
 }
 
-func validateNumberTree(xRefTable *model.XRefTable, name string, d types.Dict, root bool) (firstKey, lastKey int, err error) {
+func validateNumberTree(xRefTable *model.XRefTable, name string, d types.Dict, root, useIDs bool) (firstKey, lastKey int, err error) {
 
 	// A node has "Kids" or "Nums" entry.
 
@@ -189,7 +189,7 @@ func validateNumberTree(xRefTable *model.XRefTable, name string, d types.Dict, r
 			}
 
 			var fk int
-			fk, lastKey, err = validateNumberTree(xRefTable, name, d1, false)
+			fk, lastKey, err = validateNumberTree(xRefTable, name, d1, false, useIDs)
 			if err != nil {
 				return 0, 0, err
 			}
@@ -201,7 +201,7 @@ func validateNumberTree(xRefTable *model.XRefTable, name string, d types.Dict, r
 	} else {
 
 		// Leaf node
-		firstKey, lastKey, err = validateNumberTreeDictNumsEntry(xRefTable, d, name)
+		firstKey, lastKey, err = validateNumberTreeDictNumsEntry(xRefTable, d, name, useIDs)
 		if err != nil {
 			return 0, 0, err
 		}

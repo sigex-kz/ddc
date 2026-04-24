@@ -44,11 +44,13 @@ func cacheResIDs(ctx *model.Context, pdf *primitives.PDF) error {
 		if err != nil {
 			return err
 		}
-		if inhPA.Resources["Font"] != nil {
-			pdf.FontResIDs[i] = inhPA.Resources["Font"].(types.Dict)
-		}
-		if inhPA.Resources["XObject"] != nil {
-			pdf.XObjectResIDs[i] = inhPA.Resources["XObject"].(types.Dict)
+		if inhPA != nil {
+			if inhPA.Resources["Font"] != nil {
+				pdf.FontResIDs[i] = inhPA.Resources["Font"].(types.Dict)
+			}
+			if inhPA.Resources["XObject"] != nil {
+				pdf.XObjectResIDs[i] = inhPA.Resources["XObject"].(types.Dict)
+			}
 		}
 	}
 	return nil
@@ -550,34 +552,6 @@ func fillRadioButtonGroup(
 	return nil
 }
 
-func fillCheckBoxKid(ctx *model.Context, kids types.Array, off bool) (*types.Name, error) {
-	d, err := ctx.DereferenceDict(kids[0])
-	if err != nil {
-		return nil, err
-	}
-
-	d1, err := locateAPN(ctx.XRefTable, d)
-	if err != nil {
-		return nil, err
-	}
-
-	offName, yesName, err := primitives.CalcCheckBoxASNames(ctx, d1)
-	if err != nil {
-		return nil, err
-	}
-
-	asName := yesName
-	if off {
-		asName = offName
-	}
-
-	if _, found := d.Find("AS"); found {
-		d["AS"] = asName
-	}
-
-	return &asName, nil
-}
-
 func fillCheckBox(
 	ctx *model.Context,
 	d types.Dict,
@@ -620,31 +594,31 @@ func fillCheckBox(
 		v = types.Name("Yes")
 	}
 
+	d["V"] = v
+	d1 := d
+	var err error
+
 	kids := d.ArrayEntry("Kids")
 	if len(kids) == 1 {
-		asName, err := fillCheckBoxKid(ctx, kids, v == types.Name("Off"))
+		d1, err = ctx.DereferenceDict(kids[0])
 		if err != nil {
 			return err
 		}
-		d["V"] = *asName
-		*ok = true
-		return nil
 	}
 
-	d["V"] = v
-	if _, found := d.Find("AS"); found {
-		offName, yesName, err := primitives.CalcCheckBoxASNames(ctx, d)
+	if _, found := d1.Find("AS"); found {
+		offName, yesName, err := primitives.CalcCheckBoxASNames(ctx, d1)
 		if err != nil {
 			return err
 		}
-		//fmt.Printf("off:<%s> yes:<%s>\n", offName, yesName)
 		asName := yesName
 		if v == "Off" {
 			asName = offName
 		}
-		d["AS"] = asName
+		d1["AS"] = asName
 		d["V"] = asName
 	}
+
 	*ok = true
 	return nil
 }
@@ -816,7 +790,7 @@ func fillListBox(
 	}
 
 	var vOld []string
-	multi := primitives.FieldFlags(*ff)&primitives.FieldMultiselect > 0
+	multi := ff != nil && primitives.FieldFlags(*ff)&primitives.FieldMultiselect > 0
 	if !multi {
 		if sl := d.StringLiteralEntry("V"); sl != nil {
 			s, err := types.StringLiteralToString(*sl)
@@ -877,20 +851,12 @@ func fillCh(
 	ff *int,
 	ok *bool) error {
 
-	if ff == nil {
-		return errors.New("pdfcpu: corrupt form field: missing entry Ff")
-	}
-
-	opts, err := parseOptions(ctx.XRefTable, d, REQUIRED)
+	opts, err := parseOptions(ctx.XRefTable, d, OPTIONAL)
 	if err != nil {
 		return err
 	}
 
-	if len(opts) == 0 {
-		return errors.New("pdfcpu: missing Opts")
-	}
-
-	if primitives.FieldFlags(*ff)&primitives.FieldCombo > 0 {
+	if ff != nil && primitives.FieldFlags(*ff)&primitives.FieldCombo > 0 {
 		return fillComboBox(ctx, d, id, name, opts, locked, format, fonts, fillDetails, ok)
 	}
 
@@ -1182,7 +1148,7 @@ func FillForm(
 
 	xRefTable := ctx.XRefTable
 
-	fields, err := fields(xRefTable)
+	fields, err := Fields(xRefTable)
 	if err != nil {
 		return false, nil, err
 	}
@@ -1211,22 +1177,8 @@ func FillForm(
 		}
 	}
 
-	for fName, indRef := range fonts {
-		if len(ctx.UsedGIDs[fName]) == 0 {
-			continue
-		}
-		// Update user font.
-		fDict, err := xRefTable.DereferenceDict(indRef)
-		if err != nil {
-			return false, nil, err
-		}
-		fr := model.FontResource{}
-		if err := pdffont.IndRefsForUserfontUpdate(xRefTable, fDict, "", &fr); err != nil {
-			return false, nil, pdffont.ErrCorruptFontDict
-		}
-		if err := pdffont.UpdateUserfont(xRefTable, fName, fr); err != nil {
-			return false, nil, err
-		}
+	if err := pdffont.UpdateUserfonts(ctx.XRefTable, fonts); err != nil {
+		return false, nil, err
 	}
 
 	var pages []*model.Page

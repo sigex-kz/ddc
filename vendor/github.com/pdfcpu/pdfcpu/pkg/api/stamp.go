@@ -21,8 +21,10 @@ import (
 	"os"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+
 	"github.com/pkg/errors"
 )
 
@@ -32,7 +34,9 @@ func WatermarkContext(ctx *model.Context, selectedPages types.IntSet, wm *model.
 }
 
 // AddWatermarksMap adds watermarks in m to corresponding pages in rs and writes the result to w.
-func AddWatermarksMap(rs io.ReadSeeker, w io.Writer, m map[int]*model.Watermark, conf *model.Configuration) error {
+func AddWatermarksMap(rs io.ReadSeeker, w io.Writer, m map[int]*model.Watermark, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: AddWatermarksMap: missing rs")
 	}
@@ -100,7 +104,9 @@ func AddWatermarksMapFile(inFile, outFile string, m map[int]*model.Watermark, co
 }
 
 // AddWatermarksSliceMap adds watermarks in m to corresponding pages in rs and writes the result to w.
-func AddWatermarksSliceMap(rs io.ReadSeeker, w io.Writer, m map[int][]*model.Watermark, conf *model.Configuration) error {
+func AddWatermarksSliceMap(rs io.ReadSeeker, w io.Writer, m map[int][]*model.Watermark, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: AddWatermarksSliceMap: missing rs")
 	}
@@ -168,7 +174,9 @@ func AddWatermarksSliceMapFile(inFile, outFile string, m map[int][]*model.Waterm
 }
 
 // AddWatermarks adds watermarks to all pages selected in rs and writes the result to w.
-func AddWatermarks(rs io.ReadSeeker, w io.Writer, selectedPages []string, wm *model.Watermark, conf *model.Configuration) error {
+func AddWatermarks(rs io.ReadSeeker, w io.Writer, selectedPages []string, wm *model.Watermark, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: AddWatermarks: missing rs")
 	}
@@ -188,8 +196,7 @@ func AddWatermarks(rs io.ReadSeeker, w io.Writer, selectedPages []string, wm *mo
 		return err
 	}
 
-	var pages types.IntSet
-	pages, err = PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
 	if err != nil {
 		return err
 	}
@@ -243,7 +250,9 @@ func AddWatermarksFile(inFile, outFile string, selectedPages []string, wm *model
 }
 
 // RemoveWatermarks removes watermarks from all pages selected in rs and writes the result to w.
-func RemoveWatermarks(rs io.ReadSeeker, w io.Writer, selectedPages []string, conf *model.Configuration) error {
+func RemoveWatermarks(rs io.ReadSeeker, w io.Writer, selectedPages []string, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: RemoveWatermarks: missing rs")
 	}
@@ -312,7 +321,9 @@ func RemoveWatermarksFile(inFile, outFile string, selectedPages []string, conf *
 }
 
 // HasWatermarks checks rs for watermarks.
-func HasWatermarks(rs io.ReadSeeker, conf *model.Configuration) (bool, error) {
+func HasWatermarks(rs io.ReadSeeker, conf *model.Configuration) (ok bool, err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return false, errors.New("pdfcpu: HasWatermarks: missing rs")
 	}

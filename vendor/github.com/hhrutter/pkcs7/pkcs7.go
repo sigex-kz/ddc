@@ -4,11 +4,9 @@ package pkcs7
 import (
 	"bytes"
 	"crypto"
-	"crypto/dsa"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
 	"fmt"
@@ -22,7 +20,7 @@ type PKCS7 struct {
 	Content      []byte
 	ContentType  asn1.ObjectIdentifier
 	Certificates []*x509.Certificate
-	CRLs         []pkix.CertificateList
+	CRLs         []*x509.RevocationList
 	Signers      []SignerInfo
 	raw          interface{}
 }
@@ -71,20 +69,32 @@ var (
 	OIDEncryptionAlgorithmRSASHA384 = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 12}
 	OIDEncryptionAlgorithmRSASHA512 = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 13}
 
-	OIDEncryptionAlgorithmECDSAP256 = asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7}
-	OIDEncryptionAlgorithmECDSAP384 = asn1.ObjectIdentifier{1, 3, 132, 0, 34}
-	OIDEncryptionAlgorithmECDSAP521 = asn1.ObjectIdentifier{1, 3, 132, 0, 35}
+	OIDEncryptionAlgorithmECDSAP256   = asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7} // 256 bit elliptic curve
+	OIDEncryptionAlgorithmECDSAP384   = asn1.ObjectIdentifier{1, 3, 132, 0, 34}          // 384-bit elliptic curve
+	OIDEncryptionAlgorithmECDSAP521   = asn1.ObjectIdentifier{1, 3, 132, 0, 35}          // 512-bit elliptic curve!
+	OIDEncryptionAlgorithmECPUBLICKEY = asn1.ObjectIdentifier{1, 2, 840, 10045, 2, 1}    // ecPublicKey
 
-	// Encryption Algorithms
 	OIDEncryptionAlgorithmDESCBC     = asn1.ObjectIdentifier{1, 3, 14, 3, 2, 7}
 	OIDEncryptionAlgorithmDESEDE3CBC = asn1.ObjectIdentifier{1, 2, 840, 113549, 3, 7}
-	OIDEncryptionAlgorithmAES256CBC  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 42}
-	OIDEncryptionAlgorithmAES128GCM  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 6}
-	OIDEncryptionAlgorithmAES128CBC  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 2}
-	OIDEncryptionAlgorithmAES256GCM  = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 46}
+
+	OIDEncryptionAlgorithmAES256CBC = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 42}
+	OIDEncryptionAlgorithmAES128GCM = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 6}
+	OIDEncryptionAlgorithmAES128CBC = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 2}
+	OIDEncryptionAlgorithmAES256GCM = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 46}
+
+	OIDEncryptionAlgorithmECDSAWithSHA256 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}
+	OIDEncryptionAlgorithmECDSAWithSHA384 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 3}
+	OIDEncryptionAlgorithmECDSAWithSHA512 = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 4}
+
+	OIDEncryptionAlgorithmEd25519 = asn1.ObjectIdentifier{1, 3, 101, 112}
+
+	// Elliptic curve names
+	OIDCurveP256 = asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7}
+	OIDCurveP384 = asn1.ObjectIdentifier{1, 3, 132, 0, 34}
+	OIDCurveP521 = asn1.ObjectIdentifier{1, 3, 132, 0, 35}
 )
 
-func getHashForOID(oid asn1.ObjectIdentifier) (crypto.Hash, error) {
+func HashForOID(oid asn1.ObjectIdentifier) (crypto.Hash, error) {
 	switch {
 	case oid.Equal(OIDDigestAlgorithmSHA1), oid.Equal(OIDDigestAlgorithmECDSASHA1),
 		oid.Equal(OIDDigestAlgorithmDSA), oid.Equal(OIDDigestAlgorithmDSASHA1),
@@ -100,9 +110,9 @@ func getHashForOID(oid asn1.ObjectIdentifier) (crypto.Hash, error) {
 	return crypto.Hash(0), ErrUnsupportedAlgorithm
 }
 
-// getDigestOIDForSignatureAlgorithm takes an x509.SignatureAlgorithm
+// DigestOIDForSignatureAlgorithm takes an x509.SignatureAlgorithm
 // and returns the corresponding OID digest algorithm
-func getDigestOIDForSignatureAlgorithm(digestAlg x509.SignatureAlgorithm) (asn1.ObjectIdentifier, error) {
+func DigestOIDForSignatureAlgorithm(digestAlg x509.SignatureAlgorithm) (asn1.ObjectIdentifier, error) {
 	switch digestAlg {
 	case x509.SHA1WithRSA, x509.ECDSAWithSHA1:
 		return OIDDigestAlgorithmSHA1, nil
@@ -116,9 +126,9 @@ func getDigestOIDForSignatureAlgorithm(digestAlg x509.SignatureAlgorithm) (asn1.
 	return nil, fmt.Errorf("pkcs7: cannot convert hash to oid, unknown hash algorithm")
 }
 
-// getOIDForEncryptionAlgorithm takes the private key type of the signer and
+// OIDForEncryptionAlgorithm takes the private key type of the signer and
 // the OID of a digest algorithm to return the appropriate signerInfo.DigestEncryptionAlgorithm
-func getOIDForEncryptionAlgorithm(pkey crypto.PrivateKey, OIDDigestAlg asn1.ObjectIdentifier) (asn1.ObjectIdentifier, error) {
+func OIDForEncryptionAlgorithm(pkey crypto.PrivateKey, OIDDigestAlg asn1.ObjectIdentifier) (asn1.ObjectIdentifier, error) {
 	switch pkey.(type) {
 	case *rsa.PrivateKey:
 		switch {
@@ -146,11 +156,8 @@ func getOIDForEncryptionAlgorithm(pkey crypto.PrivateKey, OIDDigestAlg asn1.Obje
 		case OIDDigestAlg.Equal(OIDDigestAlgorithmSHA512):
 			return OIDDigestAlgorithmECDSASHA512, nil
 		}
-	case *dsa.PrivateKey:
-		return OIDDigestAlgorithmDSA, nil
 	}
 	return nil, fmt.Errorf("pkcs7: cannot convert encryption algorithm to oid, unknown private key type %T", pkey)
-
 }
 
 // Parse decodes a DER encoded PKCS7 package
@@ -163,6 +170,7 @@ func Parse(data []byte) (p7 *PKCS7, err error) {
 	if err != nil {
 		return nil, err
 	}
+	//fmt.Printf("der:\n%x\n", der)
 	rest, err := asn1.Unmarshal(der, &info)
 	if len(rest) > 0 {
 		err = asn1.SyntaxError{Msg: "trailing data"}
@@ -213,6 +221,12 @@ func (raw rawCertificates) Parse() ([]*x509.Certificate, error) {
 	if _, err := asn1.Unmarshal(raw.Raw, &val); err != nil {
 		return nil, err
 	}
+
+	// Handle optional EXPLICIT [0] or plain SEQUENCE
+	// if val.Class == 2 && val.Tag == 0 { // context-specific [0]
+	// 	// val.Bytes contains the inner SEQUENCE of certs
+	// 	return x509.ParseCertificates(val.Bytes)
+	// }
 
 	return x509.ParseCertificates(val.Bytes)
 }

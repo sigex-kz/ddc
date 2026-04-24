@@ -22,6 +22,7 @@ import (
 	"io"
 	"math"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/pdfcpu/pdfcpu/pkg/font"
@@ -625,6 +626,118 @@ func SplitMultilineStr(s string) []string {
 	s = strings.ReplaceAll(s, "\\n", "\n")
 	var lines []string
 	return append(lines, fieldsFunc(s, func(c rune) bool { return c == 0x0a })...)
+}
+
+func wrapLine(ss *[]string, line, space, word, fontName string, fontSize int, maxWidthPoints float64) {
+	candidate := line + space + word
+	if font.TextWidth(candidate, fontName, fontSize) < maxWidthPoints {
+		*ss = append(*ss, candidate)
+	} else {
+		if len(line) > 0 {
+			*ss = append(*ss, line)
+		}
+		*ss = append(*ss, word)
+	}
+}
+
+func wrap(lines []string, fontName string, fontSize int, maxWidthPoints float64) []string {
+
+	var wrapState int
+
+	const (
+		beginLine = iota
+		inWord
+		leadingSpace
+		inSpace
+	)
+
+	var ss []string
+
+	for _, s := range lines {
+
+		var word, space, line string
+
+		wrapState = beginLine
+
+		for _, c := range s {
+
+			switch wrapState {
+
+			case beginLine:
+				if unicode.IsSpace(c) {
+					line = string(c)
+					wrapState = leadingSpace
+				} else {
+					word = string(c)
+					wrapState = inWord
+				}
+
+			case leadingSpace:
+				if unicode.IsSpace(c) {
+					line += string(c)
+				} else {
+					word = string(c)
+					wrapState = inWord
+				}
+
+			case inWord:
+				if unicode.IsSpace(c) {
+					candidate := line + space + word
+					if font.TextWidth(candidate, fontName, fontSize) < maxWidthPoints {
+						line = candidate
+						space = string(c)
+
+					} else {
+						if len(line) > 0 {
+							ss = append(ss, line)
+							line = word
+						} else {
+							ss = append(ss, word)
+							space = ""
+						}
+					}
+
+					wrapState = inSpace
+
+				} else {
+					word += string(c)
+				}
+
+			case inSpace:
+				if unicode.IsSpace(c) {
+					space += string(c)
+				} else {
+					word = string(c)
+					wrapState = inWord
+				}
+			}
+		}
+
+		if wrapState == inWord {
+			wrapLine(&ss, line, space, word, fontName, fontSize, maxWidthPoints)
+		}
+	}
+
+	return ss
+}
+
+// WordWrap wraps text at unicode whitespace to fit within a specified width using the given font and font size.
+// Explicit newlines are honored, and whitespace at the beginning of a line is preserved (unless it
+// would cause a word to overrun the line).  Amounts and types of whitespace are preserved within lines.
+func WordWrap(s string, fontName string, fontSize int, maxWidthPoints float64) []string {
+	if len(s) == 0 || maxWidthPoints <= 0 {
+		return []string{s}
+	}
+
+	lines := SplitMultilineStr(s)
+
+	ss := wrap(lines, fontName, fontSize, maxWidthPoints)
+
+	if len(ss) == 0 {
+		ss = append(ss, "")
+	}
+
+	return ss
 }
 
 // WriteColumn writes a text column using s at position x/y using a certain font, fontsize and a desired horizontal and vertical alignment.

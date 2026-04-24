@@ -363,8 +363,6 @@ func parseConfigFile(r io.Reader, configPath string) error {
 	//fmt.Println("parseConfigFile For JS")
 	var conf Configuration
 	conf.Path = configPath
-
-	// TODO add to config.yml
 	conf.OptimizeBeforeWriting = true
 
 	s := bufio.NewScanner(r)

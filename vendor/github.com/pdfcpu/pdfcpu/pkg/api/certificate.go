@@ -17,45 +17,18 @@
 package api
 
 import (
-	"crypto/x509"
 	"fmt"
-	"os"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 )
 
-func LoadCertificates() (int, error) {
+// ImportCertificates validates and installs found certificate files to pdfcpu config dir.
+func ImportCertificates(inFiles []string) (ss []string, err error) {
+	defer fault.Catch(&err)
 
-	if model.UserCertPool != nil {
-		return 0, nil
-	}
-
-	// if log.CLIEnabled() {
-	// 	log.CLI.Printf("certDir: %s\n", model.CertDir)
-	// }
-
-	if err := os.MkdirAll(model.CertDir, os.ModePerm); err != nil {
-		return 0, err
-	}
-
-	rootCAs := x509.NewCertPool()
-
-	n, err := pdfcpu.LoadCertificatesToCertPool(model.CertDir, rootCAs)
-	if err != nil {
-		return 0, err
-	}
-
-	model.UserCertPool = rootCAs
-
-	return n, nil
-}
-
-// ImportCertificates validates and imports found certificate files to pdfcpu config dir.
-func ImportCertificates(inFiles []string) ([]string, error) {
 	count := 0
 	overwrite := true
-	ss := []string{}
 	for _, inFile := range inFiles {
 		n, ok, err := pdfcpu.ImportCertificate(inFile, overwrite)
 		if err != nil {
@@ -73,13 +46,15 @@ func ImportCertificates(inFiles []string) ([]string, error) {
 	return ss, nil
 }
 
-func InspectCertificates(inFiles []string) ([]string, error) {
+// InspectCertificates loads and inspects certs from indFiles.
+func InspectCertificates(inFiles []string) (ss []string, err error) {
+	defer fault.Catch(&err)
+
 	count := 0
-	ss := []string{}
 
 	for _, inFile := range inFiles {
 
-		certs, err := pdfcpu.LoadCertificates(inFile)
+		certs, err := pdfcpu.LoadCertificatesFile(inFile)
 		if err != nil {
 			return nil, err
 		}

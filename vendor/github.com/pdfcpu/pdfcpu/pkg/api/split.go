@@ -26,6 +26,7 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pkg/errors"
 )
@@ -223,7 +224,9 @@ func writePageSpansSplitAlongPages(ctx *model.Context, pageNrs []int, outDir, fi
 // If span == 1 splitting results in single page PDFs.
 // If span == 0 we split along given bookmarks (level 1 only).
 // Default span: 1
-func SplitRaw(rs io.ReadSeeker, span int, conf *model.Configuration) ([]*PageSpan, error) {
+func SplitRaw(rs io.ReadSeeker, span int, conf *model.Configuration) (ps []*PageSpan, err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return nil, errors.New("pdfcpu: SplitRaw: missing rs")
 	}
@@ -243,7 +246,9 @@ func SplitRaw(rs io.ReadSeeker, span int, conf *model.Configuration) ([]*PageSpa
 // If span == 1 splitting results in single page PDFs.
 // If span == 0 we split along given bookmarks (level 1 only).
 // Default span: 1
-func Split(rs io.ReadSeeker, outDir, fileName string, span int, conf *model.Configuration) error {
+func Split(rs io.ReadSeeker, outDir, fileName string, span int, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: Split: missing rs")
 	}
@@ -284,7 +289,9 @@ func SplitFile(inFile, outDir string, span int, conf *model.Configuration) error
 }
 
 // SplitFile generates a sequence of PDF files in outDir for rs splitting along pageNrs.
-func SplitByPageNr(rs io.ReadSeeker, outDir, fileName string, pageNrs []int, conf *model.Configuration) error {
+func SplitByPageNr(rs io.ReadSeeker, outDir, fileName string, pageNrs []int, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: SplitByPageNr: missing rs")
 	}

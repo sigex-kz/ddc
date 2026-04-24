@@ -572,25 +572,25 @@ func (oc *OptimizationContext) collectImageInfo(logStr []string) []string {
 type WriteContext struct {
 
 	// The PDF-File which gets generated.
-	*bufio.Writer                     // A writer associated with Fp.
-	Fp                  *os.File      // A file pointer needed for detecting FileSize.
-	FileSize            int64         // The size of the written file.
-	DirName             string        // The output directory.
-	FileName            string        // The output file name.
-	SelectedPages       types.IntSet  // For split, trim and extract.
-	BinaryTotalSize     int64         // total stream data, counts 100% all stream data written.
-	BinaryImageSize     int64         // total image stream data written = Read.BinaryImageSize.
-	BinaryFontSize      int64         // total font stream data (fontfiles) = copy of Read.BinaryFontSize.
+	*bufio.Writer                     // writer associated with Fp
+	Fp                  *os.File      // file pointer needed for detecting FileSize
+	FileSize            int64         // size of the written file
+	DirName             string        // output directory
+	FileName            string        // output file name
+	SelectedPages       types.IntSet  // for split, trim and extract
+	BinaryTotalSize     int64         // total stream data, counts 100% all stream data written
+	BinaryImageSize     int64         // total image stream data written = Read.BinaryImageSize
+	BinaryFontSize      int64         // total font stream data (fontfiles) = copy of Read.BinaryFontSize
 	Table               map[int]int64 // object write offsets
 	Offset              int64         // current write offset
 	OffsetSigByteRange  int64         // write offset of signature dict value for "ByteRange"
 	OffsetSigContents   int64         // write offset of signature dict value for "Contents"
-	WriteToObjectStream bool          // if true start to embed objects into object streams and obey ObjectStreamMaxObjects.
-	CurrentObjStream    *int          // if not nil, any new non-stream-object gets added to the object stream with this object number.
+	WriteToObjectStream bool          // if true start to embed objects into object streams and obey ObjectStreamMaxObjects
+	CurrentObjStream    *int          // if not nil, any new non-stream-object gets added to the object stream with this object number
 	Eol                 string        // end of line char sequence
-	Increment           bool          // Write context as PDF increment.
-	ObjNrs              []int         // Increment candidate object numbers.
-	OffsetPrevXRef      *int64        // Increment trailer entry "Prev".
+	Increment           bool          // write context as PDF increment
+	ObjNrs              []int         // increment candidate object numbers
+	OffsetPrevXRef      *int64        // increment trailer entry "Prev"
 }
 
 // NewWriteContext returns a new WriteContext.

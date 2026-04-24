@@ -24,6 +24,7 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pkg/errors"
 )
@@ -43,8 +44,23 @@ func appendTo(rs io.ReadSeeker, fName string, ctxDest *model.Context, dividerPag
 	return pdfcpu.MergeXRefTables(fName, ctxSource, ctxDest, false, dividerPage)
 }
 
+func appendFile(fName string, ctxDest *model.Context, dividerPage bool) error {
+	f, err := os.Open(fName)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if log.CLIEnabled() {
+		log.CLI.Println(fName)
+	}
+	return appendTo(f, filepath.Base(fName), ctxDest, dividerPage)
+}
+
 // MergeRaw merges a sequence of PDF streams and writes the result to w.
-func MergeRaw(rsc []io.ReadSeeker, w io.Writer, dividerPage bool, conf *model.Configuration) error {
+func MergeRaw(rsc []io.ReadSeeker, w io.Writer, dividerPage bool, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rsc == nil {
 		return errors.New("pdfcpu: MergeRaw: missing rsc")
 	}
@@ -99,19 +115,6 @@ func prepDestContext(destFile string, rs io.ReadSeeker, conf *model.Configuratio
 	}
 
 	return ctxDest, nil
-}
-
-func appendFile(fName string, ctxDest *model.Context, dividerPage bool) error {
-	f, err := os.Open(fName)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if log.CLIEnabled() {
-		log.CLI.Println(fName)
-	}
-	return appendTo(f, filepath.Base(fName), ctxDest, dividerPage)
 }
 
 // Merge concatenates inFiles.
@@ -238,7 +241,9 @@ func MergeAppendFile(inFiles []string, outFile string, dividerPage bool, conf *m
 }
 
 // MergeCreateZip zips rs1 and rs2 into w.
-func MergeCreateZip(rs1, rs2 io.ReadSeeker, w io.Writer, conf *model.Configuration) error {
+func MergeCreateZip(rs1, rs2 io.ReadSeeker, w io.Writer, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs1 == nil {
 		return errors.New("pdfcpu: MergeCreateZip: missing rs1")
 	}

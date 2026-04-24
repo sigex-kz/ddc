@@ -540,7 +540,7 @@ func validateIDTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersio
 
 	dictType := d.Type()
 	if dictType == nil || *dictType == "StructElem" {
-		err = validateStructElementDict(xRefTable, d)
+		err = validateStructElementDict(xRefTable, d, true)
 		if err != nil {
 			return err
 		}

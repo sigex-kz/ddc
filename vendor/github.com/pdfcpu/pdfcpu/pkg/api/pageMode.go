@@ -20,13 +20,16 @@ import (
 	"io"
 	"os"
 
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
 )
 
 // PageMode returns rs's page mode.
-func PageMode(rs io.ReadSeeker, conf *model.Configuration) (*model.PageMode, error) {
+func PageMode(rs io.ReadSeeker, conf *model.Configuration) (pm *model.PageMode, err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return nil, errors.New("pdfcpu: PageMode: missing rs")
 	}
@@ -58,7 +61,9 @@ func PageModeFile(inFile string, conf *model.Configuration) (*model.PageMode, er
 }
 
 // ListPageMode lists rs's page mode.
-func ListPageMode(rs io.ReadSeeker, conf *model.Configuration) ([]string, error) {
+func ListPageMode(rs io.ReadSeeker, conf *model.Configuration) (ss []string, err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return nil, errors.New("pdfcpu: ListPageMode: missing rs")
 	}
@@ -94,7 +99,9 @@ func ListPageModeFile(inFile string, conf *model.Configuration) ([]string, error
 }
 
 // SetPageMode sets rs's page mode and writes the result to w.
-func SetPageMode(rs io.ReadSeeker, w io.Writer, val model.PageMode, conf *model.Configuration) error {
+func SetPageMode(rs io.ReadSeeker, w io.Writer, val model.PageMode, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: SetPageMode: missing rs")
 	}
@@ -155,7 +162,9 @@ func SetPageModeFile(inFile, outFile string, val model.PageMode, conf *model.Con
 }
 
 // ResetPageMode resets rs's page mode and writes the result to w.
-func ResetPageMode(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) error {
+func ResetPageMode(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
 		return errors.New("pdfcpu: ResetPageMode: missing rs")
 	}

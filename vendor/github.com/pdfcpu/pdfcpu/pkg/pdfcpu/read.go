@@ -387,6 +387,7 @@ func parseXRefTableSubSection(xRefTable *model.XRefTable, s *bufio.Scanner, fiel
 				if log.ReadEnabled() {
 					log.Read.Printf("parseXRefTableEntry: end - Skip entry %d - already assigned\n", objNr)
 				}
+				// Add incr!
 				continue
 			}
 
@@ -412,7 +413,7 @@ func compressedObject(c context.Context, s string) (types.Object, error) {
 		log.Read.Println("compressedObject: begin")
 	}
 
-	o, err := model.ParseObjectContext(c, &s)
+	o, err := model.ParseObjectContext(c, &s, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -590,7 +591,11 @@ func extractXRefTableEntriesFromXRefStream(buf []byte, offExtra int64, xsd *type
 		log.Read.Printf("extractXRefTableEntriesFromXRefStream: begin xrefEntryLen = %d\n", xrefEntryLen)
 	}
 
-	if xrefEntryLen != 0 && len(buf)%xrefEntryLen > 0 {
+	if xrefEntryLen == 0 {
+		return errors.New("pdfcpu: extractXRefTableEntriesFromXRefStream: invalid W array - all values are zero")
+	}
+
+	if len(buf)%xrefEntryLen > 0 {
 		return errors.New("pdfcpu: extractXRefTableEntriesFromXRefStream: corrupt xrefstream")
 	}
 
@@ -768,7 +773,7 @@ func parseXRefStream(c context.Context, ctx *model.Context, rd io.Reader, offset
 		log.Read.Printf("parseXRefStream: dereferencing object %d\n", *objNr)
 	}
 
-	o, err := model.ParseObjectContext(c, &l)
+	o, err := model.ParseObjectContext(c, &l, 0)
 	if err != nil {
 		return nil, errors.Wrapf(err, "parseXRefStream: no object")
 	}
@@ -1160,7 +1165,7 @@ func processTrailer(c context.Context, ctx *model.Context, s *bufio.Scanner, lin
 		log.Read.Printf("processTrailer: trailerString: (len:%d) <%s>\n", len(trailerString), trailerString)
 	}
 
-	o, err := model.ParseObjectContext(c, &trailerString)
+	o, err := model.ParseObjectContext(c, &trailerString, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1917,7 +1922,7 @@ func buildFilterPipeline(c context.Context, ctx *model.Context, filterArray, dec
 }
 
 func singleFilter(c context.Context, ctx *model.Context, filterName string, d types.Dict) ([]types.PDFFilter, error) {
-	o, found := d.Find("DecodeParms")
+	obj, found := d.Find("DecodeParms")
 	if !found {
 		// w/o decode parameters.
 		if log.ReadEnabled() {
@@ -1926,34 +1931,40 @@ func singleFilter(c context.Context, ctx *model.Context, filterName string, d ty
 		return []types.PDFFilter{{Name: filterName}}, nil
 	}
 
-	if ctx.XRefTable.ValidationMode == model.ValidationRelaxed {
-		if arr, ok := o.(types.Array); ok && len(arr) == 0 || len(arr) == 1 && arr[0] == nil {
-			// w/o decode parameters.
-			if log.ReadEnabled() {
-				log.Read.Println("singleFilter: end w/o decode parms")
-			}
-			return []types.PDFFilter{{Name: filterName}}, nil
-		}
-	}
-
 	var err error
-	d, ok := o.(types.Dict)
-	if !ok {
-		indRef, ok := o.(types.IndirectRef)
-		if !ok {
-			return nil, errors.Errorf("singleFilter: corrupt Dict: %s\n", o)
-		}
-		if d, err = dereferencedDict(c, ctx, indRef.ObjectNumber.Value()); err != nil {
+
+	if indRef, ok := obj.(types.IndirectRef); ok {
+		obj, err = dereferencedObject(c, ctx, indRef.ObjectNumber.Value())
+		if err != nil {
 			return nil, err
 		}
 	}
 
-	// with decode parameters.
-	if log.ReadEnabled() {
-		log.Read.Println("singleFilter: end with decode parms")
+	if d, ok := obj.(types.Dict); ok {
+		if len(d) == 0 {
+			d = nil
+		}
+		return []types.PDFFilter{{Name: filterName, DecodeParms: d}}, nil
 	}
 
-	return []types.PDFFilter{{Name: filterName, DecodeParms: d}}, nil
+	if arr, ok := obj.(types.Array); ok {
+		if len(arr) > 1 {
+			return nil, errors.Errorf("singleFilter: DecodeParam array must have <= 1 parameter dicts")
+		}
+		if len(arr) == 0 || arr[0] == nil {
+			return []types.PDFFilter{{Name: filterName}}, nil
+		}
+		d, ok := arr[0].(types.Dict)
+		if !ok {
+			return nil, errors.Errorf("singleFilter: DecodeParam array must contain parameter dict")
+		}
+		if len(d) == 0 {
+			d = nil
+		}
+		return []types.PDFFilter{{Name: filterName, DecodeParms: d}}, nil
+	}
+
+	return nil, errors.Errorf("singleFilter: corrupt Dict: %s\n", obj)
 }
 
 func filterArraySupportsDecodeParms(filters types.Array) bool {
@@ -2151,14 +2162,9 @@ func object(c context.Context, ctx *model.Context, offset int64, objNr, genNr in
 		return nil, endInd, streamInd, streamOffset, err
 	}
 
-	o, err = model.ParseObjectContext(c, &l)
+	o, err = model.ParseObjectContext(c, &l, 0)
 
 	return o, endInd, streamInd, streamOffset, err
-}
-
-// ParseObject parses an object from file at given offset.
-func ParseObject(ctx *model.Context, offset int64, objNr, genNr int) (types.Object, error) {
-	return ParseObjectWithContext(context.Background(), ctx, offset, objNr, genNr)
 }
 
 func resolveObject(c context.Context, ctx *model.Context, obj types.Object, offset int64, objNr, genNr, endInd, streamInd int, streamOffset int64) (types.Object, error) {
@@ -2360,7 +2366,7 @@ func readStreamContent(rd io.Reader, streamLength int) ([]byte, error) {
 		log.Read.Printf("readStreamContent: begin streamLength:%d\n", streamLength)
 	}
 
-	if streamLength == 0 {
+	if streamLength <= 0 { // TODO logcli...
 		// Read until "endstream" then fix "Length".
 		return readStreamContentBlindly(rd)
 	}
@@ -2399,7 +2405,7 @@ func ensureStreamLength(sd *types.StreamDict, fixLength bool) {
 	l := int64(len(sd.Raw))
 	if fixLength || sd.StreamLength == nil || l != *sd.StreamLength {
 		sd.StreamLength = &l
-		sd.Dict["Length"] = types.Integer(l)
+		sd.Dict["Length"] = types.Integer(l) // TODO panic here still a problem because sd.Dict == nil
 	}
 }
 
@@ -2794,7 +2800,7 @@ func dereferenceAndLoad(c context.Context, ctx *model.Context, objNr int, entry 
 			o, err = ParseObjectWithContext(c, ctx, *entry.Offset+ctx.Read.RepairOffset, objNr, *entry.Generation)
 		}
 		if err != nil {
-			model.ShowSkipped(fmt.Sprintf("missing obj #%d", objNr))
+			model.ShowSkipped(fmt.Sprintf("obj #%d reason: %v", objNr, err))
 		}
 		if err == model.ErrCorruptObjectOffset {
 			return err
@@ -3032,8 +3038,6 @@ func dereferenceXRefTable(c context.Context, ctx *model.Context) error {
 		log.Read.Println("dereferenceXRefTable: begin")
 	}
 
-	xRefTable := ctx.XRefTable
-
 	// Note for encrypted files:
 	// Mandatory provide userpw to open & display file.
 	// Access may be restricted (Decode access privileges).
@@ -3050,11 +3054,6 @@ func dereferenceXRefTable(c context.Context, ctx *model.Context) error {
 
 	// For each xRefTableEntry assign a Object either by parsing from file or pointing to a decompressed object.
 	if err := dereferenceObjects(c, ctx); err != nil {
-		return err
-	}
-
-	// Identify an optional Version entry in the root object/catalog.
-	if err := identifyRootVersion(xRefTable); err != nil {
 		return err
 	}
 
@@ -3131,7 +3130,7 @@ func setupEncryptionKey(ctx *model.Context, d types.Dict) (err error) {
 	// If the owner password does not match we generally move on if the user password is correct
 	// unless we need to insist on a correct owner password due to the specific command in progress.
 	if !ok && needsOwnerAndUserPassword(ctx.Cmd) {
-		return errors.New("pdfcpu: please provide the owner password with -opw")
+		return errors.New("pdfcpu: please provide the owner password with --opw")
 	}
 
 	// Generally the owner password, which is also regarded as the master password or set permissions password
@@ -3168,16 +3167,17 @@ func checkForEncryption(c context.Context, ctx *model.Context) error {
 	}
 
 	// This file is encrypted.
+
 	if log.ReadEnabled() {
 		log.Read.Printf("Encryption: %v\n", indRef)
 	}
 
-	if ctx.Cmd == model.ENCRYPT {
-		// We want to encrypt this file.
-		return errors.New("pdfcpu: this file is already encrypted")
-	}
-
-	if ctx.Cmd == model.VALIDATESIGNATURE || ctx.Cmd == model.ADDSIGNATURE {
+	if ctx.Cmd == model.BOOKLET ||
+		ctx.Cmd == model.ENCRYPT ||
+		ctx.Cmd == model.MERGEAPPEND ||
+		ctx.Cmd == model.MERGECREATE ||
+		ctx.Cmd == model.MERGECREATEZIP ||
+		ctx.Cmd == model.ADDSIGNATURE {
 		return errors.New("pdfcpu: this file is encrypted")
 	}
 

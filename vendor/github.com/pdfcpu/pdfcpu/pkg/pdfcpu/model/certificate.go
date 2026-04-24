@@ -24,8 +24,8 @@ import (
 	"strings"
 )
 
-// CertDir is the location for installed certificates.
-var CertDir string
+// TrustedCertDir is the location for installed trusted certificates.
+var TrustedCertDir string
 
 // UserCertPool contains all certificates loaded from CertDir.
 var UserCertPool *x509.CertPool
@@ -87,15 +87,16 @@ func nameString(subj pkix.Name) string {
 }
 
 func CertString(cert *x509.Certificate) string {
-
 	return fmt.Sprintf(
 		"    Subject:\n%s\n"+
 			"     Issuer:\n%s\n"+
+			"    Serial#: %s\n"+
 			"       from: %s\n"+
 			"       thru: %s\n"+
 			"         CA: %t\n",
 		nameString(cert.Subject),
 		nameString(cert.Issuer),
+		cert.SerialNumber.Text(16),
 		cert.NotBefore.Format("2006-01-02"),
 		cert.NotAfter.Format("2006-01-02"),
 		cert.IsCA,
@@ -103,9 +104,7 @@ func CertString(cert *x509.Certificate) string {
 }
 
 func ResetCertificates() error {
-
 	// remove certs/*.pem
-
 	path, err := os.UserConfigDir()
 	if err != nil {
 		path = os.TempDir()

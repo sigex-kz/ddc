@@ -105,7 +105,7 @@ func WriteContext(ctx *model.Context) (err error) {
 	// We support PDF Collections (since V1.7) for file attachments
 	v := model.V17
 
-	if ctx.XRefTable.Version() == model.V20 {
+	if ctx.XRefTable.PDF20() {
 		v = model.V20
 	}
 
@@ -171,6 +171,12 @@ func WriteIncrement(ctx *model.Context) error {
 func prepareContextForWriting(ctx *model.Context) error {
 	if err := ensureInfoDictAndFileID(ctx); err != nil {
 		return err
+	}
+
+	if len(ctx.Signatures) > 0 {
+		if log.CLIEnabled() {
+			log.CLI.Println("*** This operation invalidates all signatures ***")
+		}
 	}
 
 	return handleEncryption(ctx)
@@ -267,11 +273,6 @@ func writePages(ctx *model.Context, rootDict types.Dict) error {
 }
 
 func writeRootAttrsBatch1(ctx *model.Context, d types.Dict, dictName string) error {
-
-	if err := writeAcroFormRootEntry(ctx, d, dictName); err != nil {
-		return err
-	}
-
 	for _, e := range []struct {
 		entryName string
 		statsAttr int
@@ -288,7 +289,7 @@ func writeRootAttrsBatch1(ctx *model.Context, d types.Dict, dictName string) err
 		{"OpenAction", model.RootOpenAction},
 		{"AA", model.RootAA},
 		{"URI", model.RootURI},
-		//{"AcroForm", model.RootAcroForm},
+		{"AcroForm", model.RootAcroForm},
 		{"Metadata", model.RootMetadata},
 	} {
 		if err := writeRootEntry(ctx, d, dictName, e.entryName, e.statsAttr); err != nil {
@@ -921,7 +922,7 @@ func setupEncryption(ctx *model.Context) error {
 	}
 
 	d := newEncryptDict(
-		ctx.XRefTable.Version(),
+		ctx.PDF20(),
 		ctx.EncryptUsingAES,
 		ctx.EncryptKeyLength,
 		int16(ctx.Permissions),
@@ -1017,39 +1018,55 @@ func updateEncryption(ctx *model.Context) error {
 	return nil
 }
 
+func encryptInfo(ctx *model.Context) {
+	if log.CLIEnabled() {
+		alg := "RC4"
+		if ctx.EncryptUsingAES {
+			alg = "AES"
+		}
+		log.CLI.Printf("using %s-%d\n", alg, ctx.EncryptKeyLength)
+	}
+}
+
+func removeEncryptionWarning(ctx *model.Context) {
+	if log.CLIEnabled() {
+		s := "no encryption to remove..."
+		if ctx.EncKey != nil {
+			s = "removing encryption..."
+		}
+		log.CLI.Println(s)
+	}
+}
 func handleEncryption(ctx *model.Context) error {
 
-	if ctx.Cmd == model.ENCRYPT || ctx.Cmd == model.DECRYPT {
+	switch ctx.Cmd {
 
-		if ctx.Cmd == model.DECRYPT {
-
-			// Remove encryption.
-			ctx.EncKey = nil
-
-		} else {
-
-			if err := setupEncryption(ctx); err != nil {
-				return err
-			}
-
-			alg := "RC4"
-			if ctx.EncryptUsingAES {
-				alg = "AES"
-			}
-			if log.CLIEnabled() {
-				log.CLI.Printf("using %s-%d\n", alg, ctx.EncryptKeyLength)
-			}
+	case model.ENCRYPT:
+		if err := setupEncryption(ctx); err != nil {
+			return err
 		}
+		encryptInfo(ctx)
 
-	} else if ctx.UserPWNew != nil || ctx.OwnerPWNew != nil || ctx.Cmd == model.SETPERMISSIONS {
+	case model.DECRYPT:
+		ctx.EncKey = nil
 
+	case model.SETPERMISSIONS:
 		if err := updateEncryption(ctx); err != nil {
 			return err
 		}
 
+	default:
+		if ctx.RemoveEncryption && ctx.Cmd.AllowRemoveEncryption() {
+			removeEncryptionWarning(ctx)
+			ctx.EncKey = nil
+		} else if ctx.UserPWNew != nil || ctx.OwnerPWNew != nil {
+			if err := updateEncryption(ctx); err != nil {
+				return err
+			}
+		}
 	}
 
-	// write xrefstream if using xrefstream only.
+	// Write xref stream only if using xref streams.
 	if ctx.Encrypt != nil && ctx.EncKey != nil && !ctx.Read.UsingXRefStreams {
 		ctx.WriteObjectStream = false
 		ctx.WriteXRefStream = false

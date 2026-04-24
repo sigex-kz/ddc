@@ -155,10 +155,7 @@ func validateFontDescriptorFontName(xRefTable *model.XRefTable, d types.Dict, di
 }
 
 func validateFontDescriptorFontFamily(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-	required := true
-	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		required = false
-	}
+	required := false
 	sinceVersion := model.V15
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		sinceVersion = model.V13

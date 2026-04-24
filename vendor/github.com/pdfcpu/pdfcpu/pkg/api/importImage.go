@@ -23,6 +23,7 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
@@ -34,7 +35,9 @@ func Import(s string, u types.DisplayUnit) (*pdfcpu.Import, error) {
 
 // ImportImages appends PDF pages containing images to rs and writes the result to w.
 // If rs == nil a new PDF file will be written to w.
-func ImportImages(rs io.ReadSeeker, w io.Writer, imgs []io.Reader, imp *pdfcpu.Import, conf *model.Configuration) error {
+func ImportImages(rs io.ReadSeeker, w io.Writer, imgs []io.Reader, imp *pdfcpu.Import, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
 	}
@@ -44,10 +47,7 @@ func ImportImages(rs io.ReadSeeker, w io.Writer, imgs []io.Reader, imp *pdfcpu.I
 		imp = pdfcpu.DefaultImportConfig()
 	}
 
-	var (
-		ctx *model.Context
-		err error
-	)
+	var ctx *model.Context
 
 	if rs != nil {
 		ctx, err = ReadAndValidate(rs, conf)

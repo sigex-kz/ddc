@@ -18,6 +18,7 @@ package pdfcpu
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -56,8 +57,12 @@ func writeTrailer(w *model.WriteContext) error {
 	return err
 }
 
-func writeObjectHeader(w *model.WriteContext, objNumber, genNumber int) (int, error) {
-	return w.WriteString(fmt.Sprintf("%d %d obj%s", objNumber, genNumber, w.Eol))
+func objectHeader(objNr, genNr int, eol string) string {
+	return fmt.Sprintf("%d %d obj%s", objNr, genNr, eol)
+}
+
+func writeObjectHeader(w *model.WriteContext, objNr, genNr int) (int, error) {
+	return w.WriteString(objectHeader(objNr, genNr, w.Eol))
 }
 
 func writeObjectTrailer(w *model.WriteContext) (int, error) {
@@ -345,8 +350,70 @@ func writeFloatObject(ctx *model.Context, objNumber, genNumber int, float types.
 	return writeObject(ctx, objNumber, genNumber, float.PDFString())
 }
 
-func writeDictObject(ctx *model.Context, objNumber, genNumber int, d types.Dict) error {
-	ok, err := writeToObjectStream(ctx, objNumber, genNumber)
+func sigDict(d types.Dict) bool {
+	if v, ok := d["Type"]; ok {
+		if name, ok := v.(types.Name); ok && name.String() == "Sig" {
+			return true
+		}
+	}
+
+	_, hasContents := d["Contents"]
+	_, hasByteRange := d["ByteRange"]
+
+	if hasContents && hasByteRange {
+		return true
+	}
+
+	return false
+}
+
+func sigDictPDFString(ctx *model.Context, d types.Dict, objNr, genNr int) string {
+	// worst case [0 0000000000 0000000000 0000000000]
+	byteRangePDFString := fmt.Sprintf("/ByteRange%-36v", d["ByteRange"].PDFString())
+	contentsPDFString := fmt.Sprintf("/Contents%s", d["Contents"].PDFString())
+
+	header := objectHeader(objNr, genNr, ctx.Write.Eol)
+	i := ctx.Write.Offset + int64(len(header)+2)
+	ctx.Write.OffsetSigByteRange = i + int64(len("/ByteRange"))
+	ctx.Write.OffsetSigContents = i + int64(len(byteRangePDFString)+len("/Contents"))
+
+	s := []string{}
+	s = append(s, "<<")
+	s = append(s, byteRangePDFString)
+	s = append(s, contentsPDFString)
+	s = append(s, fmt.Sprintf("/Type%s", d["Type"].PDFString()))
+	s = append(s, fmt.Sprintf("/Filter%s", d["Filter"].PDFString()))
+	s = append(s, fmt.Sprintf("/SubFilter%s", d["SubFilter"].PDFString()))
+
+	if *d.NameEntry("SubFilter") != "ETSI.RFC3161" {
+		if d["M"] != nil {
+			s = append(s, fmt.Sprintf("/M%s", d["M"].PDFString()))
+		}
+		if d["Name"] != nil {
+			s = append(s, fmt.Sprintf("/Name%s", d["Name"].PDFString()))
+		}
+		if d["ContactInfo"] != nil {
+			s = append(s, fmt.Sprintf("/ContactInfo%s", d["ContactInfo"].PDFString()))
+		}
+		if d["Location"] != nil {
+			s = append(s, fmt.Sprintf("/Location%s", d["Location"].PDFString()))
+		}
+		if d["Reason"] != nil {
+			s = append(s, fmt.Sprintf("/Reason%s", d["Reason"].PDFString()))
+		}
+		// TODO Reference
+		// TODO Changes
+		// TODO Prop_Build
+		// TODO Prop_AuthTime
+		// TODO Prop_AuthType
+	}
+
+	s = append(s, ">>")
+	return strings.Join(s, "")
+}
+
+func writeDictObject(ctx *model.Context, objNr, genNr int, d types.Dict) error {
+	ok, err := writeToObjectStream(ctx, objNr, genNr)
 	if err != nil {
 		return err
 	}
@@ -356,13 +423,18 @@ func writeDictObject(ctx *model.Context, objNumber, genNumber int, d types.Dict)
 	}
 
 	if ctx.EncKey != nil {
-		_, err := encryptDeepObject(d, objNumber, genNumber, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
+		_, err := encryptDeepObject(d, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
 		if err != nil {
 			return err
 		}
 	}
 
-	return writeObject(ctx, objNumber, genNumber, d.PDFString())
+	s := d.PDFString()
+	if sigDict(d) {
+		s = sigDictPDFString(ctx, d, objNr, genNr)
+	}
+
+	return writeObject(ctx, objNr, genNr, s)
 }
 
 func writeArrayObject(ctx *model.Context, objNumber, genNumber int, a types.Array) error {
