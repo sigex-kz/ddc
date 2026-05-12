@@ -93,6 +93,7 @@ func handleOutFilePDF(inFilePDF, outFilePDF string, tmpFile *string) {
 // inFileJSON represents PDF page content which may include form data.
 func CreateFile(inFilePDF, inFileJSON, outFilePDF string, conf *model.Configuration) (err error) {
 	var f0, f1, f2 *os.File
+	ok := false
 
 	if f0, err = os.Open(inFileJSON); err != nil {
 		return err
@@ -112,17 +113,21 @@ func CreateFile(inFilePDF, inFileJSON, outFilePDF string, conf *model.Configurat
 	handleOutFilePDF(inFilePDF, outFilePDF, &tmpFile)
 
 	if f2, err = os.Create(tmpFile); err != nil {
+		if f1 != nil {
+			_ = f1.Close()
+		}
+		_ = f0.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
+		if !ok {
+			_ = f2.Close()
 			if f1 != nil {
-				f1.Close()
+				_ = f1.Close()
 			}
-			f0.Close()
-			os.Remove(tmpFile)
+			_ = f0.Close()
+			_ = os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -141,5 +146,11 @@ func CreateFile(inFilePDF, inFileJSON, outFilePDF string, conf *model.Configurat
 		}
 	}()
 
-	return Create(rs, f0, f2, conf)
+	if err = Create(rs, f0, f2, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

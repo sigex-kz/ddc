@@ -126,6 +126,7 @@ func SetPageMode(rs io.ReadSeeker, w io.Writer, val model.PageMode, conf *model.
 // SetPageModeFile sets inFile's page mode and writes the result to outFile.
 func SetPageModeFile(inFile, outFile string, val model.PageMode, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -136,14 +137,14 @@ func SetPageModeFile(inFile, outFile string, val model.PageMode, conf *model.Con
 		tmpFile = outFile
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -158,7 +159,13 @@ func SetPageModeFile(inFile, outFile string, val model.PageMode, conf *model.Con
 		}
 	}()
 
-	return SetPageMode(f1, f2, val, conf)
+	if err = SetPageMode(f1, f2, val, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // ResetPageMode resets rs's page mode and writes the result to w.
@@ -189,6 +196,7 @@ func ResetPageMode(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (er
 // ResetPageModeFile resets inFile's page mode and writes the result to outFile.
 func ResetPageModeFile(inFile, outFile string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -199,14 +207,14 @@ func ResetPageModeFile(inFile, outFile string, conf *model.Configuration) (err e
 		tmpFile = outFile
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -221,5 +229,11 @@ func ResetPageModeFile(inFile, outFile string, conf *model.Configuration) (err e
 		}
 	}()
 
-	return ResetPageMode(f1, f2, conf)
+	if err = ResetPageMode(f1, f2, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

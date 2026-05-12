@@ -85,6 +85,7 @@ func Trim(rs io.ReadSeeker, w io.Writer, selectedPages []string, conf *model.Con
 // containing all selected pages and writes the result to outFile.
 func TrimFile(inFile, outFile string, selectedPages []string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -98,14 +99,14 @@ func TrimFile(inFile, outFile string, selectedPages []string, conf *model.Config
 		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -120,5 +121,11 @@ func TrimFile(inFile, outFile string, selectedPages []string, conf *model.Config
 		}
 	}()
 
-	return Trim(f1, f2, selectedPages, conf)
+	if err = Trim(f1, f2, selectedPages, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

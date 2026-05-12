@@ -589,7 +589,7 @@ func validateImageStreamDict(xRefTable *model.XRefTable, sd *types.StreamDict, i
 	}
 
 	// OC, dict, optional since V1.5
-	return validateEntryOC(xRefTable, sd.Dict, dictName, "OC", OPTIONAL, model.V15)
+	return validateOptionalContent(xRefTable, sd.Dict, dictName, "OC", OPTIONAL, model.V15)
 }
 
 func validateFormStreamDictPart1(xRefTable *model.XRefTable, sd *types.StreamDict, dictName string) error {
@@ -641,20 +641,6 @@ func validateFormStreamDictPart1(xRefTable *model.XRefTable, sd *types.StreamDic
 
 	// Metadata, stream, optional, since V1.4
 	return validateMetadata(xRefTable, sd.Dict, OPTIONAL, model.V14)
-}
-
-func validateEntryOC(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
-
-	d1, err := validateDictEntry(xRefTable, d, dictName, entryName, required, sinceVersion, nil)
-	if err != nil {
-		return err
-	}
-
-	if d1 != nil {
-		err = validateOptionalContentGroupDict(xRefTable, d1, sinceVersion)
-	}
-
-	return err
 }
 
 func validateEntryOPI(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {

@@ -129,6 +129,7 @@ func logImportImages(s, outFile string) {
 // ImportImagesFile appends PDF pages containing images to outFile which will be created if necessary.
 func ImportImagesFile(imgFiles []string, outFile string, imp *pdfcpu.Import, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	rs := io.ReadSeeker(nil)
 	f1 = nil
@@ -157,14 +158,14 @@ func ImportImagesFile(imgFiles []string, outFile string, imp *pdfcpu.Import, con
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
+		if !ok {
+			_ = f2.Close()
 			if f1 != nil {
-				f1.Close()
+				_ = f1.Close()
 				os.Remove(tmpFile)
 			}
 			for _, f := range rc {
-				f.Close()
+				_ = f.Close()
 			}
 			return
 		}
@@ -186,5 +187,11 @@ func ImportImagesFile(imgFiles []string, outFile string, imp *pdfcpu.Import, con
 		}
 	}()
 
-	return ImportImages(rs, f2, rr, imp, conf)
+	if err = ImportImages(rs, f2, rr, imp, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

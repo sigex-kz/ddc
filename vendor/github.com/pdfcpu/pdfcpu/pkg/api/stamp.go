@@ -65,6 +65,7 @@ func AddWatermarksMap(rs io.ReadSeeker, w io.Writer, m map[int]*model.Watermark,
 // AddWatermarksMapFile adds watermarks to corresponding pages in m of inFile and writes the result to outFile.
 func AddWatermarksMapFile(inFile, outFile string, m map[int]*model.Watermark, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -78,14 +79,14 @@ func AddWatermarksMapFile(inFile, outFile string, m map[int]*model.Watermark, co
 		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -100,7 +101,13 @@ func AddWatermarksMapFile(inFile, outFile string, m map[int]*model.Watermark, co
 		}
 	}()
 
-	return AddWatermarksMap(f1, f2, m, conf)
+	if err = AddWatermarksMap(f1, f2, m, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // AddWatermarksSliceMap adds watermarks in m to corresponding pages in rs and writes the result to w.
@@ -135,6 +142,7 @@ func AddWatermarksSliceMap(rs io.ReadSeeker, w io.Writer, m map[int][]*model.Wat
 // AddWatermarksSliceMapFile adds watermarks to corresponding pages in m of inFile and writes the result to outFile.
 func AddWatermarksSliceMapFile(inFile, outFile string, m map[int][]*model.Watermark, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -148,14 +156,14 @@ func AddWatermarksSliceMapFile(inFile, outFile string, m map[int][]*model.Waterm
 		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -170,7 +178,13 @@ func AddWatermarksSliceMapFile(inFile, outFile string, m map[int][]*model.Waterm
 		}
 	}()
 
-	return AddWatermarksSliceMap(f1, f2, m, conf)
+	if err = AddWatermarksSliceMap(f1, f2, m, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // AddWatermarks adds watermarks to all pages selected in rs and writes the result to w.
@@ -211,6 +225,7 @@ func AddWatermarks(rs io.ReadSeeker, w io.Writer, selectedPages []string, wm *mo
 // AddWatermarksFile adds watermarks to all selected pages of inFile and writes the result to outFile.
 func AddWatermarksFile(inFile, outFile string, selectedPages []string, wm *model.Watermark, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -224,14 +239,14 @@ func AddWatermarksFile(inFile, outFile string, selectedPages []string, wm *model
 		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -246,7 +261,13 @@ func AddWatermarksFile(inFile, outFile string, selectedPages []string, wm *model
 		}
 	}()
 
-	return AddWatermarks(f1, f2, selectedPages, wm, conf)
+	if err = AddWatermarks(f1, f2, selectedPages, wm, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // RemoveWatermarks removes watermarks from all pages selected in rs and writes the result to w.
@@ -282,6 +303,7 @@ func RemoveWatermarks(rs io.ReadSeeker, w io.Writer, selectedPages []string, con
 // RemoveWatermarksFile removes watermarks from all selected pages of inFile and writes the result to outFile.
 func RemoveWatermarksFile(inFile, outFile string, selectedPages []string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -295,14 +317,14 @@ func RemoveWatermarksFile(inFile, outFile string, selectedPages []string, conf *
 		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -317,7 +339,13 @@ func RemoveWatermarksFile(inFile, outFile string, selectedPages []string, conf *
 		}
 	}()
 
-	return RemoveWatermarks(f1, f2, selectedPages, conf)
+	if err = RemoveWatermarks(f1, f2, selectedPages, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // HasWatermarks checks rs for watermarks.

@@ -130,6 +130,7 @@ func UpdateImagesFile(inFile, imageFile, outFile string, objNr, pageNr int, id s
 	}
 
 	var f0, f1, f2 *os.File
+	ok := false
 
 	if f0, err = os.Open(inFile); err != nil {
 		return err
@@ -147,15 +148,16 @@ func UpdateImagesFile(inFile, imageFile, outFile string, objNr, pageNr int, id s
 		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
+		_ = f0.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
-			f0.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
+			_ = f0.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -173,5 +175,11 @@ func UpdateImagesFile(inFile, imageFile, outFile string, objNr, pageNr int, id s
 		}
 	}()
 
-	return UpdateImages(f0, f1, f2, objNr, pageNr, id, conf)
+	if err = UpdateImages(f0, f1, f2, objNr, pageNr, id, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

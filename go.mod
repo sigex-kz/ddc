@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/pdfcpu/pdfcpu v0.12.0
+	github.com/pdfcpu/pdfcpu v0.12.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/vsenko/gofpdf v1.5.0
 )

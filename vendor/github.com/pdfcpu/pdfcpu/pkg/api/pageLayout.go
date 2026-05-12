@@ -126,6 +126,7 @@ func SetPageLayout(rs io.ReadSeeker, w io.Writer, val model.PageLayout, conf *mo
 // SetPageLayoutFile sets inFile's page layout and writes the result to outFile.
 func SetPageLayoutFile(inFile, outFile string, val model.PageLayout, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -136,14 +137,14 @@ func SetPageLayoutFile(inFile, outFile string, val model.PageLayout, conf *model
 		tmpFile = outFile
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -158,7 +159,13 @@ func SetPageLayoutFile(inFile, outFile string, val model.PageLayout, conf *model
 		}
 	}()
 
-	return SetPageLayout(f1, f2, val, conf)
+	if err = SetPageLayout(f1, f2, val, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // ResetPageLayout resets rs's page layout and writes the result to w.
@@ -189,6 +196,7 @@ func ResetPageLayout(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (
 // ResetPageLayoutFile resets inFile's page layout and writes the result to outFile.
 func ResetPageLayoutFile(inFile, outFile string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -199,14 +207,14 @@ func ResetPageLayoutFile(inFile, outFile string, conf *model.Configuration) (err
 		tmpFile = outFile
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -221,5 +229,11 @@ func ResetPageLayoutFile(inFile, outFile string, conf *model.Configuration) (err
 		}
 	}()
 
-	return ResetPageLayout(f1, f2, conf)
+	if err = ResetPageLayout(f1, f2, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

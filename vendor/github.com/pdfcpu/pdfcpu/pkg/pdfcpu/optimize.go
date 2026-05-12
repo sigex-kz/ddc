@@ -969,6 +969,10 @@ func parsePagesDict(ctx *model.Context, pagesDict types.Dict, pageNr int) (int, 
 
 	for _, v := range kids {
 
+		if v == nil {
+			continue
+		}
+
 		// Dereference next page node dict.
 		ir, _ := v.(types.IndirectRef)
 

@@ -49,7 +49,11 @@ type entry struct {
 }
 
 func (n Node) leaf() bool {
-	return n.Kids == nil
+	return len(n.Kids) == 0
+}
+
+func (n Node) emptyLeaf() bool {
+	return n.leaf() && len(n.Names) == 0
 }
 
 func keyLess(k, s string) bool {
@@ -470,6 +474,10 @@ func (n *Node) removeKid(xRefTable *XRefTable, kid *Node, i int) (bool, error) {
 		n.Kids = append(n.Kids[:i], n.Kids[i+1:]...)
 	}
 
+	if len(n.Kids) == 0 {
+		return true, nil
+	}
+
 	if len(n.Kids) == 1 {
 
 		// If a single kid remains we can merge it with its parent.
@@ -548,8 +556,7 @@ func (n *Node) Remove(xRefTable *XRefTable, k string) (empty, ok bool, err error
 		return false, false, err
 	}
 
-	return false, ok, nil
-
+	return n.emptyLeaf(), ok, nil
 }
 
 // Process traverses the nametree applying a handler to each entry (key-value pair).

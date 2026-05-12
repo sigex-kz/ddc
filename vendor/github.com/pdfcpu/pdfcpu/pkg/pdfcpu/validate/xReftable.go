@@ -166,7 +166,7 @@ func metaDataModifiedAfterInfoDict(xRefTable *model.XRefTable) (bool, error) {
 
 	//fmt.Printf("infoDict: %s metaData: %s\n", modTimestampInfoDict, modTimestampMetaData)
 
-	if *modTimestampInfoDict == modTimestampMetaData {
+	if (*modTimestampInfoDict).Equal(modTimestampMetaData) {
 		return false, nil
 	}
 

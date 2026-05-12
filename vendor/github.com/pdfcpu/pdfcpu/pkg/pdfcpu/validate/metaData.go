@@ -115,14 +115,43 @@ func validateRootMetadata(xRefTable *model.XRefTable, rootDict types.Dict, requi
 	// fmt.Printf("    Keywords: %s\n", x.RDF.Description.Keywords)
 
 	d := x.RDF.Description
-	xRefTable.Title = strings.Join(d.Title.Alt.Entries, ", ")
-	xRefTable.Author = strings.Join(d.Author.Seq.Entries, ", ")
-	xRefTable.Subject = strings.Join(d.Subject.Alt.Entries, ", ")
-	xRefTable.Creator = d.Creator
-	xRefTable.CreationDate = time.Time(d.CreationDate).Format(time.RFC3339Nano)
-	xRefTable.ModDate = time.Time(d.ModDate).Format(time.RFC3339Nano)
-	xRefTable.Producer = d.Producer
-	//xRefTable.Trapped = d.Trapped
+
+	s := strings.Join(d.Title.Alt.Entries, ", ")
+	if len(s) > 0 || len(xRefTable.Title) == 0 {
+		xRefTable.Title = s
+	}
+
+	s = strings.Join(d.Author.Seq.Entries, ", ")
+	if len(s) > 0 || len(xRefTable.Author) == 0 {
+		xRefTable.Author = s
+	}
+
+	s = strings.Join(d.Subject.Alt.Entries, ", ")
+	if len(s) > 0 || len(xRefTable.Subject) == 0 {
+		xRefTable.Subject = s
+	}
+
+	s = d.Creator
+	if len(s) > 0 || len(xRefTable.Creator) == 0 {
+		xRefTable.Creator = s
+	}
+
+	t := time.Time(d.CreationDate)
+	if !t.IsZero() {
+		xRefTable.CreationDate = types.DateString(t)
+	}
+
+	t = time.Time(d.ModDate)
+	if !t.IsZero() {
+		xRefTable.ModDate = types.DateString(t)
+	}
+
+	s = d.Producer
+	if len(s) > 0 || len(xRefTable.Producer) == 0 {
+		xRefTable.Producer = s
+	}
+
+	// TODO xRefTable.Trapped = d.Trapped
 
 	ss := strings.FieldsFunc(d.Keywords, func(c rune) bool { return c == ',' || c == ';' || c == '\r' })
 	for _, s := range ss {

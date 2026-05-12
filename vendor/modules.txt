@@ -27,7 +27,7 @@ github.com/munnerz/goautoneg
 # github.com/patrickmn/go-cache v2.1.0+incompatible
 ## explicit
 github.com/patrickmn/go-cache
-# github.com/pdfcpu/pdfcpu v0.12.0
+# github.com/pdfcpu/pdfcpu v0.12.1
 ## explicit; go 1.25.0
 github.com/pdfcpu/pdfcpu/internal/corefont/metrics
 github.com/pdfcpu/pdfcpu/pkg/api

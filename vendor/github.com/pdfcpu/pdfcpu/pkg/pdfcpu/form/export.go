@@ -141,6 +141,7 @@ type Form struct {
 	ComboBoxes        []*ComboBox         `json:"combobox,omitempty"`
 	ListBoxes         []*ListBox          `json:"listbox,omitempty"`
 	Pages             map[string]*Page    `json:"pages,omitempty"`
+	FileName          string              `json:"filename,omitempty"`
 }
 
 // FormGroup represents a JSON struct containing a sequence of form instances.

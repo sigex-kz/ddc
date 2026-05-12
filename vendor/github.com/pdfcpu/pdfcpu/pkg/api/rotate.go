@@ -59,6 +59,7 @@ func Rotate(rs io.ReadSeeker, w io.Writer, rotation int, selectedPages []string,
 // RotateFile rotates selected pages of inFile clockwise by rotation degrees and writes the result to outFile.
 func RotateFile(inFile, outFile string, rotation int, selectedPages []string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -72,14 +73,14 @@ func RotateFile(inFile, outFile string, rotation int, selectedPages []string, co
 		logWritingTo(inFile)
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -94,5 +95,11 @@ func RotateFile(inFile, outFile string, rotation int, selectedPages []string, co
 		}
 	}()
 
-	return Rotate(f1, f2, rotation, selectedPages, conf)
+	if err = Rotate(f1, f2, rotation, selectedPages, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

@@ -49,7 +49,7 @@ func validateBorderEffectDictEntry(xRefTable *model.XRefTable, d types.Dict, dic
 	// I, optional, number in the range 0 to 2
 	validateI := func(f float64) bool { return 0 <= f && f <= 2 }
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		validateI = func(f float64) bool { return 0 <= f && f <= 2.5 }
+		validateI = func(f float64) bool { return 0 <= f && f <= 3 }
 	}
 	if _, err = validateNumberEntry(xRefTable, d1, dictName, "I", OPTIONAL, model.V10, validateI); err != nil {
 		return err

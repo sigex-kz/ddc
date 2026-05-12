@@ -101,6 +101,8 @@ func AddBoxes(rs io.ReadSeeker, w io.Writer, selectedPages []string, pb *model.P
 // AddBoxesFile adds page boundaries for selected pages of inFile and writes result to outFile.
 func AddBoxesFile(inFile, outFile string, selectedPages []string, pb *model.PageBoundaries, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
+
 	if log.CLIEnabled() {
 		log.CLI.Printf("adding %s for %s\n", pb, inFile)
 	}
@@ -118,15 +120,15 @@ func AddBoxesFile(inFile, outFile string, selectedPages []string, pb *model.Page
 	}
 
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
-			os.Remove(tmpFile)
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
+			_ = os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -140,7 +142,13 @@ func AddBoxesFile(inFile, outFile string, selectedPages []string, pb *model.Page
 		}
 	}()
 
-	return AddBoxes(f1, f2, selectedPages, pb, conf)
+	if err := AddBoxes(f1, f2, selectedPages, pb, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // RemoveBoxes removes page boundaries as specified in pb for selected pages of rs and writes result to w.
@@ -176,6 +184,7 @@ func RemoveBoxes(rs io.ReadSeeker, w io.Writer, selectedPages []string, pb *mode
 // RemoveBoxesFile removes page boundaries as specified in pb for selected pages of inFile and writes result to outFile.
 func RemoveBoxesFile(inFile, outFile string, selectedPages []string, pb *model.PageBoundaries, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if log.CLIEnabled() {
 		log.CLI.Printf("removing %s for %s\n", pb, inFile)
@@ -194,15 +203,15 @@ func RemoveBoxesFile(inFile, outFile string, selectedPages []string, pb *model.P
 	}
 
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
-			os.Remove(tmpFile)
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
+			_ = os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -216,7 +225,13 @@ func RemoveBoxesFile(inFile, outFile string, selectedPages []string, pb *model.P
 		}
 	}()
 
-	return RemoveBoxes(f1, f2, selectedPages, pb, conf)
+	if err = RemoveBoxes(f1, f2, selectedPages, pb, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // Crop adds crop boxes for selected pages of rs and writes result to w.
@@ -252,6 +267,7 @@ func Crop(rs io.ReadSeeker, w io.Writer, selectedPages []string, b *model.Box, c
 // CropFile adds crop boxes for selected pages of inFile and writes result to outFile.
 func CropFile(inFile, outFile string, selectedPages []string, b *model.Box, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if log.CLIEnabled() {
 		log.CLI.Printf("cropping %s\n", inFile)
@@ -270,15 +286,15 @@ func CropFile(inFile, outFile string, selectedPages []string, b *model.Box, conf
 	}
 
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
-			os.Remove(tmpFile)
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
+			_ = os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -297,5 +313,11 @@ func CropFile(inFile, outFile string, selectedPages []string, b *model.Box, conf
 	}
 	conf.Cmd = model.CROP
 
-	return Crop(f1, f2, selectedPages, b, conf)
+	if err = Crop(f1, f2, selectedPages, b, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

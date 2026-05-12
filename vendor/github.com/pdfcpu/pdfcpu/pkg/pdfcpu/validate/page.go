@@ -1081,6 +1081,10 @@ func validatePagesDict(xRefTable *model.XRefTable, d types.Dict, objNr int, hasR
 		return errors.New("pdfcpu: validatePagesDict: corrupt \"Kids\" entry")
 	}
 
+	if len(kids) == 0 {
+		return nil
+	}
+
 	d["Kids"], err = processPagesKids(xRefTable, kids, objNr, hasResources, mediaBoxArr, curPage)
 
 	return err

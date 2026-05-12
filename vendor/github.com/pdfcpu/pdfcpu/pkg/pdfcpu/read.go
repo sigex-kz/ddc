@@ -1541,16 +1541,17 @@ func postProcess(ctx *model.Context, xrefSectionCount int) {
 	// and in one of the following weird situations:
 	if xrefSectionCount == 1 && !ctx.Exists(0) {
 		// Fix for #250
-		if *ctx.Size == len(ctx.Table)+1 {
-			// Create free object 0 from scratch if the free list head is missing.
-			g0 := types.FreeHeadGeneration
-			ctx.Table[0] = &model.XRefTableEntry{Free: true, Offset: &zero, Generation: &g0}
-		} else {
+		e := ctx.Table[1]
+		if e != nil && e.Free {
 			// Create free object 0 by shifting down all objects by one.
 			for i := 1; i <= *ctx.Size; i++ {
 				ctx.Table[i-1] = ctx.Table[i]
 			}
 			delete(ctx.Table, *ctx.Size)
+		} else {
+			// Create free object 0 from scratch if the free list head is missing.
+			g0 := types.FreeHeadGeneration
+			ctx.Table[0] = &model.XRefTableEntry{Free: true, Offset: &zero, Generation: &g0}
 		}
 		model.ShowRepaired("obj#0")
 	}

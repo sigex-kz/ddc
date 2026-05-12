@@ -255,6 +255,7 @@ func SetViewerPreferencesFromJSONReader(rs io.ReadSeeker, w io.Writer, rd io.Rea
 // SetViewerPreferencesFile sets inFile's viewer preferences and writes the result to outFile.
 func SetViewerPreferencesFile(inFile, outFile string, vp model.ViewerPreferences, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -265,14 +266,14 @@ func SetViewerPreferencesFile(inFile, outFile string, vp model.ViewerPreferences
 		tmpFile = outFile
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -287,12 +288,19 @@ func SetViewerPreferencesFile(inFile, outFile string, vp model.ViewerPreferences
 		}
 	}()
 
-	return SetViewerPreferences(f1, f2, vp, conf)
+	if err = SetViewerPreferences(f1, f2, vp, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // SetViewerPreferencesFileFromJSONBytes sets inFile's viewer preferences corresponding to jsonBytes and writes the result to outFile.
 func SetViewerPreferencesFileFromJSONBytes(inFile, outFile string, jsonBytes []byte, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -303,14 +311,14 @@ func SetViewerPreferencesFileFromJSONBytes(inFile, outFile string, jsonBytes []b
 		tmpFile = outFile
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -325,7 +333,13 @@ func SetViewerPreferencesFileFromJSONBytes(inFile, outFile string, jsonBytes []b
 		}
 	}()
 
-	return SetViewerPreferencesFromJSONBytes(f1, f2, jsonBytes, conf)
+	if err = SetViewerPreferencesFromJSONBytes(f1, f2, jsonBytes, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // SetViewerPreferencesFileFromJSONFile sets inFile's viewer preferences corresponding to inFileJSON and writes the result to outFile.
@@ -378,6 +392,7 @@ func ResetViewerPreferences(rs io.ReadSeeker, w io.Writer, conf *model.Configura
 // ResetViewerPreferencesFile resets inFile's viewer preferences and writes the result to outFile.
 func ResetViewerPreferencesFile(inFile, outFile string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -388,14 +403,14 @@ func ResetViewerPreferencesFile(inFile, outFile string, conf *model.Configuratio
 		tmpFile = outFile
 	}
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			if err == ErrNoOp {
 				err = nil
@@ -413,5 +428,11 @@ func ResetViewerPreferencesFile(inFile, outFile string, conf *model.Configuratio
 		}
 	}()
 
-	return ResetViewerPreferences(f1, f2, conf)
+	if err = ResetViewerPreferences(f1, f2, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

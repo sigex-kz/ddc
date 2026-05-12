@@ -339,9 +339,10 @@ func imageBox(s, src, url string) (*primitives.ImageBox, string, error) {
 }
 
 // FieldMap returns structures needed to fill a form via CSV.
-func FieldMap(fieldNames, formRecord []string) (map[string]CSVFieldAttributes, map[string]*Page, error) {
+func FieldMap(fieldNames, formRecord []string) (map[string]CSVFieldAttributes, map[string]*Page, string, error) {
 	fm := map[string]CSVFieldAttributes{}
 	im := map[string]*Page{}
+	outFile := ""
 	for i, fieldName := range fieldNames {
 		var lock bool
 		if fieldName[0] == '*' {
@@ -362,45 +363,57 @@ func FieldMap(fieldNames, formRecord []string) (map[string]CSVFieldAttributes, m
 			continue
 		}
 
-		// @img defines a virtual image field by rendering an imageBox.
-		// For CSV we keep it simple and support the most important imageBox attributes only:
-		//
-		// "@img(page:1, pos:40 350, w:290, h:200, bgcol:#F5F5DC, border:5 round LightGray)"
+		if strings.HasPrefix(fieldName, "@img") {
+			// @img defines a virtual image field by rendering an imageBox.
+			// For CSV we keep it simple and support the most important imageBox attributes only:
+			//
+			// "@img(page:1, pos:40 350, w:290, h:200, bgcol:#F5F5DC, border:5 round LightGray)"
 
-		if len(vv) == 0 || len(vv) > 2 {
-			// Skip invalid image field
+			if len(vv) == 0 || len(vv) > 2 {
+				// Skip invalid image field
+				continue
+			}
+
+			src, url := "", ""
+			if len(vv) == 1 && vv[0][0] == '(' {
+				// link only, no image
+				url = vv[0][1 : len(vv[0])-1]
+			} else {
+				src = vv[0]
+				if len(vv) == 2 {
+					url = vv[1][1 : len(vv[1])-1]
+				}
+			}
+
+			ib, pageNr, err := imageBox(fieldName, src, url)
+			if err != nil {
+				return nil, nil, "", err
+			}
+
+			if ib == nil {
+				continue
+			}
+
+			p, ok := im[pageNr]
+			if !ok {
+				p = &Page{}
+				im[pageNr] = p
+			}
+			p.ImageBoxes = append(p.ImageBoxes, ib)
 			continue
 		}
 
-		src, url := "", ""
-		if len(vv) == 1 && vv[0][0] == '(' {
-			// link only, no image
-			url = vv[0][1 : len(vv[0])-1]
-		} else {
-			src = vv[0]
-			if len(vv) == 2 {
-				url = vv[1][1 : len(vv[1])-1]
+		if strings.HasPrefix(fieldName, "@filename") {
+			// @filename defines the output PDF fileName taking precedence.
+			outFile = vv[0]
+			if !strings.HasSuffix(strings.ToLower(outFile), ".pdf") {
+				outFile += ".pdf"
 			}
 		}
 
-		ib, pageNr, err := imageBox(fieldName, src, url)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		if ib == nil {
-			continue
-		}
-
-		p, ok := im[pageNr]
-		if !ok {
-			p = &Page{}
-			im[pageNr] = p
-		}
-		p.ImageBoxes = append(p.ImageBoxes, ib)
 	}
 
-	return fm, im, nil
+	return fm, im, outFile, nil
 }
 
 // FillDetails returns a closure that returns new form data provided by CSV or JSON.

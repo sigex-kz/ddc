@@ -70,6 +70,7 @@ func Optimize(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (err err
 // noEncryption ensures outFile is not encrypted.
 func OptimizeFile(inFile, outFile string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -84,13 +85,14 @@ func OptimizeFile(inFile, outFile string, conf *model.Configuration) (err error)
 	}
 
 	if f2, err = os.Create(tmpFile); err != nil {
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
 			os.Remove(tmpFile)
 			return
 		}
@@ -110,5 +112,11 @@ func OptimizeFile(inFile, outFile string, conf *model.Configuration) (err error)
 	}
 	conf.Cmd = model.OPTIMIZE
 
-	return Optimize(f1, f2, conf)
+	if err = Optimize(f1, f2, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }

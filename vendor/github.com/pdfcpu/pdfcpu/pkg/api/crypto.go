@@ -51,6 +51,7 @@ func EncryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 	conf.Cmd = model.ENCRYPT
 
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -63,17 +64,16 @@ func EncryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 	} else {
 		logWritingTo(inFile)
 	}
-
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
-			os.Remove(tmpFile)
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
+			_ = os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -87,7 +87,13 @@ func EncryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 		}
 	}()
 
-	return Encrypt(f1, f2, conf)
+	if err = Encrypt(f1, f2, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // Decrypt reads a PDF stream from rs and writes the encrypted PDF stream to w.
@@ -116,6 +122,7 @@ func DecryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 	conf.Cmd = model.DECRYPT
 
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -128,17 +135,16 @@ func DecryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 	} else {
 		logWritingTo(inFile)
 	}
-
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
-			os.Remove(tmpFile)
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
+			_ = os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -152,7 +158,13 @@ func DecryptFile(inFile, outFile string, conf *model.Configuration) (err error) 
 		}
 	}()
 
-	return Decrypt(f1, f2, conf)
+	if err = Decrypt(f1, f2, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // ChangeUserPassword reads a PDF stream from rs, changes the user password and writes the encrypted PDF stream to w.
@@ -187,6 +199,7 @@ func ChangeUserPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *m
 	conf.UserPWNew = &pwNew
 
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -199,17 +212,16 @@ func ChangeUserPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *m
 	} else {
 		logWritingTo(inFile)
 	}
-
 	if f2, err = os.Create(tmpFile); err != nil {
-		f1.Close()
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
-			os.Remove(tmpFile)
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
+			_ = os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -223,7 +235,13 @@ func ChangeUserPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *m
 		}
 	}()
 
-	return ChangeUserPassword(f1, f2, pwOld, pwNew, conf)
+	if err = ChangeUserPassword(f1, f2, pwOld, pwNew, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
 
 // ChangeOwnerPassword reads a PDF stream from rs, changes the owner password and writes the encrypted PDF stream to w.
@@ -257,6 +275,7 @@ func ChangeOwnerPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *
 	conf.OwnerPWNew = &pwNew
 
 	var f1, f2 *os.File
+	ok := false
 
 	if f1, err = os.Open(inFile); err != nil {
 		return err
@@ -269,16 +288,16 @@ func ChangeOwnerPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *
 	} else {
 		logWritingTo(inFile)
 	}
-
 	if f2, err = os.Create(tmpFile); err != nil {
+		_ = f1.Close()
 		return err
 	}
 
 	defer func() {
-		if err != nil {
-			f2.Close()
-			f1.Close()
-			os.Remove(tmpFile)
+		if !ok {
+			_ = f2.Close()
+			_ = f1.Close()
+			_ = os.Remove(tmpFile)
 			return
 		}
 		if err = f2.Close(); err != nil {
@@ -292,5 +311,11 @@ func ChangeOwnerPasswordFile(inFile, outFile string, pwOld, pwNew string, conf *
 		}
 	}()
 
-	return ChangeOwnerPassword(f1, f2, pwOld, pwNew, conf)
+	if err = ChangeOwnerPassword(f1, f2, pwOld, pwNew, conf); err != nil {
+		return err
+	}
+
+	ok = true
+
+	return nil
 }
