@@ -95,10 +95,10 @@ type SignatureVisualization struct {
 	// Serial number of the signers certificate
 	SerialNumber string `json:"serialNumber"`
 
-	// From value from certificate in format "19.05.2021 04:01:52 UTC+6"
+	// From value from certificate in format "19.05.2021 04:01:52 UTC+5"
 	From string `json:"from"`
 
-	// Until value from certificate in format "19.05.2021 04:01:52 UTC+6"
+	// Until value from certificate in format "19.05.2021 04:01:52 UTC+5"
 	Until string `json:"until"`
 
 	// Certificate policies (aka certificate templates) in the following format "Human readable name (OID)"
@@ -119,7 +119,7 @@ type SignatureVisualization struct {
 	// Time stamp imformation
 	TSP struct {
 
-		// Time stamp from TSP response in format "19.05.2021 04:01:52 UTC+6"
+		// Time stamp from TSP response in format "19.05.2021 04:01:52 UTC+5"
 		// converted to time zone of Nur-Sultan
 		GeneratedAt string `json:"generatedAt"`
 
@@ -136,7 +136,7 @@ type SignatureVisualization struct {
 	// OCSP response information
 	OCSP struct {
 
-		// ThisUpdate value from OCSP response in format "19.05.2021 04:01:52 UTC+6"
+		// ThisUpdate value from OCSP response in format "19.05.2021 04:01:52 UTC+5"
 		// converted to time zone of Nur-Sultan
 		GeneratedAt string `json:"generatedAt"`
 
@@ -152,6 +152,31 @@ type SignatureVisualization struct {
 		// OCSP signers certificate issuer full RDN in RFC 4514 format
 		Issuer string `json:"issuer"`
 	} `json:"ocsp"`
+
+	// DTS (DVCS) ticket information
+	DTS struct {
+
+		// ResponseTime value from DVCS response in format "19.05.2021 04:01:52 UTC+5"
+		GeneratedAt string `json:"generatedAt"`
+
+		// DVStatus from DVCS response as a string
+		DVStatus string `json:"dvStatus"`
+
+		// DVSerialNumber from DVCS response as a string
+		DVSerialNumber string `json:"dvSerialNumber"`
+
+		// DVPolicy from DVCS response as a string
+		DVPolicy string `json:"dvPolicy"`
+
+		// Serial number of the DVCS signers certificate
+		SerialNumber string `json:"serialNumber"`
+
+		// DVCS signers certificate subject full RDN in RFC 4514 format
+		Subject string `json:"subject"`
+
+		// DVCS signers certificate issuer full RDN in RFC 4514 format
+		Issuer string `json:"issuer"`
+	} `json:"dts"`
 
 	// Signature body encoded as a sey of QR codes and stored as PNG images (optional)
 	QRCodes [][]byte `json:"qrCodes"`
@@ -966,30 +991,59 @@ func (ddc *Builder) constructSignaturesVisualization() error {
 		ddc.pdf.SetDrawColor(r, g, b)
 		ddc.pdf.SetY(ddc.pdf.GetY() + 1)
 
-		ddc.pdf.SetX(constContentRightColumnX)
-		ddc.pdf.SetFont(constFontRegular, "", 6)
-		r, g, b = ddc.pdf.GetDrawColor()
-		ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
-		tspDetailsText := fmt.Sprintf(ddc.t(`Метка времени: %v
+		if signature.TSP.GeneratedAt != "" {
+			ddc.pdf.SetX(constContentRightColumnX)
+			ddc.pdf.SetFont(constFontRegular, "", 6)
+			r, g, b = ddc.pdf.GetDrawColor()
+			ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
+			tspDetailsText := fmt.Sprintf(ddc.t(`Метка времени: %v
 Субъект: %v
 Серийный номер: %v
 Издатель: %v`), signature.TSP.GeneratedAt, signature.TSP.Subject, signature.TSP.SerialNumber, signature.TSP.Issuer)
-		ddc.pdf.MultiCell(constContentRightColumnWidth, 3, tspDetailsText, "1", "LM", false)
-		ddc.pdf.SetDrawColor(r, g, b)
-		ddc.pdf.SetY(ddc.pdf.GetY() + 1)
+			ddc.pdf.MultiCell(constContentRightColumnWidth, 3, tspDetailsText, "1", "LM", false)
+			ddc.pdf.SetDrawColor(r, g, b)
+			ddc.pdf.SetY(ddc.pdf.GetY() + 1)
+		}
 
-		ddc.pdf.SetX(constContentRightColumnX)
-		ddc.pdf.SetFont(constFontRegular, "", 6)
-		r, g, b = ddc.pdf.GetDrawColor()
-		ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
-		ocspDetailsText := fmt.Sprintf(ddc.t(`OCSP: %v
+		if signature.OCSP.GeneratedAt != "" {
+			ddc.pdf.SetX(constContentRightColumnX)
+			ddc.pdf.SetFont(constFontRegular, "", 6)
+			r, g, b = ddc.pdf.GetDrawColor()
+			ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
+			ocspDetailsText := fmt.Sprintf(ddc.t(`OCSP: %v
 Сформирован: %v
 Субъект: %v
 Серийный номер: %v
 Издатель: %v`), signature.OCSP.CertStatus, signature.OCSP.GeneratedAt, signature.OCSP.Subject, signature.OCSP.SerialNumber, signature.OCSP.Issuer)
-		ddc.pdf.MultiCell(constContentRightColumnWidth, 3, ocspDetailsText, "1", "LM", false)
-		ddc.pdf.SetDrawColor(r, g, b)
-		ddc.pdf.SetY(ddc.pdf.GetY() + 1)
+			ddc.pdf.MultiCell(constContentRightColumnWidth, 3, ocspDetailsText, "1", "LM", false)
+			ddc.pdf.SetDrawColor(r, g, b)
+			ddc.pdf.SetY(ddc.pdf.GetY() + 1)
+		}
+
+		if signature.DTS.GeneratedAt != "" {
+			ddc.pdf.SetX(constContentRightColumnX)
+			ddc.pdf.SetFont(constFontRegular, "", 6)
+			r, g, b = ddc.pdf.GetDrawColor()
+			ddc.pdf.SetDrawColor(constGrayR, constGrayG, constGrayB)
+			dtsDetailsText := fmt.Sprintf(ddc.t(
+				`ДТС: %v
+Серийный номер квитанции: %v
+Политика квитанции: %v
+Сформирован: %v
+Субъект: %v
+Серийный номер: %v
+Издатель: %v`),
+				signature.DTS.DVStatus,
+				signature.DTS.DVSerialNumber,
+				signature.DTS.DVPolicy,
+				signature.DTS.GeneratedAt,
+				signature.DTS.Subject,
+				signature.DTS.SerialNumber,
+				signature.DTS.Issuer)
+			ddc.pdf.MultiCell(constContentRightColumnWidth, 3, dtsDetailsText, "1", "LM", false)
+			ddc.pdf.SetDrawColor(r, g, b)
+			ddc.pdf.SetY(ddc.pdf.GetY() + 1)
+		}
 
 		secondTextBottom := ddc.pdf.GetY()
 		if secondTextBottom > textBottom {
