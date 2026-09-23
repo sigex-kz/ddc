@@ -17,26 +17,43 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pkg/errors"
 )
 
-var (
-	ErrNoOutlines = errors.New("pdfcpu: no outlines available")
-	ErrOutlines   = errors.New("pdfcpu: existing outlines")
-)
+func bookmarkOpError(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+func bookmarkSourceError(op, source string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if source == "" {
+		return bookmarkOpError(op, err)
+	}
+	return fmt.Errorf("%s: %s: %w", op, source, err)
+}
+
+func closeBookmarkInput(err error, f *os.File, context string) error {
+	return errors.Join(err, closeFile(f, context))
+}
 
 // Bookmarks returns rs's bookmark hierarchy.
 func Bookmarks(rs io.ReadSeeker, conf *model.Configuration) (bms []pdfcpu.Bookmark, err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return nil, errors.New("pdfcpu: Bookmarks: missing rs")
+		return nil, ErrMissingPDFReadSeeker
 	}
 
 	if conf == nil {
@@ -48,21 +65,59 @@ func Bookmarks(rs io.ReadSeeker, conf *model.Configuration) (bms []pdfcpu.Bookma
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return nil, err
+		return nil, bookmarkOpError("list bookmarks", err)
 	}
-	return pdfcpu.Bookmarks(ctx)
+	bms, err = pdfcpu.Bookmarks(ctx)
+	return bms, bookmarkOpError("list bookmarks", err)
 }
 
-// ExportBookmarksJSON extracts outline data from rs (originating from source) and writes the result to w.
+// ListBookmarks returns a formatted list of rs's bookmarks.
+func ListBookmarks(rs io.ReadSeeker, conf *model.Configuration) (ss []string, err error) {
+	defer fault.Catch(&err)
+
+	if rs == nil {
+		return nil, ErrMissingPDFReadSeeker
+	}
+	if conf == nil {
+		conf = model.NewDefaultConfiguration()
+	} else {
+		conf.ValidationMode = model.ValidationRelaxed
+	}
+	conf.Cmd = model.LISTBOOKMARKS
+
+	ctx, err := ReadValidateAndOptimize(rs, conf)
+	if err != nil {
+		return nil, bookmarkOpError("list bookmarks", err)
+	}
+	ss, err = pdfcpu.BookmarkList(ctx)
+	return ss, bookmarkOpError("list bookmarks", err)
+}
+
+// ListBookmarksFile returns a formatted list of inFile's bookmarks.
+func ListBookmarksFile(inFile string, conf *model.Configuration) (ss []string, err error) {
+	if inFile == "" {
+		return nil, ErrMissingPDFInput
+	}
+	f, err := os.Open(inFile)
+	if err != nil {
+		return nil, fmt.Errorf("list bookmarks: open input %s: %w", inFile, err)
+	}
+	defer func() {
+		err = closeBookmarkInput(err, f, "list bookmarks: close input")
+	}()
+	return ListBookmarks(f, conf)
+}
+
+// ExportBookmarksJSON extracts bookmark data from rs (originating from source) and writes the result to w.
 func ExportBookmarksJSON(rs io.ReadSeeker, w io.Writer, source string, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: ExportBookmarksJSON: missing rs")
+		return ErrMissingPDFReadSeeker
 	}
 
 	if w == nil {
-		return errors.New("pdfcpu: ExportBookmarksJSON: missing w")
+		return ErrMissingJSONWriter
 	}
 
 	if conf == nil {
@@ -72,47 +127,53 @@ func ExportBookmarksJSON(rs io.ReadSeeker, w io.Writer, source string, conf *mod
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return bookmarkSourceError("export bookmarks", source, err)
 	}
 
 	ok, err := pdfcpu.ExportBookmarksJSON(ctx, source, w)
 	if err != nil {
-		return err
+		return bookmarkSourceError("export bookmarks", source, err)
 	}
 	if !ok {
-		return ErrNoOutlines
+		return bookmarkSourceError("export bookmarks", source, ErrNoBookmarks)
 	}
 
 	return nil
 }
 
-// ExportBookmarksFile extracts outline data from inFilePDF and writes the result to outFileJSON.
+// ExportBookmarksFile extracts bookmark data from inFilePDF and writes the result to outFileJSON.
 func ExportBookmarksFile(inFilePDF, outFileJSON string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
-	if f1, err = os.Open(inFilePDF); err != nil {
-		return err
+	if inFilePDF == "" {
+		return ErrMissingPDFInput
 	}
 
-	if f2, err = os.Create(outFileJSON); err != nil {
-		_ = f1.Close()
-		return err
+	if outFileJSON == "" {
+		return ErrMissingJSONOutput
 	}
+
+	if f1, err = os.Open(inFilePDF); err != nil {
+		return fmt.Errorf("export bookmarks: open %s: %w", inFilePDF, err)
+	}
+
+	staged, err := openStagedOutput(f1, inFilePDF, outFileJSON, "export bookmarks")
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("export bookmarks: create output %s: %w", outFileJSON, err),
+			closeFile(f1, "export bookmarks: close input"),
+		)
+	}
+	f2 = staged.output.file
 	logWritingTo(outFileJSON)
 
 	defer func() {
 		if !ok {
-			_ = f2.Close()
-			_ = f1.Close()
+			err = staged.cleanup(err)
 			return
 		}
-		if err = f2.Close(); err != nil {
-			return
-		}
-		if err = f1.Close(); err != nil {
-			return
-		}
+		err = staged.commit()
 	}()
 
 	if err = ExportBookmarksJSON(f1, f2, inFilePDF, conf); err != nil {
@@ -124,16 +185,20 @@ func ExportBookmarksFile(inFilePDF, outFileJSON string, conf *model.Configuratio
 	return nil
 }
 
-// ImportBookmarks creates/replaces outlines in rs and writes the result to w.
+// ImportBookmarks creates/replaces bookmarks in rs and writes the result to w.
 func ImportBookmarks(rs io.ReadSeeker, rd io.Reader, w io.Writer, replace bool, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: ImportBookmarks: missing rs")
+		return ErrMissingPDFReadSeeker
 	}
 
 	if rd == nil {
-		return errors.New("pdfcpu: ImportBookmarks: missing rd")
+		return ErrMissingJSONReader
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
 	}
 
 	if conf == nil {
@@ -145,58 +210,66 @@ func ImportBookmarks(rs io.ReadSeeker, rd io.Reader, w io.Writer, replace bool, 
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return bookmarkOpError("import bookmarks", err)
 	}
 
 	ok, err := pdfcpu.ImportBookmarks(ctx, rd, replace)
 	if err != nil {
-		return err
+		return bookmarkOpError("import bookmarks", err)
 	}
 	if !ok {
-		return ErrOutlines
+		return bookmarkOpError("import bookmarks", ErrExistingBookmarks)
 	}
 
-	return WriteContext(ctx, w)
+	return bookmarkOpError("import bookmarks: write", WriteContext(ctx, w))
 }
 
-// ImportBookmarks creates/replaces outlines in inFilePDF and writes the result to outFilePDF.
+// ImportBookmarksFile creates/replaces bookmarks in inFilePDF and writes the result to outFilePDF.
 func ImportBookmarksFile(inFilePDF, inFileJSON, outFilePDF string, replace bool, conf *model.Configuration) (err error) {
 	var f0, f1, f2 *os.File
 	ok := false
 
+	if inFilePDF == "" {
+		return ErrMissingPDFInput
+	}
+
+	if inFileJSON == "" {
+		return ErrMissingJSONInput
+	}
+
 	if f0, err = os.Open(inFilePDF); err != nil {
-		return err
+		return fmt.Errorf("import bookmarks: open %s: %w", inFilePDF, err)
 	}
 
 	if f1, err = os.Open(inFileJSON); err != nil {
-		return err
+		return errors.Join(
+			fmt.Errorf("import bookmarks: open JSON %s: %w", inFileJSON, err),
+			closeFile(f0, "import bookmarks: close input"),
+		)
 	}
 
-	tmpFile := inFilePDF + ".tmp"
+	tmpFile := ""
 	if outFilePDF != "" && inFilePDF != outFilePDF {
 		tmpFile = outFilePDF
 	}
-	if f2, err = os.Create(tmpFile); err != nil {
-		_ = f1.Close()
-		return err
+	staged, err := openStagedOutput(f1, inFilePDF, tmpFile, "import bookmarks")
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("import bookmarks: create output: %w", err),
+			closeFile(f1, "import bookmarks: close JSON input"),
+			closeFile(f0, "import bookmarks: close input"),
+		)
 	}
+	f2 = staged.output.file
+	staged.inputs[0].context = "import bookmarks: close JSON input"
+	staged = staged.withInput(f0, "import bookmarks: close input")
 
 	defer func() {
 		if !ok {
-			_ = f2.Close()
-			_ = f1.Close()
-			os.Remove(tmpFile)
+			err = staged.cleanup(err)
 			return
 		}
-		if err = f2.Close(); err != nil {
-			return
-		}
-		if err = f1.Close(); err != nil {
-			return
-		}
-		if outFilePDF == "" || inFilePDF == outFilePDF {
-			err = os.Rename(tmpFile, inFilePDF)
-		}
+		err = staged.commit()
 	}()
 
 	if err = ImportBookmarks(f0, f1, f2, replace, conf); err != nil {
@@ -208,12 +281,16 @@ func ImportBookmarksFile(inFilePDF, inFileJSON, outFilePDF string, replace bool,
 	return nil
 }
 
-// AddBookmarks adds a single bookmark outline layer to the PDF context read from rs and writes the result to w.
+// AddBookmarks adds bookmarks to the PDF context read from rs and writes the result to w.
 func AddBookmarks(rs io.ReadSeeker, w io.Writer, bms []pdfcpu.Bookmark, replace bool, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: AddBookmarks: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
 	}
 
 	if conf == nil {
@@ -224,55 +301,53 @@ func AddBookmarks(rs io.ReadSeeker, w io.Writer, bms []pdfcpu.Bookmark, replace 
 	conf.Cmd = model.ADDBOOKMARKS
 
 	if len(bms) == 0 {
-		return errors.New("pdfcpu: AddBookmarks: missing bms")
+		return ErrMissingBookmarks
 	}
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return bookmarkOpError("add bookmarks", err)
 	}
 
 	if err := pdfcpu.AddBookmarks(ctx, bms, replace); err != nil {
-		return err
+		return bookmarkOpError("add bookmarks", err)
 	}
 
-	return WriteContext(ctx, w)
+	return bookmarkOpError("add bookmarks: write", WriteContext(ctx, w))
 }
 
-// AddBookmarksFile adds outlines to the PDF context read from inFile and writes the result to outFile.
+// AddBookmarksFile adds bookmarks to the PDF context read from inFile and writes the result to outFile.
 func AddBookmarksFile(inFile, outFile string, bms []pdfcpu.Bookmark, replace bool, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
-	if f1, err = os.Open(inFile); err != nil {
-		return err
+	if inFile == "" {
+		return ErrMissingPDFInput
 	}
 
-	tmpFile := inFile + ".tmp"
+	if f1, err = os.Open(inFile); err != nil {
+		return fmt.Errorf("add bookmarks: open %s: %w", inFile, err)
+	}
+
+	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
 	}
-	if f2, err = os.Create(tmpFile); err != nil {
-		_ = f1.Close()
-		return err
+	staged, err := openStagedOutput(f1, inFile, tmpFile, "add bookmarks")
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("add bookmarks: create output: %w", err),
+			closeFile(f1, "add bookmarks: close input"),
+		)
 	}
+	f2 = staged.output.file
 
 	defer func() {
 		if !ok {
-			_ = f2.Close()
-			_ = f1.Close()
-			os.Remove(tmpFile)
+			err = staged.cleanup(err)
 			return
 		}
-		if err = f2.Close(); err != nil {
-			return
-		}
-		if err = f1.Close(); err != nil {
-			return
-		}
-		if outFile == "" || inFile == outFile {
-			err = os.Rename(tmpFile, inFile)
-		}
+		err = staged.commit()
 	}()
 
 	if err = AddBookmarks(f1, f2, bms, replace, conf); err != nil {
@@ -284,12 +359,16 @@ func AddBookmarksFile(inFile, outFile string, bms []pdfcpu.Bookmark, replace boo
 	return nil
 }
 
-// RemoveBookmarks deletes outlines from rs and writes the result to w.
+// RemoveBookmarks deletes bookmarks from rs and writes the result to w.
 func RemoveBookmarks(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: AddBookmarks: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
 	}
 
 	if conf == nil {
@@ -301,54 +380,52 @@ func RemoveBookmarks(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return bookmarkOpError("remove bookmarks", err)
 	}
 
 	ok, err := pdfcpu.RemoveBookmarks(ctx)
 	if err != nil {
-		return err
+		return bookmarkOpError("remove bookmarks", err)
 	}
 	if !ok {
-		return ErrNoOutlines
+		return bookmarkOpError("remove bookmarks", ErrNoBookmarks)
 	}
 
-	return WriteContext(ctx, w)
+	return bookmarkOpError("remove bookmarks: write", WriteContext(ctx, w))
 }
 
-// RemoveBookmarksFile deletes outlines from inFile and writes the result to outFile.
+// RemoveBookmarksFile deletes bookmarks from inFile and writes the result to outFile.
 func RemoveBookmarksFile(inFile, outFile string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
-	if f1, err = os.Open(inFile); err != nil {
-		return err
+	if inFile == "" {
+		return ErrMissingPDFInput
 	}
 
-	tmpFile := inFile + ".tmp"
+	if f1, err = os.Open(inFile); err != nil {
+		return fmt.Errorf("remove bookmarks: open %s: %w", inFile, err)
+	}
+
+	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
 	}
-	if f2, err = os.Create(tmpFile); err != nil {
-		_ = f1.Close()
-		return err
+	staged, err := openStagedOutput(f1, inFile, tmpFile, "remove bookmarks")
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("remove bookmarks: create output: %w", err),
+			closeFile(f1, "remove bookmarks: close input"),
+		)
 	}
+	f2 = staged.output.file
 
 	defer func() {
 		if !ok {
-			_ = f2.Close()
-			_ = f1.Close()
-			_ = os.Remove(tmpFile)
+			err = staged.cleanup(err)
 			return
 		}
-		if err = f2.Close(); err != nil {
-			return
-		}
-		if err = f1.Close(); err != nil {
-			return
-		}
-		if outFile == "" || inFile == outFile {
-			err = os.Rename(tmpFile, inFile)
-		}
+		err = staged.commit()
 	}()
 
 	if err = RemoveBookmarks(f1, f2, conf); err != nil {

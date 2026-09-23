@@ -35,6 +35,8 @@ package api
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -44,7 +46,6 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/validate"
-	"github.com/pkg/errors"
 )
 
 func logDisclaimerPDF20() {
@@ -71,7 +72,7 @@ func logDisclaimerPDF20() {
 func ReadContext(rs io.ReadSeeker, conf *model.Configuration) (ctx *model.Context, err error) {
 	defer fault.Catch(&err)
 	if rs == nil {
-		return nil, errors.New("pdfcpu: ReadContext: missing rs")
+		return nil, ErrMissingPDFReadSeeker
 	}
 	return pdfcpu.Read(rs, conf)
 }
@@ -106,6 +107,14 @@ func ReadContextFile(inFile string) (*model.Context, error) {
 
 // ValidateContext validates ctx.
 func ValidateContext(ctx *model.Context) error {
+	if ctx == nil {
+		return ErrMissingPDFContext
+	}
+
+	if ctx.XRefTable == nil {
+		return ErrMissingXRefTable
+	}
+
 	if ctx.XRefTable.Version() == model.V20 {
 		logDisclaimerPDF20()
 	}
@@ -114,10 +123,17 @@ func ValidateContext(ctx *model.Context) error {
 
 // OptimizeContext optimizes ctx.
 func OptimizeContext(ctx *model.Context) error {
+	if ctx == nil {
+		return ErrMissingPDFContext
+	}
+
 	if log.CLIEnabled() {
 		log.CLI.Println("optimizing...")
 	}
-	return pdfcpu.OptimizeXRefTable(ctx)
+	if err := pdfcpu.OptimizeXRefTable(ctx); err != nil {
+		return fmt.Errorf("optimize context: %w", err)
+	}
+	return nil
 }
 
 // PatchFile writes bb at offset.
@@ -140,50 +156,80 @@ func PatchFile(fileName string, bb []byte, offset int64) error {
 }
 
 // WriteContext writes ctx to w.
-func WriteContext(ctx *model.Context, w io.Writer) error {
+func WriteContext(ctx *model.Context, w io.Writer) (err error) {
+	if ctx == nil {
+		return ErrMissingPDFContext
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
+	}
+
 	if f, ok := w.(*os.File); ok {
 		// In order to retrieve the written file size.
 		ctx.Write.Fp = f
 	}
 	ctx.Write.Writer = bufio.NewWriter(w)
-	defer ctx.Write.Flush()
+	defer func() {
+		err = errors.Join(err, ctx.Write.Flush())
+	}()
 	return pdfcpu.WriteContext(ctx)
 }
 
 // WriteIncrement writes a PDF increment for ctx to w.
-func WriteIncrement(ctx *model.Context, w io.Writer) error {
+func WriteIncrement(ctx *model.Context, w io.Writer) (err error) {
+	if ctx == nil {
+		return ErrMissingPDFContext
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
+	}
+
 	ctx.Write.Writer = bufio.NewWriter(w)
-	defer ctx.Write.Flush()
+	defer func() {
+		err = errors.Join(err, ctx.Write.Flush())
+	}()
 	return pdfcpu.WriteIncrement(ctx)
 }
 
 // WriteContextFile writes ctx to outFile.
-func WriteContextFile(ctx *model.Context, outFile string) error {
-	f, err := os.Create(outFile)
+func WriteContextFile(ctx *model.Context, outFile string) (err error) {
+	staged, err := openStagedOutput(nil, "", outFile, "write context")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return WriteContext(ctx, f)
+	f := staged.output.file
+	if err := WriteContext(ctx, f); err != nil {
+		return staged.cleanup(err)
+	}
+	return staged.commit()
 }
 
 // ReadAndValidate returns a model.Context of rs ready for processing.
 func ReadAndValidate(rs io.ReadSeeker, conf *model.Configuration) (ctx *model.Context, err error) {
 	defer fault.Catch(&err)
 
+	if rs == nil {
+		return nil, ErrMissingPDFReadSeeker
+	}
+
 	if ctx, err = ReadContext(rs, conf); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read context: %w", err)
+	}
+	if conf == nil {
+		conf = ctx.Configuration
 	}
 
 	if err := ValidateContext(ctx); err != nil {
-		return nil, err
+		return nil, validationError(ctx, conf, err)
 	}
 
 	if conf.Cmd == model.REMOVESIGNATURES || ctx.RemoveSignatures && conf.Cmd.AllowRemoveSignatures() {
 
 		if len(ctx.Signatures) == 0 {
 			if conf.Cmd == model.REMOVESIGNATURES {
-				return nil, errors.New("pdfcpu: no signatures to remove")
+				return nil, ErrNoSignatures
 			}
 			if log.CLIEnabled() {
 				log.CLI.Println("no signatures to remove...")
@@ -195,7 +241,7 @@ func ReadAndValidate(rs io.ReadSeeker, conf *model.Configuration) (ctx *model.Co
 			log.CLI.Println("removing signatures...")
 		}
 		if err := ctx.RemoveAllSignatures(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("remove signatures: %w", err)
 		}
 	}
 
@@ -216,13 +262,19 @@ func cmdAssumingOptimization(cmd model.CommandMode) bool {
 // ReadValidateAndOptimize returns an optimized model.Context of rs ready for processing a specific command.
 // conf.Cmd is expected to be configured properly.
 func ReadValidateAndOptimize(rs io.ReadSeeker, conf *model.Configuration) (ctx *model.Context, err error) {
+	defer fault.Catch(&err)
+
+	if rs == nil {
+		return nil, ErrMissingPDFReadSeeker
+	}
+
 	if conf == nil {
-		return nil, errors.New("pdfcpu: ReadValidateAndOptimize: missing conf")
+		return nil, ErrMissingConfiguration
 	}
 
 	ctx, err = ReadAndValidate(rs, conf)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prepare PDF context: %w", err)
 	}
 
 	// With the exception of commands utilizing structs provided the Optimize step
@@ -236,7 +288,7 @@ func ReadValidateAndOptimize(rs io.ReadSeeker, conf *model.Configuration) (ctx *
 
 	// TODO move to form related commands.
 	if err := pdfcpu.CacheFormFonts(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cache form fonts: %w", err)
 	}
 
 	return ctx, nil
@@ -248,7 +300,16 @@ func logWritingTo(s string) {
 	}
 }
 
+// Write writes ctx using w.
 func Write(ctx *model.Context, w io.Writer, conf *model.Configuration) error {
+	if ctx == nil {
+		return ErrMissingPDFContext
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
+	}
+
 	if log.StatsEnabled() {
 		log.Stats.Printf("XRefTable:\n%s\n", ctx)
 	}
@@ -256,7 +317,20 @@ func Write(ctx *model.Context, w io.Writer, conf *model.Configuration) error {
 	return WriteContext(ctx, w)
 }
 
+// WriteIncr writes ctx as increment using rws.
 func WriteIncr(ctx *model.Context, rws io.ReadWriteSeeker, conf *model.Configuration) error {
+	if ctx == nil {
+		return ErrMissingPDFContext
+	}
+
+	if rws == nil {
+		return ErrMissingPDFReadWriteSeeker
+	}
+
+	if conf == nil {
+		return ErrMissingConfiguration
+	}
+
 	if log.StatsEnabled() {
 		log.Stats.Printf("XRefTable:\n%s\n", ctx)
 	}

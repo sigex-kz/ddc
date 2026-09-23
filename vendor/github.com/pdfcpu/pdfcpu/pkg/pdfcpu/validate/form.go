@@ -17,13 +17,13 @@ limitations under the License.
 package validate
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 // func validateSignatureDict(xRefTable *model.XRefTable, o pdf.Object) error {
@@ -42,7 +42,6 @@ import (
 // }
 
 func validateAppearanceSubDict(xRefTable *model.XRefTable, d types.Dict) error {
-
 	// dict of xobjects
 	for _, o := range d {
 
@@ -63,7 +62,6 @@ func validateAppearanceSubDict(xRefTable *model.XRefTable, d types.Dict) error {
 }
 
 func validateAppearanceDictEntry(xRefTable *model.XRefTable, o types.Object) error {
-
 	// stream or dict
 	// single appearance stream or subdict
 
@@ -81,15 +79,30 @@ func validateAppearanceDictEntry(xRefTable *model.XRefTable, o types.Object) err
 		err = validateXObjectStreamDict(xRefTable, o)
 
 	default:
-		err = errors.New("pdfcpu: validateAppearanceDictEntry: unsupported PDF object")
+		err = errUnsupportedPDFObject
 
 	}
 
 	return err
 }
 
-func validateAppearanceDict(xRefTable *model.XRefTable, o types.Object) error {
+func validateAppearanceEntry(xRefTable *model.XRefTable, d types.Dict, entryName string) error {
+	o, ok := d.Find(entryName)
+	if !ok {
+		return nil
+	}
 
+	err := validateAppearanceDictEntry(xRefTable, o)
+	if err == nil || xRefTable.ValidationMode == model.ValidationStrict {
+		return err
+	}
+
+	d.Delete(entryName)
+	model.ShowSkipped(fmt.Sprintf("corrupt appearance %s: %v", entryName, err))
+	return nil
+}
+
+func validateAppearanceDict(xRefTable *model.XRefTable, o types.Object) error {
 	// see 12.5.5 Appearance Streams
 
 	d, err := xRefTable.DereferenceDict(o)
@@ -98,35 +111,23 @@ func validateAppearanceDict(xRefTable *model.XRefTable, o types.Object) error {
 	}
 
 	// Normal Appearance
-	o, ok := d.Find("N")
+	_, ok := d.Find("N")
 	if !ok {
 		if xRefTable.ValidationMode == model.ValidationStrict {
-			return errors.New("pdfcpu: validateAppearanceDict: missing required entry \"N\"")
+			logMissingRequiredEntry("appearanceDict", "N", d)
+			return missingRequiredEntryError(xRefTable, "appearanceDict", "N", "add normal appearance stream/subdict or validate in relaxed mode")
 		}
-	} else {
-		err = validateAppearanceDictEntry(xRefTable, o)
-		if err != nil {
-			return err
-		}
+	} else if err = validateAppearanceEntry(xRefTable, d, "N"); err != nil {
+		return err
 	}
 
 	// Rollover Appearance
-	if o, ok = d.Find("R"); ok {
-		err = validateAppearanceDictEntry(xRefTable, o)
-		if err != nil {
-			return err
-		}
+	if err = validateAppearanceEntry(xRefTable, d, "R"); err != nil {
+		return err
 	}
 
 	// Down Appearance
-	if o, ok = d.Find("D"); ok {
-		err = validateAppearanceDictEntry(xRefTable, o)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return validateAppearanceEntry(xRefTable, d, "D")
 }
 
 func validateDA(s string) bool {
@@ -232,8 +233,11 @@ func validateFormFieldDA(xRefTable *model.XRefTable, d types.Dict, dictName stri
 	}
 
 	if outFieldType == nil || (*outFieldType).Value() == "Tx" {
-		//if (*outFieldType).Value() == "Tx" {
-		da, err := validateStringEntry(xRefTable, d, dictName, "DA", requiresDA, model.V10, validate)
+		required := requiresDA
+		if terminalNode && outFieldType == nil && xRefTable.ValidationMode == model.ValidationRelaxed {
+			required = OPTIONAL
+		}
+		da, err := validateStringEntry(xRefTable, d, dictName, "DA", required, model.V10, validate)
 		if err != nil {
 			if !terminalNode && requiresDA {
 				err = nil
@@ -261,13 +265,15 @@ func detectRectArray(xRefTable *model.XRefTable, d types.Dict, dictName string) 
 	// non terminal field
 	kids, err := xRefTable.DereferenceArray(obj)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("form field Kids: dereference array: %w", err)
+	}
+	if len(kids) == 0 {
+		return nil, errors.New("form field Kids: empty array")
 	}
 
-	// TODO Validation of len(kids) necessary?
 	d1, err := xRefTable.DereferenceDict(kids[0])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("form field Kids[0]: dereference dict: %w", err)
 	}
 
 	return validateRectangleEntry(xRefTable, d1, dictName, "Rect", REQUIRED, model.V10, nil)
@@ -351,13 +357,24 @@ func validateDV(xRefTable *model.XRefTable, d types.Dict, dictName string, termi
 	return nil
 }
 
-func validateFormFieldDictEntries(xRefTable *model.XRefTable, objNr, incr int, d types.Dict, terminalNode, oneKid bool, inFieldType *types.Name, requiresDA bool) (outFieldType *types.Name, hasDA bool, err error) {
+func validateFormFieldType(xRefTable *model.XRefTable) func(string) bool {
+	return func(s string) bool {
+		if xRefTable.ValidationMode == model.ValidationRelaxed {
+			return true
+		}
+		return types.MemberOf(s, []string{"Btn", "Tx", "Ch", "Sig"})
+	}
+}
 
+func validateFormFieldDictEntries(xRefTable *model.XRefTable, objNr, incr int, d types.Dict, terminalNode, oneKid bool, inFieldType *types.Name, requiresDA bool) (outFieldType *types.Name, hasDA bool, err error) {
 	dictName := "formFieldDict"
 
 	// FT: name, Btn,Tx,Ch,Sig
-	validate := func(s string) bool { return types.MemberOf(s, []string{"Btn", "Tx", "Ch", "Sig"}) }
-	fieldType, err := validateNameEntry(xRefTable, d, dictName, "FT", terminalNode && inFieldType == nil, model.V10, validate)
+	required := terminalNode && inFieldType == nil
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		required = OPTIONAL
+	}
+	fieldType, err := validateNameEntry(xRefTable, d, dictName, "FT", required, model.V10, validateFormFieldType(xRefTable))
 	if err != nil {
 		return nil, false, err
 	}
@@ -429,27 +446,51 @@ func validateFormFieldParts(xRefTable *model.XRefTable, objNr, incr int, d types
 	}
 
 	// Validate field dict entries.
-	if _, _, err := validateFormFieldDictEntries(xRefTable, objNr, incr, d, true, false, inFieldType, requiresDA); err != nil {
+	fieldType, _, err := validateFormFieldDictEntries(xRefTable, objNr, incr, d, true, false, inFieldType, requiresDA)
+	if err != nil {
 		return err
 	}
 
 	// Validate widget annotation - Validation of AA redundant because of merged acrofield with widget annotation.
-	_, err := validateAnnotationDict(xRefTable, d)
-	return err
+	if _, err = validateAnnotationDict(xRefTable, d); err != nil {
+		return err
+	}
+
+	if fieldType == nil && xRefTable.ValidationMode == model.ValidationRelaxed {
+		model.ShowDigestedSpecViolation("dict=formFieldDict required entry=FT missing")
+	}
+
+	return nil
 }
 
-func validateFormFieldKids(xRefTable *model.XRefTable, objNr, incr int, d types.Dict, o types.Object, inFieldType *types.Name, requiresDA bool) error {
+func isWidget(d types.Dict) bool {
+	return d.Subtype() != nil && *d.Subtype() == "Widget"
+}
+
+func validateFormFieldKids(
+	xRefTable *model.XRefTable,
+	objNr,
+	incr int,
+	d types.Dict,
+	o types.Object,
+	inFieldType *types.Name,
+	requiresDA bool,
+	depth int,
+	visit *model.FormFieldVisit,
+	specViolations *[]error,
+) error {
 	var err error
+
 	// dict represents a non terminal field.
-	if d.Subtype() != nil && *d.Subtype() == "Widget" {
+	if isWidget(d) {
 		if xRefTable.ValidationMode == model.ValidationStrict {
-			return errors.New("pdfcpu: validateFormFieldKids: non terminal field can not be widget annotation")
+			return fmt.Errorf("form field obj#%d: non-terminal field cannot be widget annotation", objNr)
 		}
 	}
 
 	a, err := xRefTable.DereferenceArray(o)
 	if err != nil {
-		return err
+		return fmt.Errorf("form field obj#%d: dereference Kids array: %w", objNr, err)
 	}
 
 	// Validate field entries.
@@ -467,23 +508,35 @@ func validateFormFieldKids(xRefTable *model.XRefTable, objNr, incr int, d types.
 	}
 
 	// Recurse over kids.
-	for _, value := range a {
+	for i, value := range a {
 		ir, ok := value.(types.IndirectRef)
 		if !ok {
-			return errors.New("pdfcpu: validateFormFieldKids: corrupt kids array: entries must be indirect reference")
+			return fmt.Errorf("form field obj#%d Kids[%d]: expected indirect reference, got %T", objNr, i, value)
+		}
+		if err := visit.Check(ir.ObjectNumber.Value()); err != nil {
+			return fmt.Errorf("form field obj#%d Kids[%d] obj#%d: %w", objNr, i, ir.ObjectNumber.Value(), err)
 		}
 		valid, err := xRefTable.IsValid(ir)
 		if err != nil {
 			if xRefTable.ValidationMode == model.ValidationStrict {
-				return err
+				return fmt.Errorf("form field obj#%d Kids[%d] obj#%d: check valid: %w", objNr, i, ir.ObjectNumber.Value(), err)
 			}
-			model.ShowSkipped(fmt.Sprintf("missing form field kid obj #%s", ir.ObjectNumber.String()))
+			err = fmt.Errorf("form field obj#%d Kids[%d] obj#%d: check valid: %w", objNr, i, ir.ObjectNumber.Value(), err)
+			*specViolations = append(*specViolations, err)
 			valid = true
 		}
 
 		if !valid {
-			if err = validateFormFieldDict(xRefTable, ir, xInFieldType, requiresDA); err != nil {
-				return err
+			if err = validateFormFieldDictDepth(
+				xRefTable,
+				ir,
+				xInFieldType,
+				requiresDA,
+				depth+1,
+				visit,
+				specViolations,
+			); err != nil {
+				return fmt.Errorf("form field obj#%d Kids[%d] obj#%d: %w", objNr, i, ir.ObjectNumber.Value(), err)
 			}
 		}
 	}
@@ -492,9 +545,50 @@ func validateFormFieldKids(xRefTable *model.XRefTable, objNr, incr int, d types.
 }
 
 func validateFormFieldDict(xRefTable *model.XRefTable, ir types.IndirectRef, inFieldType *types.Name, requiresDA bool) error {
-	d, incr, err := xRefTable.DereferenceDictWithIncr(ir)
-	if err != nil || d == nil {
+	var specViolations []error
+	err := validateFormFieldDictDepth(
+		xRefTable,
+		ir,
+		inFieldType,
+		requiresDA,
+		0,
+		model.NewFormFieldVisit(),
+		&specViolations,
+	)
+	if err == nil {
+		showDigestedSpecViolations(xRefTable, specViolations)
+	}
+	return err
+}
+
+func validateFormFieldDictDepth(
+	xRefTable *model.XRefTable,
+	ir types.IndirectRef,
+	inFieldType *types.Name,
+	requiresDA bool,
+	depth int,
+	visit *model.FormFieldVisit,
+	specViolations *[]error,
+) error {
+	if err := xRefTable.CheckRecursionDepth("form field tree", depth); err != nil {
 		return err
+	}
+	objNr := ir.ObjectNumber.Value()
+	if err := visit.Enter(objNr); err != nil {
+		return fmt.Errorf("form field obj#%d: %w", objNr, err)
+	}
+	defer visit.Leave(objNr)
+
+	d, incr, err := xRefTable.DereferenceDictWithIncr(ir)
+	if err != nil {
+		return fmt.Errorf("form field obj#%d: dereference dict: %w", objNr, err)
+	}
+	if d == nil {
+		if xRefTable.ValidationMode == model.ValidationRelaxed {
+			*specViolations = append(*specViolations, fmt.Errorf("form field obj#%d: missing dict", objNr))
+			return nil
+		}
+		return fmt.Errorf("form field obj#%d: missing dict", objNr)
 	}
 
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
@@ -504,49 +598,68 @@ func validateFormFieldDict(xRefTable *model.XRefTable, ir types.IndirectRef, inF
 	}
 
 	if err := xRefTable.SetValid(ir); err != nil {
-		return err
+		return fmt.Errorf("form field obj#%d: mark valid: %w", objNr, err)
 	}
 
-	objNr := ir.ObjectNumber.Value()
-
 	if o, ok := d.Find("Kids"); ok {
-		return validateFormFieldKids(xRefTable, objNr, incr, d, o, inFieldType, requiresDA)
+		return validateFormFieldKids(
+			xRefTable,
+			objNr,
+			incr,
+			d,
+			o,
+			inFieldType,
+			requiresDA,
+			depth,
+			visit,
+			specViolations,
+		)
 	}
 
 	return validateFormFieldParts(xRefTable, objNr, incr, d, inFieldType, requiresDA)
 }
 
 func validateFormFields(xRefTable *model.XRefTable, arr types.Array, requiresDA bool) error {
+	var specViolations []error
 
-	for _, value := range arr {
+	for i, value := range arr {
 
 		ir, ok := value.(types.IndirectRef)
 		if !ok {
-			return errors.New("pdfcpu: validateFormFields: corrupt form field array entry")
+			return fmt.Errorf("AcroForm Fields[%d]: expected indirect reference, got %T", i, value)
 		}
 
 		valid, err := xRefTable.IsValid(ir)
 		if err != nil {
 			if xRefTable.ValidationMode == model.ValidationStrict {
-				return err
+				return fmt.Errorf("AcroForm Fields[%d] obj#%d: check valid: %w", i, ir.ObjectNumber.Value(), err)
 			}
-			model.ShowSkipped(fmt.Sprintf("missing form field obj #%s", ir.ObjectNumber.String()))
+			err = fmt.Errorf("AcroForm Fields[%d] obj#%d: check valid: %w", i, ir.ObjectNumber.Value(), err)
+			specViolations = append(specViolations, err)
 			valid = true
 		}
 
 		if !valid {
-			if err = validateFormFieldDict(xRefTable, ir, nil, requiresDA); err != nil {
-				return err
+			if err = validateFormFieldDictDepth(
+				xRefTable,
+				ir,
+				nil,
+				requiresDA,
+				0,
+				model.NewFormFieldVisit(),
+				&specViolations,
+			); err != nil {
+				return fmt.Errorf("AcroForm Fields[%d] obj#%d: %w", i, ir.ObjectNumber.Value(), err)
 			}
 		}
 
 	}
 
+	showDigestedSpecViolations(xRefTable, specViolations)
 	return nil
 }
 
 func validateFormCO(xRefTable *model.XRefTable, arr types.Array, sinceVersion model.Version, requiresDA bool) error {
-
 	// see 12.6.3 Trigger Events
 	// Array of indRefs to field dicts with calculation actions, since V1.3
 
@@ -560,7 +673,6 @@ func validateFormCO(xRefTable *model.XRefTable, arr types.Array, sinceVersion mo
 }
 
 func validateFormXFA(xRefTable *model.XRefTable, d types.Dict, sinceVersion model.Version) error {
-
 	// see 12.7.8
 
 	o, ok := d.Find("XFA")
@@ -571,8 +683,11 @@ func validateFormXFA(xRefTable *model.XRefTable, d types.Dict, sinceVersion mode
 	// streamDict or array of text,streamDict pairs
 
 	o, err := xRefTable.Dereference(o)
-	if err != nil || o == nil {
-		return err
+	if err != nil {
+		return fmt.Errorf("AcroForm XFA: dereference: %w", err)
+	}
+	if o == nil {
+		return errors.New("AcroForm XFA: missing object")
 	}
 
 	switch o := o.(type) {
@@ -582,40 +697,36 @@ func validateFormXFA(xRefTable *model.XRefTable, d types.Dict, sinceVersion mode
 
 	case types.Array:
 
-		i := 0
-
-		for _, v := range o {
+		for i, v := range o {
 
 			if v == nil {
-				return errors.New("pdfcpu: validateFormXFA: array entry is nil")
+				return fmt.Errorf("AcroForm XFA[%d]: missing entry", i)
 			}
 
 			o, err := xRefTable.Dereference(v)
 			if err != nil {
-				return err
+				return fmt.Errorf("AcroForm XFA[%d]: dereference: %w", i, err)
 			}
 
 			if i%2 == 0 {
 
 				_, ok := o.(types.StringLiteral)
 				if !ok {
-					return errors.New("pdfcpu: validateFormXFA: even array must be a string")
+					return fmt.Errorf("AcroForm XFA[%d]: expected string", i)
 				}
 
 			} else {
 
 				_, ok := o.(types.StreamDict)
 				if !ok {
-					return errors.New("pdfcpu: validateFormXFA: odd array entry must be a streamDict")
+					return fmt.Errorf("AcroForm XFA[%d]: expected stream dict", i)
 				}
 
 			}
-
-			i++
 		}
 
 	default:
-		return errors.New("pdfcpu: validateFormXFA: needs to be streamDict or array")
+		return fmt.Errorf("AcroForm XFA: expected stream dict or array, got %T", o)
 	}
 
 	return xRefTable.ValidateVersion("AcroFormXFA", sinceVersion)
@@ -624,7 +735,6 @@ func validateFormXFA(xRefTable *model.XRefTable, d types.Dict, sinceVersion mode
 func validateQ(i int) bool { return i >= 0 && i <= 2 }
 
 func validateFormEntryCO(xRefTable *model.XRefTable, d types.Dict, sinceVersion model.Version, requiresDA bool) error {
-
 	o, ok := d.Find("CO")
 	if !ok {
 		return nil
@@ -639,7 +749,6 @@ func validateFormEntryCO(xRefTable *model.XRefTable, d types.Dict, sinceVersion 
 }
 
 func validateFormEntryDR(xRefTable *model.XRefTable, d types.Dict) error {
-
 	o, ok := d.Find("DR")
 	if !ok {
 		return nil
@@ -694,9 +803,26 @@ func validateFormEntries(xRefTable *model.XRefTable, d types.Dict, dictName stri
 	return validateFormXFA(xRefTable, d, sinceVersion)
 }
 
-func validateForm(xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {
+func handleSelfReferentialAcroForm(xRefTable *model.XRefTable, rootDict types.Dict) (bool, error) {
+	if ir := rootDict.IndirectRefEntry("AcroForm"); ir != nil && xRefTable.Root != nil && *ir == *xRefTable.Root {
+		const msg = "AcroForm references root catalog"
+		if xRefTable.ValidationMode == model.ValidationStrict {
+			return true, errors.New(msg)
+		}
+		model.ShowDigestedSpecViolation(msg)
+		rootDict.Delete("AcroForm")
+		return true, nil
+	}
+	return false, nil
+}
 
+func validateForm(xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {
 	// => 12.7.2 Interactive Form Dictionary
+
+	handled, err := handleSelfReferentialAcroForm(xRefTable, rootDict)
+	if handled {
+		return err
+	}
 
 	d, err := validateDictEntry(xRefTable, rootDict, "rootDict", "AcroForm", OPTIONAL, sinceVersion, nil)
 	if err != nil || d == nil {
@@ -718,7 +844,7 @@ func validateForm(xRefTable *model.XRefTable, rootDict types.Dict, required bool
 
 	arr, err := xRefTable.DereferenceArray(o)
 	if err != nil {
-		return err
+		return fmt.Errorf("AcroForm Fields: dereference array: %w", err)
 	}
 	if len(arr) == 0 {
 		// Fix empty AcroForm dict.
@@ -748,7 +874,7 @@ func validateForm(xRefTable *model.XRefTable, rootDict types.Dict, required bool
 
 	err = validateFormFields(xRefTable, arr, requiresDA)
 	if err != nil {
-		return err
+		return fmt.Errorf("AcroForm Fields: %w", err)
 	}
 
 	return validateFormEntries(xRefTable, d, dictName, requiresDA, sinceVersion)
@@ -774,7 +900,6 @@ func locateAnnForAPAndRect(d types.Dict, r *types.Rectangle, pageAnnots map[int]
 }
 
 func pageAnnotIndRefForAcroField(xRefTable *model.XRefTable, indRef types.IndirectRef) (*types.IndirectRef, error) {
-
 	// indRef should be part of a page annotation dict.
 
 	for _, m := range xRefTable.PageAnnots {
@@ -792,12 +917,12 @@ func pageAnnotIndRefForAcroField(xRefTable *model.XRefTable, indRef types.Indire
 
 	d, err := xRefTable.DereferenceDict(indRef)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("form field obj#%d: dereference page annotation candidate: %w", indRef.ObjectNumber.Value(), err)
 	}
 
 	arr, err := xRefTable.DereferenceArray(d["Rect"])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("form field obj#%d Rect: dereference array: %w", indRef.ObjectNumber.Value(), err)
 	}
 	if arr == nil {
 		// Assumption: There are kids and the kids are allright.
@@ -831,10 +956,14 @@ func pageAnnotIndRefForAcroField(xRefTable *model.XRefTable, indRef types.Indire
 
 func fixFormFieldsArray(xRefTable *model.XRefTable, arr types.Array) (types.Array, error) {
 	arr1 := types.Array{}
-	for _, obj := range arr {
-		indRef, err := pageAnnotIndRefForAcroField(xRefTable, obj.(types.IndirectRef))
+	for i, obj := range arr {
+		ir, ok := obj.(types.IndirectRef)
+		if !ok {
+			return nil, fmt.Errorf("AcroForm Fields[%d]: expected indirect reference, got %T", i, obj)
+		}
+		indRef, err := pageAnnotIndRefForAcroField(xRefTable, ir)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("AcroForm Fields[%d]: resolve page annotation: %w", i, err)
 		}
 		arr1 = append(arr1, *indRef)
 	}
@@ -851,7 +980,7 @@ func validateFormFieldsAgainstPageAnnotations(xRefTable *model.XRefTable) error 
 	if !ok {
 		arr, ok := o.(types.Array)
 		if !ok {
-			return errors.New("pdfcpu: invalid array object")
+			return fmt.Errorf("AcroForm Fields: expected array or indirect reference, got %T", o)
 		}
 		arr, err := fixFormFieldsArray(xRefTable, arr)
 		if err != nil {
@@ -859,7 +988,7 @@ func validateFormFieldsAgainstPageAnnotations(xRefTable *model.XRefTable) error 
 		}
 		indRef, err := xRefTable.IndRefForNewObject(arr)
 		if err != nil {
-			return err
+			return fmt.Errorf("AcroForm Fields: create repaired fields array reference: %w", err)
 		}
 		xRefTable.Form["Fields"] = *indRef
 		return nil
@@ -867,7 +996,7 @@ func validateFormFieldsAgainstPageAnnotations(xRefTable *model.XRefTable) error 
 
 	arr, err := xRefTable.DereferenceArray(o)
 	if err != nil {
-		return err
+		return fmt.Errorf("AcroForm Fields: dereference array: %w", err)
 	}
 	arr, err = fixFormFieldsArray(xRefTable, arr)
 	if err != nil {

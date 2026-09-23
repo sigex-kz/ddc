@@ -19,17 +19,22 @@ package types
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pkg/errors"
 )
 
-// ErrInvalidUTF16BE represents an error that gets raised for invalid UTF-16BE byte sequences.
-var ErrInvalidUTF16BE = errors.New("pdfcpu: invalid UTF-16BE detected")
+var (
+	// ErrInvalidUTF8 signals an invalid UTF-8 string.
+	ErrInvalidUTF8 = errors.New("invalid UTF-8")
+
+	// ErrInvalidUTF16BE represents an error that gets raised for invalid UTF-16BE byte sequences.
+	ErrInvalidUTF16BE = errors.New("invalid UTF-16BE detected")
+)
 
 // IsStringUTF16BE checks a string for Big Endian byte order BOM.
 func IsStringUTF16BE(s string) bool {
@@ -77,19 +82,19 @@ func decodeUTF16String(b []byte) (string, error) {
 
 		// Ensure bytes needed in order to decode surrogate pair.
 		if i+2 >= len(b) {
-			return "", errors.Errorf("decodeUTF16String: corrupt UTF16BE byte length on unicode point 1: %v", b)
+			return "", fmt.Errorf("corrupt UTF16BE byte length on unicode point 1: %v", b)
 		}
 
 		// Ensure high surrogate is leading in possible surrogate pair.
 		if val >= 0xDC00 && val <= 0xDFFF {
-			return "", errors.Errorf("decodeUTF16String: corrupt UTF16BE on unicode point 1: %v", b)
+			return "", fmt.Errorf("corrupt UTF16BE on unicode point 1: %v", b)
 		}
 
 		// Supplementary Planes
 		u16 = append(u16, val)
 		val = (uint16(b[i+2]) << 8) + uint16(b[i+3])
 		if val < 0xDC00 || val > 0xDFFF {
-			return "", errors.Errorf("decodeUTF16String: corrupt UTF16BE on unicode point 2: %v", b)
+			return "", fmt.Errorf("corrupt UTF16BE on unicode point 2: %v", b)
 		}
 
 		u16 = append(u16, val)
@@ -112,6 +117,7 @@ func DecodeUTF16String(s string) (string, error) {
 	return decodeUTF16String([]byte(s))
 }
 
+// EncodeUTF16String encodes s as utf16 string.
 func EncodeUTF16String(s string) string {
 	rr := utf16.Encode([]rune(s))
 	bb := []byte{0xFE, 0xFF}
@@ -121,7 +127,11 @@ func EncodeUTF16String(s string) string {
 	return string(bb)
 }
 
+// EscapedUTF16String returns the escaped utf16 string for s.
 func EscapedUTF16String(s string) (*string, error) {
+	if !utf8.ValidString(s) {
+		return nil, ErrInvalidUTF8
+	}
 	return Escape(EncodeUTF16String(s))
 }
 
@@ -134,13 +144,13 @@ func StringLiteralToString(sl StringLiteral) (string, error) {
 	if IsUTF16BE(bb) {
 		return decodeUTF16String(bb)
 	}
-	// if no acceptable UTF16 encoding found, ensure utf8 encoding.
+	// If no acceptable UTF16 encoding is found, accept real-world UTF8 before
+	// falling back to PDFDocEncoding.
 	bb = bytes.TrimPrefix(bb, []byte{239, 187, 191})
-	s := string(bb)
-	if !utf8.ValidString(s) {
-		s = CP1252ToUTF8(s)
+	if utf8.Valid(bb) && !hasPDFDocEncodingControlByte(bb) {
+		return string(bb), nil
 	}
-	return s, nil
+	return decodePDFDocEncoding(bb), nil
 }
 
 // HexLiteralToString returns a possibly UTF16 encoded string for a hex string.
@@ -159,10 +169,14 @@ func HexLiteralToString(hl HexLiteral) (string, error) {
 	}
 
 	bb = bytes.TrimPrefix(bb, []byte{239, 187, 191})
+	if utf8.Valid(bb) && !hasPDFDocEncodingControlByte(bb) {
+		return string(bb), nil
+	}
 
-	return string(bb), nil
+	return decodePDFDocEncoding(bb), nil
 }
 
+// StringOrHexLiteral returns the string value for a string or hex literal.
 func StringOrHexLiteral(obj Object) (*string, error) {
 	if sl, ok := obj.(StringLiteral); ok {
 		s, err := StringLiteralToString(sl)
@@ -172,5 +186,5 @@ func StringOrHexLiteral(obj Object) (*string, error) {
 		s, err := HexLiteralToString(hl)
 		return &s, err
 	}
-	return nil, errors.New("pdfcpu: expected StringLiteral or HexLiteral")
+	return nil, errors.New("expected StringLiteral or HexLiteral")
 }

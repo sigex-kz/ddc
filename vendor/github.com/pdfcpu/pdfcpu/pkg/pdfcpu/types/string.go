@@ -19,14 +19,16 @@ package types
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/pkg/errors"
 	"golang.org/x/text/unicode/norm"
 )
 
+// RemoveControlChars removes control chars from s.
 func RemoveControlChars(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
@@ -50,15 +52,24 @@ func NewStringSet(slice []string) StringSet {
 	return strSet
 }
 
-// Convert a 1,2 or 3 digit unescaped octal string into the corresponding byte value.
-func ByteForOctalString(octalBytes string) (b byte) {
-	i, _ := strconv.ParseInt(octalBytes, 8, 64)
-	return byte(i)
+// ByteForOctalString converts a one- to three-digit octal string into a byte.
+// High-order overflow is ignored as required for PDF literal strings.
+// Invalid input returns zero.
+func ByteForOctalString(octalBytes string) byte {
+	if len(octalBytes) == 0 || len(octalBytes) > 3 {
+		return 0
+	}
+
+	i, err := strconv.ParseUint(octalBytes, 8, 16)
+	if err != nil {
+		return 0
+	}
+
+	return byte(i & 0xff)
 }
 
 // Escape applies all defined escape sequences to s.
 func Escape(s string) (*string, error) {
-
 	var b bytes.Buffer
 
 	for i := 0; i < len(s); i++ {
@@ -92,7 +103,6 @@ func Escape(s string) (*string, error) {
 }
 
 func escaped(c byte) (bool, byte) {
-
 	switch c {
 	case 'n':
 		c = 0x0A
@@ -161,7 +171,7 @@ func Unescape(s string) ([]byte, error) {
 				esc = true
 			} else { // Escaped \
 				if len(octalCode) > 0 {
-					return nil, errors.Errorf("Unescape: illegal \\ in octal code sequence detected %X", octalCode)
+					return nil, fmt.Errorf("illegal \\ in octal code sequence detected %X", octalCode)
 				}
 				b.WriteByte(c)
 				esc = false
@@ -184,7 +194,7 @@ func Unescape(s string) ([]byte, error) {
 
 		// Relax for issue 305 and also accept "\ ".
 		//if !enc && !strings.ContainsRune(" nrtbf()01234567", rune(c)) {
-		//	return nil, errors.Errorf("Unescape: illegal escape sequence \\%c detected: <%s>", c, s)
+		//	return nil, fmt.Errorf("illegal escape sequence \\%c detected: <%s>", c, s)
 		//}
 
 		var octal bool
@@ -316,6 +326,7 @@ func DecodeName(s string) (string, error) {
 	return sb.String(), nil
 }
 
+// TrimLeadingComment trim leading comment.
 func TrimLeadingComment(s string) string {
 	for i := 0; i < len(s); i++ {
 		switch s[i] {

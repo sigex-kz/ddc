@@ -18,13 +18,13 @@ package primitives
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 // Note:
@@ -59,6 +59,7 @@ type RadioButtonGroup struct {
 	Hide            bool
 }
 
+// Rtl returns true if rbg is right-to-left.
 func (rbg *RadioButtonGroup) Rtl() bool {
 	if rbg.Buttons == nil {
 		return false
@@ -68,10 +69,10 @@ func (rbg *RadioButtonGroup) Rtl() bool {
 
 func (rbg *RadioButtonGroup) validateID() error {
 	if rbg.ID == "" {
-		return errors.New("pdfcpu: missing field id")
+		return errors.New("missing field id")
 	}
 	if rbg.pdf.DuplicateField(rbg.ID) {
-		return errors.Errorf("pdfcpu: duplicate form field: %s", rbg.ID)
+		return fmt.Errorf("duplicate form field: %s", rbg.ID)
 	}
 	rbg.pdf.FieldIDs[rbg.ID] = true
 	return nil
@@ -79,7 +80,7 @@ func (rbg *RadioButtonGroup) validateID() error {
 
 func (rbg *RadioButtonGroup) validatePosition() error {
 	if rbg.Position[0] < 0 || rbg.Position[1] < 0 {
-		return errors.Errorf("pdfcpu: field: %s pos value < 0", rbg.ID)
+		return fmt.Errorf("field: %s pos value < 0", rbg.ID)
 	}
 	rbg.x, rbg.y = rbg.Position[0], rbg.Position[1]
 	return nil
@@ -93,7 +94,7 @@ func parseRadioButtonOrientation(s string) (types.Orientation, error) {
 	case "v", "vert", "vertical":
 		o = types.Vertical
 	default:
-		return o, errors.Errorf("pdfcpu: unknown radiobutton orientation (hor, vert): %s", s)
+		return o, fmt.Errorf("unknown radiobutton orientation (hor, vert): %s", s)
 	}
 	return o, nil
 }
@@ -112,7 +113,7 @@ func (rbg *RadioButtonGroup) validateOrientation() error {
 
 func (rbg *RadioButtonGroup) validateWidth() error {
 	if rbg.Width <= 0 {
-		return errors.Errorf("pdfcpu: field: %s width <= 0", rbg.ID)
+		return fmt.Errorf("field: %s width <= 0", rbg.ID)
 	}
 	return nil
 }
@@ -138,7 +139,7 @@ func (rbg *RadioButtonGroup) validateLabel() error {
 
 func (rbg *RadioButtonGroup) validateButtonsDefaultAndValue() error {
 	if rbg.Buttons == nil {
-		return errors.New("pdfcpu: radiobuttongroup missing buttons")
+		return errors.New("radiobuttongroup missing buttons")
 	}
 	rbg.Buttons.pdf = rbg.pdf
 	return rbg.Buttons.validate(rbg.Default, rbg.Value)
@@ -146,7 +147,7 @@ func (rbg *RadioButtonGroup) validateButtonsDefaultAndValue() error {
 
 func (rbg *RadioButtonGroup) validateTab() error {
 	if rbg.Tab < 0 {
-		return errors.Errorf("pdfcpu: field: %s negative tab value", rbg.ID)
+		return fmt.Errorf("field: %s negative tab value", rbg.ID)
 	}
 	if rbg.Tab == 0 {
 		return nil
@@ -156,7 +157,7 @@ func (rbg *RadioButtonGroup) validateTab() error {
 		page.Tabs = types.IntSet{}
 	} else {
 		if page.Tabs[rbg.Tab] {
-			return errors.Errorf("pdfcpu: field: %s duplicate tab value %d", rbg.ID, rbg.Tab)
+			return fmt.Errorf("field: %s duplicate tab value %d", rbg.ID, rbg.Tab)
 		}
 	}
 	page.Tabs[rbg.Tab] = true
@@ -232,7 +233,7 @@ func (rbg *RadioButtonGroup) prepareMargin() (float64, float64, float64, float64
 			mName := m.Name[1:]
 			m0 := rbg.margin(mName)
 			if m0 == nil {
-				return mTop, mRight, mBot, mLeft, errors.Errorf("pdfcpu: unknown named margin %s", mName)
+				return mTop, mRight, mBot, mLeft, fmt.Errorf("unknown named margin %s", mName)
 			}
 			m.mergeIn(m0)
 		}
@@ -331,7 +332,9 @@ func (rbg *RadioButtonGroup) renderButtonLabels(p *model.Page, pageNr int, fonts
 		if rbg.hor {
 			td.VAlign = types.AlignMiddle
 		}
-		model.WriteColumn(rbg.pdf.XRefTable, p.Buf, p.MediaBox, nil, td, 0)
+		if _, err := model.WriteColumn(rbg.pdf.XRefTable, p.Buf, p.MediaBox, nil, td, 0); err != nil {
+			return fmt.Errorf("radio button label %d: %w", i+1, err)
+		}
 	}
 
 	return nil
@@ -951,7 +954,10 @@ func (rbg *RadioButtonGroup) prepLabel(p *model.Page, pageNr int, fonts model.Fo
 		td.ShowBackground, td.ShowTextBB, td.BackgroundCol = true, true, *l.BgCol
 	}
 
-	bb := model.WriteMultiLine(rbg.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	bb, err := model.WriteMultiLine(rbg.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	if err != nil {
+		return fmt.Errorf("radio button group label: %w", err)
+	}
 	l.height = bb.Height()
 	if bb.Width() > w {
 		w = bb.Width()
@@ -975,7 +981,9 @@ func (rbg *RadioButtonGroup) prepForRender(p *model.Page, pageNr int, fonts mode
 		return err
 	}
 
-	rbg.Buttons.calcLabelWidths(rbg.hor)
+	if err := rbg.Buttons.calcLabelWidths(rbg.hor); err != nil {
+		return err
+	}
 
 	mTop, mRight, mBottom, mLeft, err := rbg.prepareMargin()
 	if err != nil {
@@ -993,7 +1001,9 @@ func (rbg *RadioButtonGroup) prepForRender(p *model.Page, pageNr int, fonts mode
 
 func (rbg *RadioButtonGroup) prepareDict(p *model.Page, pageNr int, fonts model.FontMap) (*types.IndirectRef, types.Array, error) {
 
-	rbg.renderButtonLabels(p, pageNr, fonts)
+	if err := rbg.renderButtonLabels(p, pageNr, fonts); err != nil {
+		return nil, nil, err
+	}
 
 	id, err := types.EscapedUTF16String(rbg.ID)
 	if err != nil {
@@ -1068,7 +1078,9 @@ func (rbg *RadioButtonGroup) doRender(p *model.Page, pageNr int, fonts model.Fon
 	}
 
 	if rbg.Label != nil {
-		model.WriteColumn(rbg.pdf.XRefTable, p.Buf, p.MediaBox, nil, *rbg.Label.td, 0)
+		if _, err := model.WriteColumn(rbg.pdf.XRefTable, p.Buf, p.MediaBox, nil, *rbg.Label.td, 0); err != nil {
+			return fmt.Errorf("radio button group label: %w", err)
+		}
 	}
 
 	if rbg.Debug || rbg.pdf.Debug {

@@ -19,6 +19,7 @@ package types
 // Anchor represents symbolic positions within a rectangular region.
 type Anchor int
 
+// String returns the string value of a.
 func (a Anchor) String() string {
 
 	switch a {

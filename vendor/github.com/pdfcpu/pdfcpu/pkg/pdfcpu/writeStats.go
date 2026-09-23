@@ -17,6 +17,7 @@ limitations under the License.
 package pdfcpu
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,7 +26,6 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 func logWriteStats(ctx *model.Context) {
@@ -229,36 +229,48 @@ func statsLine(ctx *model.Context) *string {
 	return &line
 }
 
-// AppendStatsFile appends a stats line for this xRefTable to the configured csv file name.
-func AppendStatsFile(ctx *model.Context) error {
+type statsAppendFile interface {
+	WriteString(string) (int, error)
+	Close() error
+}
 
+type openStatsAppendFile func(string, int, os.FileMode) (statsAppendFile, error)
+
+func appendStatsFile(ctx *model.Context, openFile openStatsAppendFile) (err error) {
 	fileName := ctx.StatsFileName
 
 	// if file does not exist, create file
-	file, err := os.OpenFile(fileName, os.O_APPEND|os.O_WRONLY, 0600)
+	file, err := openFile(fileName, os.O_APPEND|os.O_WRONLY, 0600)
+	created := false
 	if err != nil {
-
 		if os.IsExist(err) {
-			return errors.Errorf("can't open %s\n%s", fileName, err)
+			return fmt.Errorf("can't open %s: %w", fileName, err)
 		}
 
-		file, err = os.OpenFile(fileName, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+		file, err = openFile(fileName, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
 		if err != nil {
-			return errors.Errorf("can't create %s\n%s", fileName, err)
+			return fmt.Errorf("can't create %s: %w", fileName, err)
 		}
+		created = true
+	}
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
 
-		_, err = file.WriteString(*statsHeadLine())
-		if err != nil {
+	if created {
+		if _, err = file.WriteString(*statsHeadLine()); err != nil {
 			return err
 		}
-
 	}
-
-	defer func() {
-		file.Close()
-	}()
 
 	_, err = file.WriteString(*statsLine(ctx))
 
 	return err
+}
+
+// AppendStatsFile appends a stats line for this xRefTable to the configured csv file name.
+func AppendStatsFile(ctx *model.Context) error {
+	return appendStatsFile(ctx, func(name string, flag int, perm os.FileMode) (statsAppendFile, error) {
+		return os.OpenFile(name, flag, perm)
+	})
 }

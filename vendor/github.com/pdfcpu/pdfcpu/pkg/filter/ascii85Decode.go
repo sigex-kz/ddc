@@ -19,9 +19,8 @@ package filter
 import (
 	"bytes"
 	"encoding/ascii85"
+	"errors"
 	"io"
-
-	"github.com/pkg/errors"
 )
 
 type ascii85Decode struct {
@@ -51,8 +50,8 @@ func (f ascii85Decode) Decode(r io.Reader) (io.Reader, error) {
 	return f.DecodeLength(r, -1)
 }
 
+// DecodeLength implements decoding for an ASCII85Decode filter with a maximum output length.
 func (f ascii85Decode) DecodeLength(r io.Reader, maxLen int64) (io.Reader, error) {
-
 	bb, err := getReaderBytes(r)
 	if err != nil {
 		return nil, err
@@ -65,7 +64,7 @@ func (f ascii85Decode) DecodeLength(r io.Reader, maxLen int64) (io.Reader, error
 	bb = bytes.TrimRight(bb, "\r\n")
 
 	if !bytes.HasSuffix(bb, []byte(eodASCII85)) {
-		return nil, errors.New("pdfcpu: Decode: missing eod marker")
+		return nil, errors.New("ASCII85 decode: missing eod marker")
 	}
 
 	// Strip eod sequence: "~>"
@@ -73,16 +72,10 @@ func (f ascii85Decode) DecodeLength(r io.Reader, maxLen int64) (io.Reader, error
 
 	decoder := ascii85.NewDecoder(bytes.NewReader(bb))
 
-	var b2 bytes.Buffer
-	if maxLen < 0 {
-		if _, err := io.Copy(&b2, decoder); err != nil {
-			return nil, err
-		}
-	} else {
-		if _, err := io.CopyN(&b2, decoder, maxLen); err != nil {
-			return nil, err
-		}
+	b2, err := f.copyDecoded(decoder, maxLen)
+	if err != nil {
+		return nil, err
 	}
 
-	return &b2, nil
+	return b2, nil
 }

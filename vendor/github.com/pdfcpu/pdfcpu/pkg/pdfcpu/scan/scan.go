@@ -64,6 +64,7 @@ func Lines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	return 0, nil, nil
 }
 
+// LinesSingleEOL returns advance and token for data.
 func LinesSingleEOL(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if atEOF && len(data) == 0 {
 		return 0, nil, nil

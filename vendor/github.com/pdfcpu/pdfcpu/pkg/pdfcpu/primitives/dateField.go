@@ -18,15 +18,14 @@ package primitives
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 
-	"github.com/pdfcpu/pdfcpu/pkg/font"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/format"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 // Note: Mac Preview does not support validating date fields.
@@ -61,16 +60,17 @@ type DateField struct {
 	Hide            bool
 }
 
+// SetFontID sets font ID.
 func (df *DateField) SetFontID(s string) {
 	df.fontID = s
 }
 
 func (df *DateField) validateID() error {
 	if df.ID == "" {
-		return errors.New("pdfcpu: missing field id")
+		return errors.New("missing field id")
 	}
 	if df.pdf.DuplicateField(df.ID) {
-		return errors.Errorf("pdfcpu: duplicate form field: %s", df.ID)
+		return fmt.Errorf("duplicate form field: %s", df.ID)
 	}
 	df.pdf.FieldIDs[df.ID] = true
 	return nil
@@ -78,7 +78,7 @@ func (df *DateField) validateID() error {
 
 func (df *DateField) validatePosition() error {
 	if df.Position[0] < 0 || df.Position[1] < 0 {
-		return errors.Errorf("pdfcpu: field: %s pos value < 0", df.ID)
+		return fmt.Errorf("field: %s pos value < 0", df.ID)
 	}
 	df.x, df.y = df.Position[0], df.Position[1]
 	return nil
@@ -86,7 +86,7 @@ func (df *DateField) validatePosition() error {
 
 func (df *DateField) validateWidth() error {
 	if df.Width <= 0 {
-		return errors.Errorf("pdfcpu: field: %s width <= 0", df.ID)
+		return fmt.Errorf("field: %s width <= 0", df.ID)
 	}
 	return nil
 }
@@ -171,7 +171,7 @@ func (df *DateField) validateDefault() error {
 	}
 	if df.dateFormat != nil {
 		if err := df.dateFormat.validate(df.Default); err != nil {
-			return errors.Errorf("pdfcpu: field: %s date format failure, \"%s\" incompatible with  \"%s\"", df.ID, df.Default, df.dateFormat.Ext)
+			return fmt.Errorf("field: %s date format failure, \"%s\" incompatible with  \"%s\"", df.ID, df.Default, df.dateFormat.Ext)
 		}
 		return nil
 	}
@@ -189,7 +189,7 @@ func (df *DateField) validateValue() error {
 	}
 	if df.dateFormat != nil {
 		if err := df.dateFormat.validate(df.Value); err != nil {
-			return errors.Errorf("pdfcpu: field: %s date format failure, \"%s\" incompatible with  \"%s\"", df.ID, df.Value, df.dateFormat.Ext)
+			return fmt.Errorf("field: %s date format failure, \"%s\" incompatible with  \"%s\"", df.ID, df.Value, df.dateFormat.Ext)
 		}
 		return nil
 	}
@@ -203,7 +203,7 @@ func (df *DateField) validateValue() error {
 
 func (df *DateField) validateTab() error {
 	if df.Tab < 0 {
-		return errors.Errorf("pdfcpu: field: %s negative tab value", df.ID)
+		return fmt.Errorf("field: %s negative tab value", df.ID)
 	}
 	if df.Tab == 0 {
 		return nil
@@ -213,7 +213,7 @@ func (df *DateField) validateTab() error {
 		page.Tabs = types.IntSet{}
 	} else {
 		if page.Tabs[df.Tab] {
-			return errors.Errorf("pdfcpu: field: %s duplicate tab value %d", df.ID, df.Tab)
+			return fmt.Errorf("field: %s duplicate tab value %d", df.ID, df.Tab)
 		}
 	}
 	page.Tabs[df.Tab] = true
@@ -324,7 +324,7 @@ func (df *DateField) calcMargin() (float64, float64, float64, float64, error) {
 			mName := m.Name[1:]
 			m0 := df.margin(mName)
 			if m0 == nil {
-				return mTop, mRight, mBottom, mLeft, errors.Errorf("pdfcpu: unknown named margin %s", mName)
+				return mTop, mRight, mBottom, mLeft, fmt.Errorf("unknown named margin %s", mName)
 			}
 			m.mergeIn(m0)
 		}
@@ -428,26 +428,31 @@ func (df *DateField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 	}
 
 	f := df.Font
-	if float64(f.Size) > h {
-		f.Size = font.SizeForLineHeight(f.Name, h)
+	if f.Size > h {
+		size, err := fontSizeForLineHeight(f.Name, h)
+		if err != nil {
+			return nil, fmt.Errorf("date field text: %w", err)
+		}
+		f.Size = size
 	}
 
-	lineBB := model.CalcBoundingBox(v, 0, 0, f.Name, f.Size)
-	s := model.PrepBytes(xRefTable, v, f.Name, true, false, f.FillFont)
-	x := 2 * boWidth
-	if x == 0 {
-		x = 2
+	lineBB, err := model.CalcBoundingBoxFloat(v, 0, 0, f.Name, f.Size)
+	if err != nil {
+		return nil, fmt.Errorf("date field text: %w", err)
 	}
-	switch df.HorAlign {
-	case types.AlignCenter:
-		x = w/2 - lineBB.Width()/2
-	case types.AlignRight:
-		x = w - lineBB.Width() - 2
+	s, err := model.PrepBytes(xRefTable, v, f.Name, true, false, f.FillFont)
+	if err != nil {
+		return nil, fmt.Errorf("date field text: %w", err)
 	}
+	x := alignedFieldTextX(df.HorAlign, w, lineBB.Width(), boWidth)
 
-	y := (df.BoundingBox.Height()-font.LineHeight(f.Name, f.Size))/2 + font.Descent(f.Name, f.Size)
+	lineHeight, descent, err := fontLineMetrics(f.Name, f.Size)
+	if err != nil {
+		return nil, fmt.Errorf("date field text: %w", err)
+	}
+	y := (df.BoundingBox.Height()-lineHeight)/2 + descent
 
-	fmt.Fprintf(buf, "BT /%s %d Tf ", df.fontID, f.Size)
+	fmt.Fprintf(buf, "BT /%s %s Tf ", df.fontID, formatFontSize(f.Size))
 	fmt.Fprintf(buf, "%.2f %.2f %.2f RG %.2f %.2f %.2f rg %.2f %.2f Td (%s) Tj ET ",
 		f.col.R, f.col.G, f.col.B,
 		f.col.R, f.col.G, f.col.B, x, y, s)
@@ -667,7 +672,7 @@ func (df *DateField) prepareDict(fonts model.FontMap) (types.Dict, error) {
 	}
 	df.fontID = fontID
 
-	da := fmt.Sprintf("/%s %d Tf %.2f %.2f %.2f rg", fontID, f.Size, fCol.R, fCol.G, fCol.B)
+	da := fmt.Sprintf("/%s %s Tf %.2f %.2f %.2f rg", fontID, formatFontSize(f.Size), fCol.R, fCol.G, fCol.B)
 	// Note: Mac Preview does not honour inherited "DA"
 	d["DA"] = types.StringLiteral(da)
 
@@ -750,7 +755,10 @@ func (df *DateField) prepLabel(p *model.Page, pageNr int, fonts model.FontMap) e
 		td.ShowBackground, td.ShowTextBB, td.BackgroundCol = true, true, *l.BgCol
 	}
 
-	bb := model.WriteMultiLine(df.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	bb, err := model.WriteMultiLine(df.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	if err != nil {
+		return fmt.Errorf("date field label: %w", err)
+	}
 	l.height = bb.Height()
 	if bb.Width() > w {
 		w = bb.Width()
@@ -792,7 +800,7 @@ func (df *DateField) prepForRender(p *model.Page, pageNr int, fonts model.FontMa
 		}
 	}
 
-	h := float64(df.Font.Size)*1.2 + 2*float64(boWidth)
+	h := df.Font.Size*1.2 + 2*float64(boWidth)
 
 	df.BoundingBox = types.RectForWidthAndHeight(x, y, df.Width, h)
 
@@ -814,7 +822,9 @@ func (df *DateField) doRender(p *model.Page, fonts model.FontMap) error {
 	}
 
 	if df.Label != nil {
-		model.WriteColumn(df.pdf.XRefTable, p.Buf, p.MediaBox, nil, *df.Label.td, 0)
+		if _, err := model.WriteColumn(df.pdf.XRefTable, p.Buf, p.MediaBox, nil, *df.Label.td, 0); err != nil {
+			return fmt.Errorf("date field label: %w", err)
+		}
 	}
 
 	if df.Debug || df.pdf.Debug {
@@ -917,6 +927,7 @@ func refreshDateFieldAP(ctx *model.Context, d types.Dict, v string, da *string, 
 	return updateForm(ctx.XRefTable, bb, irN)
 }
 
+// EnsureDateFieldAP ensures date field ap.
 func EnsureDateFieldAP(ctx *model.Context, d types.Dict, v string, da *string, fonts map[string]types.IndirectRef) error {
 	apd := d.DictEntry("AP")
 	if apd == nil {

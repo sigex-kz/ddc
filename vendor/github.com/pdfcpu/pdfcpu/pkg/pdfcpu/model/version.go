@@ -17,15 +17,15 @@ limitations under the License.
 package model
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pkg/errors"
 )
 
 // VersionStr is the current pdfcpu version.
-var VersionStr = "v0.12.1 dev"
+var VersionStr = "v0.15.0 dev"
 
 // Version is a type for the internal representation of PDF versions.
 type Version int
@@ -67,6 +67,7 @@ func PDFVersion(versionStr string) (Version, error) {
 	return -1, errors.New(versionStr)
 }
 
+// PDFVersionRelaxed returns the PDF version for versionStr.
 func PDFVersionRelaxed(versionStr string) (Version, error) {
 	switch versionStr {
 	case "1.7.0":
@@ -75,7 +76,7 @@ func PDFVersionRelaxed(versionStr string) (Version, error) {
 	return -1, errors.New(versionStr)
 }
 
-// String returns a string representation for a given PDFVersion.
+// String returns the string value of v.
 func (v Version) String() string {
 	if v == V20 {
 		return "2.0"

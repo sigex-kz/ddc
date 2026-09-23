@@ -18,6 +18,7 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,17 +31,177 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/sanitize"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
-// ExtractImagesRaw returns []pdfcpu.Image containing io.Readers for images contained in selectedPages.
-// Beware of memory intensive returned slice.
+// UnsupportedResourceError aggregates resources skipped during an otherwise
+// successful extraction.
+type UnsupportedResourceError struct {
+	// Err contains the contextual errors for all skipped resources.
+	Err error
+}
+
+// Error returns the aggregated unsupported-resource error text.
+func (e *UnsupportedResourceError) Error() string {
+	if e == nil || e.Err == nil {
+		return pdfcpu.ErrUnsupportedResource.Error()
+	}
+	return e.Err.Error()
+}
+
+// Unwrap returns the aggregated unsupported-resource causes.
+func (e *UnsupportedResourceError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func unsupportedResourceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &UnsupportedResourceError{Err: err}
+}
+
+func skipUnsupportedResource(err error, conf *model.Configuration) bool {
+	return errors.Is(err, pdfcpu.ErrUnsupportedResource) &&
+		conf.UnsupportedResourcePolicy == model.UnsupportedResourceSkip
+}
+
+type extractionErrorWithoutSkipMarker struct {
+	message string
+	cause   error
+}
+
+func (e extractionErrorWithoutSkipMarker) Error() string {
+	return e.message
+}
+
+func (e extractionErrorWithoutSkipMarker) Unwrap() error {
+	return e.cause
+}
+
+func joinExtractionCleanupError(err, cleanupErr error) error {
+	if cleanupErr == nil {
+		return err
+	}
+	var unsupportedErr *UnsupportedResourceError
+	if errors.As(err, &unsupportedErr) {
+		cause := unsupportedErr.Err
+		if cause == nil {
+			cause = pdfcpu.ErrUnsupportedResource
+		}
+		err = extractionErrorWithoutSkipMarker{message: err.Error(), cause: cause}
+	}
+	return errors.Join(err, cleanupErr)
+}
+
+func digestImages(mm map[int]model.Image, singleImgPerPage bool, maxPageDigits int, digestImage func(model.Image, bool, int) error) (int, error) {
+	objNrs := make([]int, 0, len(mm))
+	for objNr := range mm {
+		objNrs = append(objNrs, objNr)
+	}
+	sort.Ints(objNrs)
+	for _, objNr := range objNrs {
+		img := mm[objNr]
+		if err := digestImage(img, singleImgPerPage, maxPageDigits); err != nil {
+			return img.ObjNr, err
+		}
+	}
+	return 0, nil
+}
+
+func sanitizeFilenamePart(s, fallback string) string {
+	return sanitize.PathOr(s, fallback)
+}
+
+// WriteImageToDisk returns a closure for writing an image to disk.
+func WriteImageToDisk(outDir, fileName string) func(model.Image, bool, int) error {
+	fileName = sanitizeFilenamePart(fileName, "file")
+
+	return func(img model.Image, singleImgPerPage bool, maxPageDigits int) error {
+		if img.Reader == nil {
+			return fmt.Errorf("image obj#%d: %w", img.ObjNr, ErrMissingImageReader)
+		}
+		s := "%s_%" + fmt.Sprintf("0%dd", maxPageDigits)
+		qual := img.Name
+		if img.Thumb {
+			qual = "thumb"
+		}
+		qual = sanitizeFilenamePart(qual, "image")
+		fileType := sanitizeFilenamePart(img.FileType, "img")
+		f := fmt.Sprintf(s+"_%s.%s", fileName, img.PageNr, qual, fileType)
+		outFile := filepath.Join(outDir, f)
+		logWritingTo(outFile)
+		if err := pdfcpu.WriteReader(outFile, img.Reader); err != nil {
+			if errors.Is(err, pdfcpu.ErrMissingReader) {
+				return fmt.Errorf("image obj#%d: %w", img.ObjNr, ErrMissingImageReader)
+			}
+			return err
+		}
+		return nil
+	}
+}
+
+// WriteFontToDisk returns a closure for writing a font file to disk.
+func WriteFontToDisk(outDir, fnBase string) func(pdfcpu.Font) error {
+	fnBase = sanitizeFilenamePart(fnBase, "file")
+
+	return func(font pdfcpu.Font) error {
+		fontName := sanitizeFilenamePart(font.Name, "fontName")
+		fontType := sanitizeFilenamePart(font.Type, "fontType")
+		outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.%s", fnBase, fontName, fontType))
+		logWritingTo(outFile)
+		return pdfcpu.WriteReader(outFile, font.Reader)
+	}
+}
+
+// WritePageToDisk returns a closure for writing a single page PDF to disk.
+func WritePageToDisk(outDir, fnBase string) func(io.Reader, int) error {
+	fnBase = sanitizeFilenamePart(fnBase, "file")
+
+	return func(rd io.Reader, pageNr int) error {
+		outFile := filepath.Join(outDir, fmt.Sprintf("%s_page_%d.pdf", fnBase, pageNr))
+		logWritingTo(outFile)
+		return pdfcpu.WriteReader(outFile, rd)
+	}
+}
+
+// WriteContentToDisk returns a closure for writing content to disk.
+func WriteContentToDisk(outDir, fnBase string) func(io.Reader, int) error {
+	fnBase = sanitizeFilenamePart(fnBase, "file")
+
+	return func(rd io.Reader, pageNr int) error {
+		outFile := filepath.Join(outDir, fmt.Sprintf("%s_Content_page_%d.txt", fnBase, pageNr))
+		logWritingTo(outFile)
+		return pdfcpu.WriteReader(outFile, rd)
+	}
+}
+
+// WriteMetadataToDisk returns a closure for writing metadata to disk.
+func WriteMetadataToDisk(outDir, fnBase string) func(pdfcpu.Metadata) error {
+	fnBase = sanitizeFilenamePart(fnBase, "file")
+
+	return func(md pdfcpu.Metadata) error {
+		parentType := sanitizeFilenamePart(md.ParentType, "metadata")
+		outFile := filepath.Join(outDir, fmt.Sprintf("%s_Metadata_%s_%d_%d.txt", fnBase, parentType, md.ParentObjNr, md.ObjNr))
+		logWritingTo(outFile)
+		return pdfcpu.WriteReader(outFile, md.Reader)
+	}
+}
+
+// ExtractImagesRaw returns image maps containing readers for images on selectedPages.
+// Note: may be memory intensive.
+// Unsupported resources are handled according to conf.UnsupportedResourcePolicy.
+// In skip mode err contains an *UnsupportedResourceError and images contains all
+// successfully extracted images.
 func ExtractImagesRaw(rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (images []map[int]model.Image, err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return nil, errors.New("pdfcpu: ExtractImages: missing rs")
+		return nil, ErrMissingPDFReadSeeker
 	}
 
 	if conf == nil {
@@ -50,34 +211,41 @@ func ExtractImagesRaw(rs io.ReadSeeker, selectedPages []string, conf *model.Conf
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("extract images: %w", err)
 	}
 
 	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("extract images: parse page selection: %w", err)
 	}
 
-	for i, v := range pages {
-		if !v {
-			continue
-		}
-		mm, err := pdfcpu.ExtractPageImages(ctx, i, false)
+	var skipErr error
+	for _, pageNr := range sortedPages(pages) {
+		mm, err := pdfcpu.ExtractPageImages(ctx, pageNr, false)
 		if err != nil {
-			return nil, err
+			if !skipUnsupportedResource(err, conf) {
+				return nil, fmt.Errorf("extract images: %w", err)
+			}
+			skipErr = errors.Join(skipErr, fmt.Errorf("extract images: %w", err))
 		}
 		images = append(images, mm)
 	}
 
-	return images, nil
+	return images, unsupportedResourceError(skipErr)
 }
 
 // ExtractImages extracts and digests embedded image resources from rs for selected pages.
+// Unsupported resources are handled according to conf.UnsupportedResourcePolicy.
+// In skip mode err contains an *UnsupportedResourceError after all supported
+// images have been digested.
 func ExtractImages(rs io.ReadSeeker, selectedPages []string, digestImage func(model.Image, bool, int) error, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: ExtractImages: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+	if digestImage == nil {
+		return fmt.Errorf("extract images: %w", ErrMissingDigestFunction)
 	}
 
 	if conf == nil {
@@ -87,82 +255,93 @@ func ExtractImages(rs io.ReadSeeker, selectedPages []string, digestImage func(mo
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract images: %w", err)
 	}
 
 	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract images: parse page selection: %w", err)
 	}
 
-	pageNrs := []int{}
-	for k, v := range pages {
-		if !v {
-			continue
+	sp := sortedPages(pages)
+	if len(sp) == 0 {
+		if log.CLIEnabled() {
+			log.CLI.Println("aborted: missing page numbers!")
 		}
-		pageNrs = append(pageNrs, k)
+		return nil
 	}
 
-	sort.Ints(pageNrs)
-	maxPageDigits := len(strconv.Itoa(pageNrs[len(pageNrs)-1]))
+	maxPageDigits := len(strconv.Itoa(sp[len(sp)-1]))
 
-	for _, i := range pageNrs {
-		mm, err := pdfcpu.ExtractPageImages(ctx, i, false)
+	var skipErr error
+	for i := range sp {
+		pageNr := sp[i]
+		mm, err := pdfcpu.ExtractPageImages(ctx, pageNr, false)
 		if err != nil {
-			return err
+			if !skipUnsupportedResource(err, conf) {
+				return fmt.Errorf("extract images: %w", err)
+			}
+			skipErr = errors.Join(skipErr, fmt.Errorf("extract images: %w", err))
 		}
 		singleImgPerPage := len(mm) == 1
-		for _, img := range mm {
-			if err := digestImage(img, singleImgPerPage, maxPageDigits); err != nil {
-				return err
-			}
+		objNr, err := digestImages(mm, singleImgPerPage, maxPageDigits, digestImage)
+		if err != nil {
+			return fmt.Errorf("extract images: page %d image obj#%d: digest: %w", pageNr, objNr, err)
 		}
 	}
 
-	return nil
+	return unsupportedResourceError(skipErr)
 }
 
 // ExtractImagesFile dumps embedded image resources from inFile into outDir for selected pages.
-func ExtractImagesFile(inFile, outDir string, selectedPages []string, conf *model.Configuration) error {
+// Unsupported resources are handled according to conf.UnsupportedResourcePolicy.
+// In skip mode err contains an *UnsupportedResourceError after all supported
+// images have been written.
+func ExtractImagesFile(inFile, outDir string, selectedPages []string, conf *model.Configuration) (err error) {
+	if inFile == "" {
+		return ErrMissingPDFInput
+	}
+
 	f, err := os.Open(inFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract images: open input %s: %w", inFile, err)
 	}
-	defer f.Close()
+	defer func() {
+		err = joinExtractionCleanupError(err, closeFile(f, "extract images: close input"))
+	}()
 
 	if log.CLIEnabled() {
 		log.CLI.Printf("extracting images from %s into %s/ ...\n", inFile, outDir)
 	}
 	fileName := strings.TrimSuffix(filepath.Base(inFile), ".pdf")
 
-	return ExtractImages(f, selectedPages, pdfcpu.WriteImageToDisk(outDir, fileName), conf)
-}
-
-func writeFonts(ff []pdfcpu.Font, outDir, fileName string) error {
-	for _, f := range ff {
-		outFile := filepath.Join(outDir, fmt.Sprintf("%s_%s.%s", fileName, f.Name, f.Type))
-		logWritingTo(outFile)
-		w, err := os.Create(outFile)
-		if err != nil {
-			return err
-		}
-		if _, err = io.Copy(w, f); err != nil {
-			return err
-		}
-		if err := w.Close(); err != nil {
-			return err
-		}
+	if err := ExtractImages(f, selectedPages, WriteImageToDisk(outDir, fileName), conf); err != nil {
+		return fmt.Errorf("extract images %s: %w", inFile, err)
 	}
-
 	return nil
 }
 
-// ExtractFonts dumps embedded fontfiles from rs into outDir for selected pages.
-func ExtractFonts(rs io.ReadSeeker, outDir, fileName string, selectedPages []string, conf *model.Configuration) (err error) {
+func writeFonts(ff []pdfcpu.Font, digestFont func(pdfcpu.Font) error) error {
+	for _, f := range ff {
+		if err := digestFont(f); err != nil {
+			return fmt.Errorf("font %q obj#%d: digest: %w", f.Name, f.ObjNr, err)
+		}
+	}
+	return nil
+}
+
+// ExtractFonts retrieves and digests embedded fontfiles from rs for selected pages.
+// Unsupported resources are handled according to conf.UnsupportedResourcePolicy.
+// In skip mode err contains an *UnsupportedResourceError after all supported
+// fonts have been digested.
+func ExtractFonts(rs io.ReadSeeker, selectedPages []string, digestFont func(pdfcpu.Font) error, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: ExtractFonts: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+	if digestFont == nil {
+		return fmt.Errorf("extract fonts: %w", ErrMissingDigestFunction)
 	}
 
 	if conf == nil {
@@ -172,89 +351,101 @@ func ExtractFonts(rs io.ReadSeeker, outDir, fileName string, selectedPages []str
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract fonts: %w", err)
 	}
 
 	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract fonts: parse page selection: %w", err)
 	}
 
-	fileName = strings.TrimSuffix(filepath.Base(fileName), ".pdf")
-
 	objNrs, skipped := types.IntSet{}, types.IntSet{}
+	var skipErr error
 
-	for i, v := range pages {
-		if !v {
-			continue
-		}
-		ff, err := pdfcpu.ExtractPageFonts(ctx, i, objNrs, skipped)
+	for _, pageNr := range sortedPages(pages) {
+		ff, err := pdfcpu.ExtractPageFonts(ctx, pageNr, objNrs, skipped)
 		if err != nil {
-			return err
+			if !skipUnsupportedResource(err, conf) {
+				return fmt.Errorf("extract fonts: %w", err)
+			}
+			skipErr = errors.Join(skipErr, fmt.Errorf("extract fonts: %w", err))
 		}
-		if err := writeFonts(ff, outDir, fileName); err != nil {
-			return err
+
+		if err := writeFonts(ff, digestFont); err != nil {
+			return fmt.Errorf("extract fonts: page %d: %w", pageNr, err)
 		}
 	}
 
 	ff, err := pdfcpu.ExtractFormFonts(ctx)
 	if err != nil {
-		return err
+		if !skipUnsupportedResource(err, conf) {
+			return fmt.Errorf("extract fonts: %w", err)
+		}
+		skipErr = errors.Join(skipErr, fmt.Errorf("extract fonts: %w", err))
 	}
 
-	return writeFonts(ff, outDir, fileName)
+	if err := writeFonts(ff, digestFont); err != nil {
+		return fmt.Errorf("extract fonts: form: %w", err)
+	}
+	return unsupportedResourceError(skipErr)
 }
 
-// ExtractFontsFile dumps embedded fontfiles from inFile into outDir for selected pages.
-func ExtractFontsFile(inFile, outDir string, selectedPages []string, conf *model.Configuration) error {
+// ExtractFontsFile writes embedded fontfiles from inFile into outDir for selected pages.
+// Unsupported resources are handled according to conf.UnsupportedResourcePolicy.
+// In skip mode err contains an *UnsupportedResourceError after all supported
+// fonts have been written.
+func ExtractFontsFile(inFile, outDir string, selectedPages []string, conf *model.Configuration) (err error) {
+	if inFile == "" {
+		return ErrMissingPDFInput
+	}
+
 	f, err := os.Open(inFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract fonts: open input %s: %w", inFile, err)
 	}
-	defer f.Close()
+	defer func() {
+		err = joinExtractionCleanupError(err, closeFile(f, "extract fonts: close input"))
+	}()
 
 	if log.CLIEnabled() {
 		log.CLI.Printf("extracting fonts from %s into %s/ ...\n", inFile, outDir)
 	}
 
-	return ExtractFonts(f, outDir, filepath.Base(inFile), selectedPages, conf)
-}
-
-// WritePage consumes an io.Reader containing some PDF bytes and writes to outDir/fileName.
-func WritePage(r io.Reader, outDir, fileName string, pageNr int) error {
-	outFile := filepath.Join(outDir, fmt.Sprintf("%s_page_%d.pdf", fileName, pageNr))
-	logWritingTo(outFile)
-	w, err := os.Create(outFile)
-	if err != nil {
-		return err
+	fnBase := strings.TrimSuffix(filepath.Base(inFile), ".pdf")
+	if err := ExtractFonts(f, selectedPages, WriteFontToDisk(outDir, fnBase), conf); err != nil {
+		return fmt.Errorf("extract fonts %s: %w", inFile, err)
 	}
-	if _, err = io.Copy(w, r); err != nil {
-		return err
-	}
-	return w.Close()
+	return nil
 }
 
 // ExtractPage extracts the page with pageNr out of ctx into an io.Reader.
 func ExtractPage(ctx *model.Context, pageNr int) (io.Reader, error) {
+	if ctx == nil {
+		return nil, ErrMissingPDFContext
+	}
+
 	ctxNew, err := pdfcpu.ExtractPages(ctx, []int{pageNr}, false)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("extract page %d: %w", pageNr, err)
 	}
 
 	var b bytes.Buffer
 	if err := WriteContext(ctxNew, &b); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("extract page %d: write output: %w", pageNr, err)
 	}
 
 	return &b, nil
 }
 
-// ExtractPages generates single page PDF files from rs in outDir for selected pages.
-func ExtractPages(rs io.ReadSeeker, outDir, fileName string, selectedPages []string, conf *model.Configuration) (err error) {
+// ExtractPages retrieves and digests single page PDF files from rs for selected pages.
+func ExtractPages(rs io.ReadSeeker, selectedPages []string, digestPage func(io.Reader, int) error, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: ExtractPages: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+	if digestPage == nil {
+		return fmt.Errorf("extract pages: %w", ErrMissingDigestFunction)
 	}
 
 	if conf == nil {
@@ -264,12 +455,12 @@ func ExtractPages(rs io.ReadSeeker, outDir, fileName string, selectedPages []str
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract pages: %w", err)
 	}
 
 	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract pages: parse page selection: %w", err)
 	}
 
 	if len(pages) == 0 {
@@ -279,15 +470,20 @@ func ExtractPages(rs io.ReadSeeker, outDir, fileName string, selectedPages []str
 		return nil
 	}
 
-	fileName = strings.TrimSuffix(filepath.Base(fileName), ".pdf")
+	sp := sortedPages(pages)
 
-	for _, i := range sortedPages(pages) {
-		r, err := ExtractPage(ctx, i)
+	for i := range sp {
+		pageNr := sp[i]
+		rd, err := ExtractPage(ctx, pageNr)
 		if err != nil {
-			return err
+			return fmt.Errorf("extract pages: %w", err)
 		}
-		if err := WritePage(r, outDir, fileName, i); err != nil {
-			return err
+		if rd == nil {
+			continue
+		}
+
+		if err := digestPage(rd, pageNr); err != nil {
+			return fmt.Errorf("extract pages: page %d: digest: %w", pageNr, err)
 		}
 	}
 
@@ -295,26 +491,39 @@ func ExtractPages(rs io.ReadSeeker, outDir, fileName string, selectedPages []str
 }
 
 // ExtractPagesFile generates single page PDF files from inFile in outDir for selected pages.
-func ExtractPagesFile(inFile, outDir string, selectedPages []string, conf *model.Configuration) error {
+func ExtractPagesFile(inFile, outDir string, selectedPages []string, conf *model.Configuration) (err error) {
+	if inFile == "" {
+		return ErrMissingPDFInput
+	}
+
 	f, err := os.Open(inFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract pages: open input %s: %w", inFile, err)
 	}
-	defer f.Close()
+	defer func() {
+		err = errors.Join(err, closeFile(f, "extract pages: close input"))
+	}()
 
 	if log.CLIEnabled() {
 		log.CLI.Printf("extracting pages from %s into %s/ ...\n", inFile, outDir)
 	}
 
-	return ExtractPages(f, outDir, filepath.Base(inFile), selectedPages, conf)
+	fnBase := strings.TrimSuffix(filepath.Base(inFile), ".pdf")
+	if err := ExtractPages(f, selectedPages, WritePageToDisk(outDir, fnBase), conf); err != nil {
+		return fmt.Errorf("extract pages %s: %w", inFile, err)
+	}
+	return nil
 }
 
-// ExtractContent dumps "PDF source" files from rs into outDir for selected pages.
-func ExtractContent(rs io.ReadSeeker, outDir, fileName string, selectedPages []string, conf *model.Configuration) (err error) {
+// ExtractContent retrieves and digests PDF sources from rs for selected pages.
+func ExtractContent(rs io.ReadSeeker, selectedPages []string, digestContent func(io.Reader, int) error, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: ExtractContent: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+	if digestContent == nil {
+		return fmt.Errorf("extract content: %w", ErrMissingDigestFunction)
 	}
 
 	if conf == nil {
@@ -324,42 +533,25 @@ func ExtractContent(rs io.ReadSeeker, outDir, fileName string, selectedPages []s
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract content: %w", err)
 	}
 
 	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract content: parse page selection: %w", err)
 	}
 
-	fileName = strings.TrimSuffix(filepath.Base(fileName), ".pdf")
-
-	for p, v := range pages {
-		if !v {
+	for _, pageNr := range sortedPages(pages) {
+		rd, err := pdfcpu.ExtractPageContent(ctx, pageNr)
+		if err != nil {
+			return fmt.Errorf("extract content: %w", err)
+		}
+		if rd == nil {
 			continue
 		}
 
-		r, err := pdfcpu.ExtractPageContent(ctx, p)
-		if err != nil {
-			return err
-		}
-		if r == nil {
-			continue
-		}
-
-		outFile := filepath.Join(outDir, fmt.Sprintf("%s_Content_page_%d.txt", fileName, p))
-		logWritingTo(outFile)
-		f, err := os.Create(outFile)
-		if err != nil {
-			return err
-		}
-
-		if _, err = io.Copy(f, r); err != nil {
-			return err
-		}
-
-		if err := f.Close(); err != nil {
-			return err
+		if err := digestContent(rd, pageNr); err != nil {
+			return fmt.Errorf("extract content: page %d: digest content: %w", pageNr, err)
 		}
 	}
 
@@ -367,26 +559,42 @@ func ExtractContent(rs io.ReadSeeker, outDir, fileName string, selectedPages []s
 }
 
 // ExtractContentFile dumps "PDF source" files from inFile into outDir for selected pages.
-func ExtractContentFile(inFile, outDir string, selectedPages []string, conf *model.Configuration) error {
+func ExtractContentFile(inFile, outDir string, selectedPages []string, conf *model.Configuration) (err error) {
+	if inFile == "" {
+		return ErrMissingPDFInput
+	}
+
 	f, err := os.Open(inFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract content: open input %s: %w", inFile, err)
 	}
-	defer f.Close()
+	defer func() {
+		err = errors.Join(err, closeFile(f, "extract content: close input"))
+	}()
 
 	if log.CLIEnabled() {
 		log.CLI.Printf("extracting content from %s into %s/ ...\n", inFile, outDir)
 	}
 
-	return ExtractContent(f, outDir, inFile, selectedPages, conf)
+	fnBase := strings.TrimSuffix(filepath.Base(inFile), ".pdf")
+	if err := ExtractContent(f, selectedPages, WriteContentToDisk(outDir, fnBase), conf); err != nil {
+		return fmt.Errorf("extract content %s: %w", inFile, err)
+	}
+	return nil
 }
 
-// ExtractMetadata dumps all metadata dict entries for rs into outDir.
-func ExtractMetadata(rs io.ReadSeeker, outDir, fileName string, conf *model.Configuration) (err error) {
+// ExtractMetadata retrieves and digests all metadata dict entries for rs.
+// Unsupported resources are handled according to conf.UnsupportedResourcePolicy.
+// In skip mode err contains an *UnsupportedResourceError after all supported
+// metadata has been digested.
+func ExtractMetadata(rs io.ReadSeeker, digestMetadata func(pdfcpu.Metadata) error, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: ExtractMetadata: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+	if digestMetadata == nil {
+		return fmt.Errorf("extract metadata: %w", ErrMissingDigestFunction)
 	}
 
 	if conf == nil {
@@ -396,46 +604,52 @@ func ExtractMetadata(rs io.ReadSeeker, outDir, fileName string, conf *model.Conf
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract metadata: %w", err)
 	}
 
-	mm, err := pdfcpu.ExtractMetadata(ctx)
+	mdmd, err := pdfcpu.ExtractMetadata(ctx)
 	if err != nil {
-		return err
-	}
-
-	if len(mm) > 0 {
-		fileName = strings.TrimSuffix(filepath.Base(fileName), ".pdf")
-		for _, m := range mm {
-			outFile := filepath.Join(outDir, fmt.Sprintf("%s_Metadata_%s_%d_%d.txt", fileName, m.ParentType, m.ParentObjNr, m.ObjNr))
-			logWritingTo(outFile)
-			f, err := os.Create(outFile)
-			if err != nil {
-				return err
-			}
-			if _, err = io.Copy(f, m); err != nil {
-				return err
-			}
-			if err := f.Close(); err != nil {
-				return err
-			}
+		if !skipUnsupportedResource(err, conf) {
+			return fmt.Errorf("extract metadata: collect entries: %w", err)
 		}
 	}
 
+	for _, md := range mdmd {
+		if err := digestMetadata(md); err != nil {
+			return fmt.Errorf("extract metadata: parent obj#%d metadata obj#%d: digest: %w", md.ParentObjNr, md.ObjNr, err)
+		}
+	}
+
+	if err != nil {
+		return unsupportedResourceError(fmt.Errorf("extract metadata: collect entries: %w", err))
+	}
 	return nil
 }
 
 // ExtractMetadataFile dumps all metadata dict entries for inFile into outDir.
-func ExtractMetadataFile(inFile, outDir string, conf *model.Configuration) error {
+// Unsupported resources are handled according to conf.UnsupportedResourcePolicy.
+// In skip mode err contains an *UnsupportedResourceError after all supported
+// metadata has been written.
+func ExtractMetadataFile(inFile, outDir string, conf *model.Configuration) (err error) {
+	if inFile == "" {
+		return ErrMissingPDFInput
+	}
+
 	f, err := os.Open(inFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("extract metadata: open input %s: %w", inFile, err)
 	}
-	defer f.Close()
+	defer func() {
+		err = joinExtractionCleanupError(err, closeFile(f, "extract metadata: close input"))
+	}()
 
 	if log.CLIEnabled() {
 		log.CLI.Printf("extracting metadata from %s into %s/ ...\n", inFile, outDir)
 	}
 
-	return ExtractMetadata(f, outDir, filepath.Base(inFile), conf)
+	fileNameBase := strings.TrimSuffix(filepath.Base(inFile), ".pdf")
+	if err := ExtractMetadata(f, WriteMetadataToDisk(outDir, fileNameBase), conf); err != nil {
+		return fmt.Errorf("extract metadata %s: %w", inFile, err)
+	}
+	return nil
 }

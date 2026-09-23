@@ -22,6 +22,7 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 )
 
+// ShowMsg logs msg.
 func ShowMsg(msg string) {
 	s := "pdfcpu " + msg
 	if log.DebugEnabled() {
@@ -38,24 +39,29 @@ func ShowMsg(msg string) {
 	}
 }
 
+// ShowMsgTopic shows msg topic.
 func ShowMsgTopic(topic, msg string) {
 	msg = topic + ": " + msg
 	ShowMsg(msg)
 }
 
+// ShowRepaired shows repaired.
 func ShowRepaired(msg string) {
 	ShowMsgTopic("repaired", msg)
 }
 
+// ShowSkipped shows skipped.
 func ShowSkipped(msg string) {
 	ShowMsgTopic("skipped", msg)
 }
 
+// ShowDigestedSpecViolation shows digested spec violation.
 func ShowDigestedSpecViolation(msg string) {
 	ShowMsgTopic("digested", msg)
 }
 
+// ShowDigestedSpecViolationError shows digested spec violation error.
 func ShowDigestedSpecViolationError(xRefTable *XRefTable, err error) {
-	msg := fmt.Sprintf("spec violation around obj#(%d): %v\n", xRefTable.CurObj, err)
+	msg := fmt.Sprintf("spec violation around obj#(%d): %v", xRefTable.CurObj, err)
 	ShowMsgTopic("digested", msg)
 }

@@ -18,10 +18,10 @@ package primitives
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
-
 	"unicode/utf8"
 
 	"github.com/pdfcpu/pdfcpu/pkg/font"
@@ -30,7 +30,6 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/format"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 type TextField struct {
@@ -65,16 +64,17 @@ type TextField struct {
 	Hide            bool
 }
 
+// SetFontID sets font ID.
 func (tf *TextField) SetFontID(s string) {
 	tf.fontID = s
 }
 
 func (tf *TextField) validateID() error {
 	if tf.ID == "" {
-		return errors.New("pdfcpu: missing field id")
+		return errors.New("missing field id")
 	}
 	if tf.pdf.DuplicateField(tf.ID) {
-		return errors.Errorf("pdfcpu: duplicate form field: %s", tf.ID)
+		return fmt.Errorf("duplicate form field: %s", tf.ID)
 	}
 	tf.pdf.FieldIDs[tf.ID] = true
 	return nil
@@ -82,7 +82,7 @@ func (tf *TextField) validateID() error {
 
 func (tf *TextField) validatePosition() error {
 	if tf.Position[0] < 0 || tf.Position[1] < 0 {
-		return errors.Errorf("pdfcpu: field: %s pos value < 0", tf.ID)
+		return fmt.Errorf("field: %s pos value < 0", tf.ID)
 	}
 	tf.x, tf.y = tf.Position[0], tf.Position[1]
 	return nil
@@ -90,14 +90,14 @@ func (tf *TextField) validatePosition() error {
 
 func (tf *TextField) validateWidth() error {
 	if tf.Width == 0 {
-		return errors.Errorf("pdfcpu: field: %s width == 0", tf.ID)
+		return fmt.Errorf("field: %s width == 0", tf.ID)
 	}
 	return nil
 }
 
 func (tf *TextField) validateHeight() error {
 	if tf.Height < 0 {
-		return errors.Errorf("pdfcpu: field: %s height < 0", tf.ID)
+		return fmt.Errorf("field: %s height < 0", tf.ID)
 	}
 	return nil
 }
@@ -166,7 +166,7 @@ func (tf *TextField) validateLabel() error {
 
 func (tf *TextField) validateTab() error {
 	if tf.Tab < 0 {
-		return errors.Errorf("pdfcpu: field: %s negative tab value", tf.ID)
+		return fmt.Errorf("field: %s negative tab value", tf.ID)
 	}
 	if tf.Tab == 0 {
 		return nil
@@ -176,7 +176,7 @@ func (tf *TextField) validateTab() error {
 		page.Tabs = types.IntSet{}
 	} else {
 		if page.Tabs[tf.Tab] {
-			return errors.Errorf("pdfcpu: field: %s duplicate tab value %d", tf.ID, tf.Tab)
+			return fmt.Errorf("field: %s duplicate tab value %d", tf.ID, tf.Tab)
 		}
 	}
 	page.Tabs[tf.Tab] = true
@@ -282,7 +282,7 @@ func (tf *TextField) calcMargin() (float64, float64, float64, float64, error) {
 			mName := m.Name[1:]
 			m0 := tf.margin(mName)
 			if m0 == nil {
-				return mTop, mRight, mBottom, mLeft, errors.Errorf("pdfcpu: unknown named margin %s", mName)
+				return mTop, mRight, mBottom, mLeft, fmt.Errorf("unknown named margin %s", mName)
 			}
 			m.mergeIn(m0)
 		}
@@ -369,39 +369,61 @@ func (tf *TextField) renderBackground(w io.Writer, bgCol, boCol *color.SimpleCol
 	}
 }
 
-func (tf *TextField) renderLines(xRefTable *model.XRefTable, boWidth, lh, w, y float64, lines []string, buf io.Writer) {
+func textFieldRunes(s string, rtl bool) []rune {
+	rr := []rune(s)
+	if rtl {
+		for i, j := 0, len(rr)-1; i < j; i, j = i+1, j-1 {
+			rr[i], rr[j] = rr[j], rr[i]
+		}
+	}
+	return rr
+}
+
+func (tf *TextField) renderCombLine(xRefTable *model.XRefTable, x, y float64, rr []rune, embed bool, buf io.Writer) error {
+	f := tf.Font
+	limit := min(len(rr), tf.MaxLen)
+	dx := tf.BoundingBox.Width() / float64(tf.MaxLen)
+	for j := range limit {
+		s, err := model.PrepBytes(xRefTable, string(rr[j]), f.Name, embed, false, f.FillFont)
+		if err != nil {
+			return fmt.Errorf("comb character %d: %w", j+1, err)
+		}
+		fmt.Fprintf(buf, "%.2f %.2f Td (%s) Tj ", x, y, s)
+		y = 0
+		x = dx
+	}
+	return nil
+}
+
+func (tf *TextField) renderLines(xRefTable *model.XRefTable, boWidth, lh, w, y float64, lines []string, buf io.Writer) error {
 	f := tf.Font
 	cjk := pdffont.CJK(f.Script, f.Lang)
 	for i := 0; i < len(lines); i++ {
 		s := lines[i]
-		lineBB := model.CalcBoundingBox(s, 0, 0, f.Name, f.Size)
-		s = model.PrepBytes(xRefTable, s, f.Name, !cjk, f.RTL(), f.FillFont)
-		x := 2 * boWidth
-		if x == 0 {
-			x = 2
+		lineBB, err := model.CalcBoundingBoxFloat(s, 0, 0, f.Name, f.Size)
+		if err != nil {
+			return fmt.Errorf("line %d: %w", i+1, err)
 		}
-		switch tf.HorAlign {
-		case types.AlignCenter:
-			x = w/2 - lineBB.Width()/2
-		case types.AlignRight:
-			x = w - lineBB.Width() - 2
+		rr := textFieldRunes(s, f.RTL())
+		if !(tf.Comb && tf.MaxLen > 0 && tf.HorAlign == types.AlignLeft) {
+			s, err = model.PrepBytes(xRefTable, s, f.Name, !cjk, f.RTL(), f.FillFont)
+			if err != nil {
+				return fmt.Errorf("line %d: %w", i+1, err)
+			}
 		}
+		x := alignedFieldTextX(tf.HorAlign, w, lineBB.Width(), boWidth)
 		fmt.Fprint(buf, "BT ")
 		if i == 0 {
-			fmt.Fprintf(buf, "/%s %d Tf %.2f %.2f %.2f RG %.2f %.2f %.2f rg ",
-				tf.fontID, f.Size,
+			fmt.Fprintf(buf, "/%s %s Tf %.2f %.2f %.2f RG %.2f %.2f %.2f rg ",
+				tf.fontID, formatFontSize(f.Size),
 				f.col.R, f.col.G, f.col.B,
 				f.col.R, f.col.G, f.col.B)
 		}
 
 		if tf.Comb && tf.MaxLen > 0 && tf.HorAlign == types.AlignLeft {
 			x = 0.5
-			dx := w / float64(tf.MaxLen)
-			y0 := y
-			for j := 0; j < len(s) && j < tf.MaxLen; j++ {
-				fmt.Fprintf(buf, "%.2f %.2f Td (%c) Tj ", x, y0, s[j])
-				y0 = 0
-				x = dx
+			if err := tf.renderCombLine(xRefTable, x, y, rr, !cjk, buf); err != nil {
+				return fmt.Errorf("line %d: %w", i+1, err)
 			}
 			fmt.Fprint(buf, "ET ")
 		} else {
@@ -410,6 +432,22 @@ func (tf *TextField) renderLines(xRefTable *model.XRefTable, boWidth, lh, w, y f
 
 		y -= lh
 	}
+	return nil
+}
+
+func textFieldLines(s, fontName string, fontSize float64, multiline bool, width float64) ([]string, error) {
+	if font.IsCoreFont(fontName) && utf8.ValidString(s) {
+		s = model.DecodeUTF8ToByte(s)
+	}
+	if multiline {
+		lines, err := model.WordWrapFloat(s, fontName, fontSize, width)
+		if err != nil {
+			return nil, err
+		}
+		return lines, nil
+	}
+	s = strings.ReplaceAll(s, "\\n", "\n")
+	return []string{strings.ReplaceAll(s, "\n", " ")}, nil
 }
 
 func (tf *TextField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
@@ -422,8 +460,12 @@ func (tf *TextField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 
 	f := tf.Font
 
-	if !tf.Multiline && float64(f.Size) > h {
-		f.Size = font.SizeForLineHeight(f.Name, h)
+	if !tf.Multiline && f.Size > h {
+		size, err := fontSizeForLineHeight(f.Name, h)
+		if err != nil {
+			return nil, fmt.Errorf("text field text: %w", err)
+		}
+		f.Size = size
 	}
 
 	s := tf.Value
@@ -431,22 +473,18 @@ func (tf *TextField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 		s = tf.Default
 	}
 
-	if font.IsCoreFont(f.Name) && utf8.ValidString(s) {
-		s = model.DecodeUTF8ToByte(s)
-	}
-
-	var lines []string
-	if tf.Multiline {
-		lines = model.WordWrap(s, f.Name, f.Size, w-2*boWidth)
-	} else {
-		ll := strings.ReplaceAll(s, "\\n", "\n")
-		lines = append(lines, strings.ReplaceAll(ll, "\n", " "))
+	lines, err := textFieldLines(s, f.Name, f.Size, tf.Multiline, w-2*boWidth)
+	if err != nil {
+		return nil, fmt.Errorf("text field text: %w", err)
 	}
 
 	fmt.Fprint(buf, "/Tx BMC ")
 
-	lh := font.LineHeight(f.Name, f.Size)
-	y := (tf.BoundingBox.Height()-lh)/2 + font.Descent(f.Name, f.Size)
+	lh, descent, err := fontLineMetrics(f.Name, f.Size)
+	if err != nil {
+		return nil, fmt.Errorf("text field text: %w", err)
+	}
+	y := (tf.BoundingBox.Height()-lh)/2 + descent
 	if tf.Multiline {
 		y = tf.BoundingBox.Height() - lh
 	}
@@ -455,7 +493,9 @@ func (tf *TextField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 		fmt.Fprintf(buf, "q 1 1 %.1f %.1f re W n ", w-2, h-2)
 	}
 
-	tf.renderLines(xRefTable, boWidth, lh, w, y, lines, buf)
+	if err := tf.renderLines(xRefTable, boWidth, lh, w, y, lines, buf); err != nil {
+		return nil, fmt.Errorf("text field text: %w", err)
+	}
 
 	if len(lines) > 0 {
 		fmt.Fprint(buf, "Q ")
@@ -471,7 +511,7 @@ func (tf *TextField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// unused
+// RefreshN.
 func (tf *TextField) RefreshN(xRefTable *model.XRefTable, indRef *types.IndirectRef) error {
 	bb, err := tf.renderN(xRefTable)
 	if err != nil {
@@ -641,7 +681,7 @@ func (tf *TextField) prepareDict(fonts model.FontMap) (types.Dict, error) {
 
 	if tf.Value != "" {
 		if tf.MaxLen > 0 && len(tf.Value) > tf.MaxLen {
-			return nil, errors.Errorf("pdfcpu: field overflow at %s, maxLen = %d", tf.ID, tf.MaxLen)
+			return nil, fmt.Errorf("field overflow at %s, maxLen = %d", tf.ID, tf.MaxLen)
 		}
 		s, err := types.EscapedUTF16String(tf.Value)
 		if err != nil {
@@ -674,7 +714,7 @@ func (tf *TextField) prepareDict(fonts model.FontMap) (types.Dict, error) {
 	}
 	tf.fontID = fontID
 
-	da := fmt.Sprintf("/%s %d Tf %.2f %.2f %.2f rg", fontID, f.Size, fCol.R, fCol.G, fCol.B)
+	da := fmt.Sprintf("/%s %s Tf %.2f %.2f %.2f rg", fontID, formatFontSize(f.Size), fCol.R, fCol.G, fCol.B)
 	// Note: Mac Preview does not honour inherited "DA"
 	d["DA"] = types.StringLiteral(da)
 
@@ -756,7 +796,10 @@ func (tf *TextField) prepLabel(p *model.Page, pageNr int, fonts model.FontMap) e
 		td.ShowBackground, td.ShowTextBB, td.BackgroundCol = true, true, *l.BgCol
 	}
 
-	bb := model.WriteMultiLine(tf.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	bb, err := model.WriteMultiLine(tf.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	if err != nil {
+		return fmt.Errorf("text field label: %w", err)
+	}
 	l.height = bb.Height()
 	if bb.Width() > w {
 		w = bb.Width()
@@ -798,11 +841,11 @@ func (tf *TextField) prepForRender(p *model.Page, pageNr int, fonts model.FontMa
 		}
 	}
 
-	h := float64(tf.Font.Size)*1.2 + 2*float64(boWidth)
+	h := tf.Font.Size*1.2 + 2*float64(boWidth)
 
 	if tf.Multiline {
 		if tf.Height == 0 {
-			return errors.Errorf("pdfcpu: field: %s height == 0", tf.ID)
+			return fmt.Errorf("field: %s height == 0", tf.ID)
 		}
 		h = tf.Height
 	}
@@ -838,7 +881,9 @@ func (tf *TextField) doRender(p *model.Page, fonts model.FontMap) error {
 	}
 
 	if tf.Label != nil {
-		model.WriteColumn(tf.pdf.XRefTable, p.Buf, p.MediaBox, nil, *tf.Label.td, 0)
+		if _, err := model.WriteColumn(tf.pdf.XRefTable, p.Buf, p.MediaBox, nil, *tf.Label.td, 0); err != nil {
+			return fmt.Errorf("text field label: %w", err)
+		}
 	}
 
 	if tf.Debug || tf.pdf.Debug {
@@ -902,6 +947,7 @@ func hasUTF(s string) bool {
 	return false
 }
 
+// NewTextField returns a new text field.
 func NewTextField(
 	ctx *model.Context,
 	d types.Dict,
@@ -1015,7 +1061,11 @@ func fontAttrs(ctx *model.Context, fd types.Dict, fontID, text string, fonts map
 			if err != nil {
 				return "", "", "", "", nil, err
 			}
-			if !font.SupportedFont(name) || (len(prefix) == 0 && hasUTF(text)) {
+			supported, err := font.SupportedFont(name)
+			if err != nil {
+				return "", "", "", "", nil, fmt.Errorf("font %s: load metrics: %w", name, err)
+			}
+			if !supported || (len(prefix) == 0 && hasUTF(text)) {
 				// create utf8 font * save as indRef
 				fontID, name, lang, script, fontIndRef, err = ensureUTF8FormFont(ctx, fonts)
 				if err != nil {
@@ -1031,6 +1081,7 @@ func fontAttrs(ctx *model.Context, fd types.Dict, fontID, text string, fonts map
 	return fontID, name, lang, script, fontIndRef, nil
 }
 
+// EnsureTextFieldAP ensures text field ap.
 func EnsureTextFieldAP(ctx *model.Context, d types.Dict, text string, multiLine, comb bool, maxLen int, da *string, fonts map[string]types.IndirectRef) error {
 	ap := d.DictEntry("AP")
 	if ap == nil {
@@ -1067,7 +1118,7 @@ func EnsureTextFieldAP(ctx *model.Context, d types.Dict, text string, multiLine,
 
 	s := locateDA(ctx, d, da)
 	if s == nil {
-		return errors.New("pdfcpu: textfield missing \"DA\"")
+		return errors.New("textfield missing \"DA\"")
 	}
 
 	fontID, f, err := fontFromDA(*s)
@@ -1096,8 +1147,12 @@ func EnsureTextFieldAP(ctx *model.Context, d types.Dict, text string, multiLine,
 	tf.Font = &f
 	tf.RTL = pdffont.RTL(lang)
 
-	if !font.SupportedFont(name) {
-		return errors.Errorf("pdfcpu: font unavailable: %s", name)
+	supported, err := font.SupportedFont(name)
+	if err != nil {
+		return fmt.Errorf("font %s: load metrics: %w", name, err)
+	}
+	if !supported {
+		return fmt.Errorf("font unavailable: %s", name)
 	}
 
 	bb, err := tf.renderN(ctx.XRefTable)

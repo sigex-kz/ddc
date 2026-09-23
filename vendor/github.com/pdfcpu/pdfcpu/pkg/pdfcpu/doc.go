@@ -44,7 +44,7 @@ The commands are:
 	resize        Scale selected pages
 	rotate        Rotate selected pages
 	selectedpages Print definition of the -pages flag
-	signatures    Remove, validate signatures
+	signatures    Remove signatures, validate integrity
 	split         Split up inFile by span or bookmark
 	stamp         Add, remove, update text, image or PDF stamps for selected pages
 	trim          Create trimmed version of selected pages

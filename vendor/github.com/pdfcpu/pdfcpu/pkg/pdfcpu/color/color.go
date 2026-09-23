@@ -18,12 +18,12 @@ package color
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 // Some popular colors.
@@ -39,17 +39,19 @@ var (
 	Yellow    = SimpleColor{.5, .5, 0}
 )
 
-var ErrInvalidColor = errors.New("pdfcpu: invalid color constant")
+var ErrInvalidColor = errors.New("invalid color constant")
 
 // SimpleColor is a simple rgb wrapper.
 type SimpleColor struct {
 	R, G, B float32 // intensities between 0 and 1.
 }
 
+// String returns the string value of sc.
 func (sc SimpleColor) String() string {
 	return fmt.Sprintf("r=%1.1f g=%1.1f b=%1.1f", sc.R, sc.G, sc.B)
 }
 
+// Array returns an array representation for sc.
 func (sc SimpleColor) Array() types.Array {
 	return types.NewNumberArray(float64(sc.R), float64(sc.G), float64(sc.B))
 }
@@ -91,11 +93,11 @@ func NewSimpleColorForArray(arr types.Array) SimpleColor {
 func NewSimpleColorForHexCode(hexCol string) (SimpleColor, error) {
 	var sc SimpleColor
 	if len(hexCol) != 7 || hexCol[0] != '#' {
-		return sc, errors.Errorf("pdfcpu: invalid hex color string: #FFFFFF, %s\n", hexCol)
+		return sc, fmt.Errorf("invalid hex color string: #FFFFFF, %s", hexCol)
 	}
 	b, err := hex.DecodeString(hexCol[1:])
 	if err != nil || len(b) != 3 {
-		return sc, errors.Errorf("pdfcpu: invalid hex color string: #FFFFFF, %s\n", hexCol)
+		return sc, fmt.Errorf("invalid hex color string: #FFFFFF, %s", hexCol)
 	}
 	return SimpleColor{float32(b[0]) / 255, float32(b[1]) / 255, float32(b[2]) / 255}, nil
 }
@@ -134,7 +136,7 @@ func ParseColor(s string) (SimpleColor, error) {
 
 	cs := strings.Split(s, " ")
 	if len(cs) != 1 && len(cs) != 3 {
-		return sc, errors.Errorf("pdfcpu: illegal color string: 3 intensities 0.0 <= i <= 1.0 or #FFFFFF, %s\n", s)
+		return sc, fmt.Errorf("illegal color string: 3 intensities 0.0 <= i <= 1.0 or #FFFFFF, %s", s)
 	}
 
 	if len(cs) == 1 {
@@ -147,28 +149,28 @@ func ParseColor(s string) (SimpleColor, error) {
 
 	r, err := strconv.ParseFloat(cs[0], 32)
 	if err != nil {
-		return sc, errors.Errorf("red must be a float value: %s\n", cs[0])
+		return sc, fmt.Errorf("red must be a float value: %s", cs[0])
 	}
 	if r < 0 || r > 1 {
-		return sc, errors.New("pdfcpu: red: a color value is an intensity between 0.0 and 1.0")
+		return sc, errors.New("red: a color value is an intensity between 0.0 and 1.0")
 	}
 	sc.R = float32(r)
 
 	g, err := strconv.ParseFloat(cs[1], 32)
 	if err != nil {
-		return sc, errors.Errorf("pdfcpu: green must be a float value: %s\n", cs[1])
+		return sc, fmt.Errorf("green must be a float value: %s", cs[1])
 	}
 	if g < 0 || g > 1 {
-		return sc, errors.New("pdfcpu: green: a color value is an intensity between 0.0 and 1.0")
+		return sc, errors.New("green: a color value is an intensity between 0.0 and 1.0")
 	}
 	sc.G = float32(g)
 
 	b, err := strconv.ParseFloat(cs[2], 32)
 	if err != nil {
-		return sc, errors.Errorf("pdfcpu: blue must be a float value: %s\n", cs[2])
+		return sc, fmt.Errorf("blue must be a float value: %s", cs[2])
 	}
 	if b < 0 || b > 1 {
-		return sc, errors.New("pdfcpu: blue: a color value is an intensity between 0.0 and 1.0")
+		return sc, errors.New("blue: a color value is an intensity between 0.0 and 1.0")
 	}
 	sc.B = float32(b)
 

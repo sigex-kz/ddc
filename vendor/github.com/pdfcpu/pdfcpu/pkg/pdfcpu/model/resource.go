@@ -81,6 +81,7 @@ func (fo FontObject) Encoding() string {
 	return encoding
 }
 
+// String returns the string value of fo.
 func (fo FontObject) String() string {
 	return fmt.Sprintf("%-10s %-30s %-10s %-20s %-8v %s\n",
 		fo.Prefix, fo.FontName,
@@ -158,6 +159,7 @@ func (prn PageResourceNames) HasContent() bool {
 	return false
 }
 
+// String returns the string value of prn.
 func (prn PageResourceNames) String() string {
 	sep := ", "
 	var ss []string

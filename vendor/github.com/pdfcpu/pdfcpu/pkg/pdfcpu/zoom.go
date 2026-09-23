@@ -18,7 +18,9 @@ package pdfcpu
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
@@ -27,37 +29,41 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/matrix"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 // ParseZoomConfig parses a Zoom command string into an internal structure.
 func ParseZoomConfig(s string, u types.DisplayUnit) (*model.Zoom, error) {
-
 	if s == "" {
-		return nil, errors.New("pdfcpu: missing zoom configuration string")
+		return nil, errors.New("missing zoom configuration string")
 	}
 
 	zoom := &model.Zoom{Unit: u}
 
-	ss := strings.Split(s, ",")
-
-	for _, s := range ss {
-
-		ss1 := strings.Split(s, ":")
-		if len(ss1) != 2 {
-			return nil, errors.New("pdfcpu: Invalid zoom configuration string. Please consult pdfcpu help zoom")
+	for i, item := range strings.Split(s, ",") {
+		parts := strings.SplitN(item, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf(`zoom configuration clause %d: missing ":" separator`, i+1)
 		}
 
-		paramPrefix := strings.TrimSpace(ss1[0])
-		paramValueStr := strings.TrimSpace(ss1[1])
+		paramPrefix := strings.TrimSpace(parts[0])
+		if paramPrefix == "" {
+			return nil, fmt.Errorf("zoom configuration clause %d: missing parameter name", i+1)
+		}
+		if strings.Contains(parts[1], ":") {
+			return nil, fmt.Errorf(`zoom configuration clause %d: zoom parameter %q: too many ":" separators`, i+1, paramPrefix)
+		}
+		paramValueStr := strings.TrimSpace(parts[1])
+		if paramValueStr == "" {
+			return nil, fmt.Errorf("zoom configuration clause %d: missing parameter value", i+1)
+		}
 
-		if err := model.ZoomParamMap.Handle(paramPrefix, paramValueStr, zoom); err != nil {
-			return nil, err
+		if err := handleParameter(model.ZoomParamMap, paramPrefix, paramValueStr, zoom); err != nil {
+			return nil, fmt.Errorf("zoom configuration clause %d: zoom parameter %q: %w", i+1, paramPrefix, err)
 		}
 	}
 
 	if zoom.Factor != 0 && (zoom.HMargin != 0 || zoom.VMargin != 0) {
-		return nil, errors.New("pdfcpu: please supply either zoom \"factor\" or \"hmargin\" or \"vmargin\"")
+		return nil, errors.New("zoom: factor conflicts with margins")
 	}
 
 	return zoom, nil
@@ -69,10 +75,12 @@ func handleZoomOutBgColAndBorder(cropBox *types.Rectangle, bb *[]byte, zoom *mod
 		var buf bytes.Buffer
 
 		if zoom.BgColor != nil {
-			draw.FillRectNoBorder(&buf, types.RectForWidthAndHeight(cropBox.LL.X, cropBox.LL.Y, cropBox.Width(), zoom.VMargin), *zoom.BgColor)
-			draw.FillRectNoBorder(&buf, types.RectForWidthAndHeight(cropBox.LL.X, cropBox.Height()-zoom.VMargin, cropBox.Width(), zoom.VMargin), *zoom.BgColor)
-			draw.FillRectNoBorder(&buf, types.RectForWidthAndHeight(cropBox.LL.X, zoom.VMargin, zoom.HMargin, cropBox.Height()-2*zoom.VMargin), *zoom.BgColor)
-			draw.FillRectNoBorder(&buf, types.RectForWidthAndHeight(cropBox.Width()-zoom.HMargin, zoom.VMargin, zoom.HMargin, cropBox.Height()-2*zoom.VMargin), *zoom.BgColor)
+			llx, lly := cropBox.LL.X, cropBox.LL.Y
+			w, h := cropBox.Width(), cropBox.Height()
+			draw.FillRectNoBorder(&buf, types.RectForWidthAndHeight(llx, lly, w, zoom.VMargin), *zoom.BgColor)
+			draw.FillRectNoBorder(&buf, types.RectForWidthAndHeight(llx, lly+h-zoom.VMargin, w, zoom.VMargin), *zoom.BgColor)
+			draw.FillRectNoBorder(&buf, types.RectForWidthAndHeight(llx, lly+zoom.VMargin, zoom.HMargin, h-2*zoom.VMargin), *zoom.BgColor)
+			draw.FillRectNoBorder(&buf, types.RectForWidthAndHeight(llx+w-zoom.HMargin, lly+zoom.VMargin, zoom.HMargin, h-2*zoom.VMargin), *zoom.BgColor)
 		}
 
 		if zoom.Border {
@@ -91,7 +99,7 @@ func handleZoomOutBgColAndBorder(cropBox *types.Rectangle, bb *[]byte, zoom *mod
 func zoomPage(ctx *model.Context, pageNr int, zoom *model.Zoom) error {
 	d, _, inhPAttrs, err := ctx.PageDict(pageNr, false)
 	if err != nil {
-		return err
+		return fmt.Errorf("page dictionary: %w", err)
 	}
 
 	cropBox := inhPAttrs.MediaBox
@@ -108,8 +116,10 @@ func zoomPage(ctx *model.Context, pageNr int, zoom *model.Zoom) error {
 		}
 	}
 
+	pageZoom := *zoom
+	zoom = &pageZoom
 	if err := zoom.EnsureFactorAndMargins(cropBox.Width(), cropBox.Height()); err != nil {
-		return err
+		return fmt.Errorf("derive factor and margins: %w", err)
 	}
 
 	sc := zoom.Factor
@@ -123,11 +133,13 @@ func zoomPage(ctx *model.Context, pageNr int, zoom *model.Zoom) error {
 	fmt.Fprintf(&trans, "q %.5f %.5f %.5f %.5f %.5f %.5f cm ", m[0][0], m[0][1], m[1][0], m[1][1], m[2][0], m[2][1])
 
 	bb, err := ctx.PageContent(d, pageNr)
-	if err == model.ErrNoContent {
-		return nil
-	}
-	if err != nil {
-		return err
+	if errors.Is(err, model.ErrNoContent) {
+		if zoom.BgColor == nil && !zoom.Border {
+			return nil
+		}
+		bb = nil
+	} else if err != nil {
+		return fmt.Errorf("read page content: %w", err)
 	}
 
 	if inhPAttrs.Rotate != 0 {
@@ -141,14 +153,17 @@ func zoomPage(ctx *model.Context, pageNr int, zoom *model.Zoom) error {
 
 	handleZoomOutBgColAndBorder(cropBox, &bb, zoom)
 
-	sd, _ := ctx.NewStreamDictForBuf(bb)
+	sd, err := ctx.NewStreamDictForBuf(bb)
+	if err != nil {
+		return fmt.Errorf("create content stream: %w", err)
+	}
 	if err := sd.Encode(); err != nil {
-		return err
+		return fmt.Errorf("encode content stream: %w", err)
 	}
 
 	ir, err := ctx.IndRefForNewObject(*sd)
 	if err != nil {
-		return err
+		return fmt.Errorf("insert content stream: %w", err)
 	}
 
 	d["Contents"] = *ir
@@ -160,23 +175,34 @@ func zoomPage(ctx *model.Context, pageNr int, zoom *model.Zoom) error {
 	return nil
 }
 
+func zoomPageNumbers(pageCount int, selectedPages types.IntSet) []int {
+	if len(selectedPages) == 0 {
+		pageNrs := make([]int, pageCount)
+		for i := range pageCount {
+			pageNrs[i] = i + 1
+		}
+		return pageNrs
+	}
+
+	pageNrs := make([]int, 0, len(selectedPages))
+	for pageNr, selected := range selectedPages {
+		if selected {
+			pageNrs = append(pageNrs, pageNr)
+		}
+	}
+	sort.Ints(pageNrs)
+	return pageNrs
+}
+
+// Zoom applies zoom to selected pages in ctx.
 func Zoom(ctx *model.Context, selectedPages types.IntSet, zoom *model.Zoom) error {
 	if log.DebugEnabled() {
 		log.Debug.Printf("Zoom:\n%s\n", zoom)
 	}
 
-	if len(selectedPages) == 0 {
-		selectedPages = types.IntSet{}
-		for i := 1; i <= ctx.PageCount; i++ {
-			selectedPages[i] = true
-		}
-	}
-
-	for k, v := range selectedPages {
-		if v {
-			if err := zoomPage(ctx, k, zoom); err != nil {
-				return err
-			}
+	for _, pageNr := range zoomPageNumbers(ctx.PageCount, selectedPages) {
+		if err := zoomPage(ctx, pageNr, zoom); err != nil {
+			return fmt.Errorf("page %d: %w", pageNr, err)
 		}
 	}
 

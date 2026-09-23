@@ -17,6 +17,8 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 
@@ -26,18 +28,24 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 // CreatePDFFile creates a PDF file for an xRefTable and writes it to outFile.
 func CreatePDFFile(xRefTable *model.XRefTable, outFile string, conf *model.Configuration) error {
-	f, err := os.Create(outFile)
-	if err != nil {
-		return err
+	if xRefTable == nil {
+		return ErrMissingXRefTable
 	}
-	defer f.Close()
+
+	staged, err := openStagedOutput(nil, "", outFile, "create")
+	if err != nil {
+		return fmt.Errorf("create: create output %s: %w", outFile, err)
+	}
+	f := staged.output.file
 	ctx := pdfcpu.CreateContext(xRefTable, conf)
-	return WriteContext(ctx, f)
+	if err := WriteContext(ctx, f); err != nil {
+		return staged.cleanup(fmt.Errorf("create: write output: %w", err))
+	}
+	return staged.commit()
 }
 
 // Create renders the PDF structure represented by rs into w.
@@ -47,7 +55,11 @@ func Create(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configurati
 	defer fault.Catch(&err)
 
 	if rd == nil {
-		return errors.New("pdfcpu: Create: missing rd")
+		return ErrMissingJSONInput
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
 	}
 
 	if conf == nil {
@@ -59,24 +71,30 @@ func Create(rs io.ReadSeeker, rd io.Reader, w io.Writer, conf *model.Configurati
 
 	if rs != nil {
 		ctx, err = ReadValidateAndOptimize(rs, conf)
+		if err != nil {
+			return fmt.Errorf("create: %w", err)
+		}
 	} else {
 		ctx, err = pdfcpu.CreateContextWithXRefTable(conf, types.PaperSize["A4"])
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return fmt.Errorf("create: create PDF context: %w", err)
+		}
 	}
 
 	if err := create.FromJSON(ctx, rd); err != nil {
-		return err
+		return fmt.Errorf("create: import JSON: %w", err)
 	}
 
 	if conf.PostProcessValidate {
 		if err = ValidateContext(ctx); err != nil {
-			return err
+			return fmt.Errorf("create: validate output: %w", err)
 		}
 	}
 
-	return WriteContext(ctx, w)
+	if err = WriteContext(ctx, w); err != nil {
+		return fmt.Errorf("create: write output: %w", err)
+	}
+	return nil
 }
 
 func handleOutFilePDF(inFilePDF, outFilePDF string, tmpFile *string) {
@@ -95,55 +113,54 @@ func CreateFile(inFilePDF, inFileJSON, outFilePDF string, conf *model.Configurat
 	var f0, f1, f2 *os.File
 	ok := false
 
+	if inFileJSON == "" {
+		return ErrMissingJSONInput
+	}
+
+	if inFilePDF == "" && outFilePDF == "" {
+		return fmt.Errorf("create: missing input or output: %w", ErrMissingPDFInput)
+	}
+
 	if f0, err = os.Open(inFileJSON); err != nil {
-		return err
+		return fmt.Errorf("create: open JSON input %s: %w", inFileJSON, err)
 	}
 
 	rs := io.ReadSeeker(nil)
 	f1 = nil
-	if fileExists(inFilePDF) {
-		if f1, err = os.Open(inFilePDF); err != nil {
-			return err
+	if inFilePDF != "" {
+		f1, err = os.Open(inFilePDF)
+		if err != nil {
+			return errors.Join(
+				fmt.Errorf("create: open input %s: %w", inFilePDF, err),
+				closeFile(f0, "create: close JSON input"),
+			)
 		}
-		log.CLI.Printf("reading %s...\n", inFilePDF)
+		if log.CLIEnabled() {
+			log.CLI.Printf("reading %s...\n", inFilePDF)
+		}
 		rs = f1
 	}
 
-	tmpFile := inFilePDF + ".tmp"
+	tmpFile := ""
 	handleOutFilePDF(inFilePDF, outFilePDF, &tmpFile)
 
-	if f2, err = os.Create(tmpFile); err != nil {
-		if f1 != nil {
-			_ = f1.Close()
-		}
-		_ = f0.Close()
-		return err
+	staged, err := openStagedOutput(f1, inFilePDF, tmpFile, "create")
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("create: create output: %w", err),
+			closeFile(f1, "create: close input"),
+			closeFile(f0, "create: close JSON input"),
+		)
 	}
+	f2 = staged.output.file
+	staged = staged.withInput(f0, "create: close JSON input")
 
 	defer func() {
 		if !ok {
-			_ = f2.Close()
-			if f1 != nil {
-				_ = f1.Close()
-			}
-			_ = f0.Close()
-			_ = os.Remove(tmpFile)
+			err = staged.cleanup(err)
 			return
 		}
-		if err = f2.Close(); err != nil {
-			return
-		}
-		if f1 != nil {
-			if err = f1.Close(); err != nil {
-				return
-			}
-		}
-		if err = f0.Close(); err != nil {
-			return
-		}
-		if outFilePDF == "" || inFilePDF == outFilePDF {
-			err = os.Rename(tmpFile, inFilePDF)
-		}
+		err = staged.commit()
 	}()
 
 	if err = Create(rs, f0, f2, conf); err != nil {

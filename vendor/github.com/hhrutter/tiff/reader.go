@@ -4,7 +4,7 @@
 
 // Package tiff is an enhanced version of x/image/tiff.
 //
-// It uses a consolidated version of compress/lzw (https://github.com/hhrutter/lzw) for compression and also adds support for CMYK.
+// It adds support for LZW compression and the CMYK color model.
 //
 // More information: https://github.com/hhrutter/tiff
 package tiff
@@ -20,8 +20,8 @@ import (
 	"io"
 	"math"
 
-	"github.com/hhrutter/lzw"
 	"golang.org/x/image/ccitt"
+	"golang.org/x/image/tiff/lzw"
 )
 
 // A FormatError reports that the input is not a valid TIFF image.
@@ -41,6 +41,41 @@ func (e UnsupportedError) Error() string {
 
 var errNoPixels = FormatError("not enough pixel data")
 
+const maxChunkSize = 10 << 20 // 10M
+
+// safeReadAt reads n bytes without preallocating very large slices before the
+// reader has proven that the data exists.
+func safeReadAt(r io.ReaderAt, n uint64, off int64) ([]byte, error) {
+	if int64(n) < 0 || n != uint64(int(n)) {
+		return nil, io.ErrUnexpectedEOF
+	}
+
+	if n < maxChunkSize {
+		buf := make([]byte, n)
+		_, err := r.ReadAt(buf, off)
+		if err != nil && (err != io.EOF || n > 0) {
+			return nil, err
+		}
+		return buf, nil
+	}
+
+	var buf []byte
+	buf1 := make([]byte, maxChunkSize)
+	for n > 0 {
+		next := n
+		if next > maxChunkSize {
+			next = maxChunkSize
+		}
+		if _, err := r.ReadAt(buf1[:next], off); err != nil {
+			return nil, err
+		}
+		buf = append(buf, buf1[:next]...)
+		n -= next
+		off += int64(next)
+	}
+	return buf, nil
+}
+
 var app14Marker = []byte{
 	0xFF, 0xEE,
 	0x00, 0x0E,
@@ -59,6 +94,7 @@ type decoder struct {
 	mode      imageMode
 	bpp       uint
 	features  map[int][]uint
+	ifd       map[int][ifdLen]byte
 	palette   []color.Color
 	tables    []byte
 
@@ -78,9 +114,41 @@ func (d *decoder) firstVal(tag int) uint {
 	return f[0]
 }
 
+// firstIntVal returns the first int of the features entry with the given tag,
+// or 0 if the tag does not exist.
+func (d *decoder) firstIntVal(tag int) (int, error) {
+	v := d.firstVal(tag)
+	if v > uint(maxInt()) {
+		return 0, FormatError("IFD value too large")
+	}
+	return int(v), nil
+}
+
+func (d *decoder) setRGBAMode(associated bool) {
+	if associated {
+		d.mode = mRGBA
+		if d.bpp == 16 {
+			d.config.ColorModel = color.RGBA64Model
+		} else {
+			d.config.ColorModel = color.RGBAModel
+		}
+		return
+	}
+
+	d.mode = mNRGBA
+	if d.bpp == 16 {
+		d.config.ColorModel = color.NRGBA64Model
+	} else {
+		d.config.ColorModel = color.NRGBAModel
+	}
+}
+
 // ifdUint decodes the IFD entry in p, which must be of the Byte, Short
 // or Long type, and returns the decoded uint values.
-func (d *decoder) ifdUint(p []byte) (u []uint, err error) {
+//
+// maxCount limits the number of values. If the entry contains more than
+// maxCount values, only the first maxCount are parsed.
+func (d *decoder) ifdUint(p []byte, maxCount int) (u []uint, err error) {
 	var raw []byte
 	if len(p) < ifdLen {
 		return nil, FormatError("bad IFD entry")
@@ -95,10 +163,11 @@ func (d *decoder) ifdUint(p []byte) (u []uint, err error) {
 	if count > math.MaxInt32/lengths[datatype] {
 		return nil, FormatError("IFD data too large")
 	}
+	truncatedCount := minInt(int(count), maxCount)
 	if datalen := lengths[datatype] * count; datalen > 4 {
+		truncatedLen := uint64(lengths[datatype]) * uint64(truncatedCount)
 		// The IFD contains a pointer to the real value.
-		raw = make([]byte, datalen)
-		_, err = d.r.ReadAt(raw, int64(d.byteOrder.Uint32(p[8:12])))
+		raw, err = safeReadAt(d.r, truncatedLen, int64(d.byteOrder.Uint32(p[8:12])))
 	} else {
 		raw = p[8 : 8+datalen]
 	}
@@ -106,18 +175,18 @@ func (d *decoder) ifdUint(p []byte) (u []uint, err error) {
 		return nil, err
 	}
 
-	u = make([]uint, count)
+	u = make([]uint, truncatedCount)
 	switch datatype {
 	case dtByte:
-		for i := uint32(0); i < count; i++ {
+		for i := range u {
 			u[i] = uint(raw[i])
 		}
 	case dtShort:
-		for i := uint32(0); i < count; i++ {
+		for i := range u {
 			u[i] = uint(d.byteOrder.Uint16(raw[2*i : 2*(i+1)]))
 		}
 	case dtLong:
-		for i := uint32(0); i < count; i++ {
+		for i := range u {
 			u[i] = uint(d.byteOrder.Uint32(raw[4*i : 4*(i+1)]))
 		}
 	default:
@@ -126,36 +195,49 @@ func (d *decoder) ifdUint(p []byte) (u []uint, err error) {
 	return u, nil
 }
 
+// parseIFDOffsets parses an IFD entry stored in d.ifd using ifdUint.
+func (d *decoder) parseIFDOffsets(tag int, maxCount int) ([]uint, error) {
+	p, ok := d.ifd[tag]
+	if !ok {
+		return nil, nil
+	}
+	return d.ifdUint(p[:], maxCount)
+}
+
 // parseIFD decides whether the the IFD entry in p is "interesting" and
 // stows away the data in the decoder. It returns the tag number of the
 // entry and an error, if any.
 func (d *decoder) parseIFD(p []byte) (int, error) {
 	tag := d.byteOrder.Uint16(p[0:2])
+	const smallEntryMaxCount = 32
 	switch tag {
 	case tBitsPerSample,
 		tExtraSamples,
 		tPhotometricInterpretation,
 		tCompression,
 		tPredictor,
-		tStripOffsets,
-		tStripByteCounts,
 		tRowsPerStrip,
 		tTileWidth,
 		tTileLength,
-		tTileOffsets,
-		tTileByteCounts,
 		tImageLength,
 		tImageWidth,
 		tFillOrder,
 		tT4Options,
 		tT6Options:
-		val, err := d.ifdUint(p)
+		val, err := d.ifdUint(p, smallEntryMaxCount)
 		if err != nil {
 			return 0, err
 		}
 		d.features[int(tag)] = val
+	case tStripOffsets,
+		tStripByteCounts,
+		tTileOffsets,
+		tTileByteCounts:
+		var entry [ifdLen]byte
+		copy(entry[:], p)
+		d.ifd[int(tag)] = entry
 	case tColorMap:
-		val, err := d.ifdUint(p)
+		val, err := d.ifdUint(p, 3*256+1)
 		if err != nil {
 			return 0, err
 		}
@@ -177,7 +259,7 @@ func (d *decoder) parseIFD(p []byte) (int, error) {
 		// the value is not 1 [= unsigned integer data], a Baseline
 		// TIFF reader that cannot handle the SampleFormat value
 		// must terminate the import process gracefully.
-		val, err := d.ifdUint(p)
+		val, err := d.ifdUint(p, smallEntryMaxCount)
 		if err != nil {
 			return 0, err
 		}
@@ -187,14 +269,17 @@ func (d *decoder) parseIFD(p []byte) (int, error) {
 			}
 		}
 	case tJPEGTables:
-		// See Adobe Photoshop® TIFF Technical Notes.
 		datatype := d.byteOrder.Uint16(p[2:4])
 		if dt := int(datatype); dt != 7 {
 			return 0, UnsupportedError("IFD entry datatype")
 		}
 		size := d.byteOrder.Uint32(p[4:8])
-		d.tables = make([]byte, size-4)
-		if _, err := d.r.ReadAt(d.tables, int64(d.byteOrder.Uint32(p[8:12]))+2); err != nil {
+		if size < 4 {
+			return 0, FormatError("bad JPEG tables")
+		}
+		var err error
+		d.tables, err = safeReadAt(d.r, uint64(size-4), int64(d.byteOrder.Uint32(p[8:12]))+2)
+		if err != nil {
 			return 0, err
 		}
 	}
@@ -232,6 +317,28 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func maxInt() int {
+	return int(^uint(0) >> 1)
+}
+
+// maxBytesPerPixel is the maximum possible bytes-per-pixel, used for
+// conservative bounds checking.
+const maxBytesPerPixel = 8
+
+func checkedMul3(a, b, c int) (int64, bool) {
+	if a < 0 || b < 0 || c < 0 {
+		return 0, false
+	}
+	if a != 0 && b > maxInt()/a {
+		return 0, false
+	}
+	ab := a * b
+	if ab != 0 && c > maxInt()/ab {
+		return 0, false
+	}
+	return int64(ab * c), true
 }
 
 // decode decodes the raw data of an image.
@@ -440,10 +547,14 @@ func newDecoderAt(r io.Reader, ifdOffset int64) (*decoder, error) {
 	d := &decoder{
 		r:        newReaderAt(r),
 		features: make(map[int][]uint),
+		ifd:      make(map[int][ifdLen]byte),
 	}
 
 	p := make([]byte, 8)
 	if _, err := d.r.ReadAt(p, 0); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return nil, err
 	}
 	switch string(p[0:4]) {
@@ -466,8 +577,9 @@ func newDecoderAt(r io.Reader, ifdOffset int64) (*decoder, error) {
 	numItems := int(d.byteOrder.Uint16(p[0:2]))
 
 	// All IFD entries are read in one chunk.
-	p = make([]byte, ifdLen*numItems)
-	if _, err := d.r.ReadAt(p, ifdOffset+2); err != nil {
+	var err error
+	p, err = safeReadAt(d.r, uint64(ifdLen*numItems), ifdOffset+2)
+	if err != nil {
 		return nil, err
 	}
 
@@ -483,8 +595,15 @@ func newDecoderAt(r io.Reader, ifdOffset int64) (*decoder, error) {
 		prevTag = tag
 	}
 
-	d.config.Width = int(d.firstVal(tImageWidth))
-	d.config.Height = int(d.firstVal(tImageLength))
+	if d.config.Width, err = d.firstIntVal(tImageWidth); err != nil {
+		return nil, err
+	}
+	if d.config.Height, err = d.firstIntVal(tImageLength); err != nil {
+		return nil, err
+	}
+	if _, ok := checkedMul3(d.config.Width, d.config.Height, maxBytesPerPixel); !ok {
+		return nil, FormatError("image too large")
+	}
 
 	if _, ok := d.features[tBitsPerSample]; !ok {
 		// Default is 1 per specification.
@@ -519,9 +638,6 @@ func newDecoderAt(r io.Reader, ifdOffset int64) (*decoder, error) {
 		// RGB images normally have 3 samples per pixel.
 		// If there are more, ExtraSamples (p. 31-32 of the spec)
 		// gives their meaning (usually an alpha channel).
-		//
-		// This implementation does not support extra samples
-		// of an unspecified type.
 		switch len(d.features[tBitsPerSample]) {
 		case 3:
 			d.mode = mRGB
@@ -532,20 +648,10 @@ func newDecoderAt(r io.Reader, ifdOffset int64) (*decoder, error) {
 			}
 		case 4:
 			switch d.firstVal(tExtraSamples) {
-			case 1:
-				d.mode = mRGBA
-				if d.bpp == 16 {
-					d.config.ColorModel = color.RGBA64Model
-				} else {
-					d.config.ColorModel = color.RGBAModel
-				}
+			case 0, 1:
+				d.setRGBAMode(true)
 			case 2:
-				d.mode = mNRGBA
-				if d.bpp == 16 {
-					d.config.ColorModel = color.NRGBA64Model
-				} else {
-					d.config.ColorModel = color.NRGBAModel
-				}
+				d.setRGBAMode(false)
 			default:
 				return nil, FormatError("wrong number of samples for RGB")
 			}
@@ -610,6 +716,28 @@ func ccittFillOrder(tiffFillOrder uint) ccitt.Order {
 	return ccitt.MSB
 }
 
+func (d *decoder) ccittOptions(compression uint) (*ccitt.Options, error) {
+	opts := &ccitt.Options{
+		Invert: d.firstVal(tPhotometricInterpretation) == pWhiteIsZero,
+	}
+	switch compression {
+	case cG3:
+		t4Options := d.firstVal(tT4Options)
+		if t4Options&1 != 0 {
+			return nil, UnsupportedError("CCITT Group 3 2-D coding")
+		}
+		if t4Options&2 != 0 {
+			return nil, UnsupportedError("CCITT Group 3 uncompressed mode")
+		}
+		opts.Align = t4Options&4 != 0
+	case cG4:
+		if d.firstVal(tT6Options)&2 != 0 {
+			return nil, UnsupportedError("CCITT Group 4 uncompressed mode")
+		}
+	}
+	return opts, nil
+}
+
 func (d *decoder) copyStrip(dst image.Image, strip image.Image, x, y int) {
 	switch d.mode {
 	case mGray, mGrayInvert:
@@ -637,8 +765,11 @@ func (d *decoder) copyStrip(dst image.Image, strip image.Image, x, y int) {
 	}
 }
 
-func (d *decoder) prepJPEG(offset, n int64, needAPP14, needTables bool) (io.Reader, error) {
-	bb, err := io.ReadAll(io.NewSectionReader(d.r, offset, n))
+func (d *decoder) prepJPEG(offset, n, lim int64, needAPP14, needTables bool) (io.Reader, error) {
+	if n > lim {
+		return nil, FormatError("block data size too large")
+	}
+	bb, err := safeReadAt(d.r, uint64(n), offset)
 	if err != nil {
 		return nil, err
 	}
@@ -669,11 +800,11 @@ func (d *decoder) prepJPEG(offset, n int64, needAPP14, needTables bool) (io.Read
 	return bytes.NewReader(bb), nil
 }
 
-func (d *decoder) decodeJPGOld(img image.Image, offset, n int64, i, j, blockWidth, blockHeight int) error {
+func (d *decoder) decodeJPGOld(img image.Image, offset, n, lim int64, i, j, blockWidth, blockHeight int) error {
 	var rd io.Reader = io.NewSectionReader(d.r, offset, n)
 	if len(d.features[tBitsPerSample]) == 4 && d.firstVal(tExtraSamples) > 0 {
 		var err error
-		rd, err = d.prepJPEG(offset, n, true, false)
+		rd, err = d.prepJPEG(offset, n, lim, true, false)
 		if err != nil {
 			return err
 		}
@@ -702,11 +833,26 @@ func decode(d *decoder) (img image.Image, err error) {
 
 	var blockOffsets, blockCounts []uint
 
-	if int(d.firstVal(tTileWidth)) != 0 {
+	if d.firstVal(tTileWidth) != 0 {
 		blockPadding = true
 
-		blockWidth = int(d.firstVal(tTileWidth))
-		blockHeight = int(d.firstVal(tTileLength))
+		if blockWidth, err = d.firstIntVal(tTileWidth); err != nil {
+			return nil, err
+		}
+		if blockHeight, err = d.firstIntVal(tTileLength); err != nil {
+			return nil, err
+		}
+		if blockWidth < 8 || blockHeight < 8 {
+			return nil, FormatError("tile size is too small")
+		}
+		if _, ok := checkedMul3(blockWidth, blockHeight, maxBytesPerPixel); !ok {
+			return nil, FormatError("tile size is too large")
+		}
+		if blockWidth-d.config.Width > 16 || blockHeight-d.config.Height > 16 {
+			if blockWidth > 1024 || blockHeight > 1024 {
+				return nil, FormatError("tile size exceeds image size")
+			}
+		}
 
 		if blockWidth != 0 {
 			blocksAcross = (d.config.Width + blockWidth - 1) / blockWidth
@@ -715,20 +861,32 @@ func decode(d *decoder) (img image.Image, err error) {
 			blocksDown = (d.config.Height + blockHeight - 1) / blockHeight
 		}
 
-		blockCounts = d.features[tTileByteCounts]
-		blockOffsets = d.features[tTileOffsets]
+		blockOffsets, err = d.parseIFDOffsets(tTileOffsets, blocksAcross*blocksDown)
+		if err != nil {
+			return nil, err
+		}
+		blockCounts, err = d.parseIFDOffsets(tTileByteCounts, blocksAcross*blocksDown)
+		if err != nil {
+			return nil, err
+		}
 
 	} else {
-		if int(d.firstVal(tRowsPerStrip)) != 0 {
-			blockHeight = int(d.firstVal(tRowsPerStrip))
+		if v := d.firstVal(tRowsPerStrip); v > 0 && v < uint(blockHeight) {
+			blockHeight = int(v)
 		}
 
 		if blockHeight != 0 {
 			blocksDown = (d.config.Height + blockHeight - 1) / blockHeight
 		}
 
-		blockOffsets = d.features[tStripOffsets]
-		blockCounts = d.features[tStripByteCounts]
+		blockOffsets, err = d.parseIFDOffsets(tStripOffsets, blocksDown)
+		if err != nil {
+			return nil, err
+		}
+		blockCounts, err = d.parseIFDOffsets(tStripByteCounts, blocksDown)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Check if we have the right number of strips/tiles, offsets and counts.
@@ -762,6 +920,14 @@ func decode(d *decoder) (img image.Image, err error) {
 		img = image.NewCMYK(imgRect)
 	}
 
+	if blocksAcross == 0 || blocksDown == 0 {
+		return img, nil
+	}
+	blockMaxDataSize, ok := checkedMul3(blockWidth, blockHeight, maxBytesPerPixel)
+	if !ok {
+		return nil, FormatError("block data size too large")
+	}
+
 	for i := 0; i < blocksAcross; i++ {
 		blkW := blockWidth
 		if !blockPadding && i == blocksAcross-1 && d.config.Width%blockWidth != 0 {
@@ -785,25 +951,40 @@ func decode(d *decoder) (img image.Image, err error) {
 			// but some tools interpret a missing Compression value as none so we do
 			// the same.
 			case cNone, 0:
+				if n > blockMaxDataSize {
+					return nil, FormatError("block data size too large")
+				}
 				if b, ok := d.r.(*buffer); ok {
 					d.buf, err = b.Slice(int(offset), int(n))
 				} else {
-					d.buf = make([]byte, n)
-					_, err = d.r.ReadAt(d.buf, offset)
+					d.buf, err = safeReadAt(d.r, uint64(n), offset)
 				}
+			case cCCITT:
+				if d.bpp != 1 {
+					return nil, UnsupportedError("CCITT RLE with BitsPerSample != 1")
+				}
+				order := ccittFillOrder(d.firstVal(tFillOrder))
+				whiteIsZero := d.firstVal(tPhotometricInterpretation) == pWhiteIsZero
+				d.buf, err = decodeCCITTRLE(io.NewSectionReader(d.r, offset, n), order, blkW, blkH, whiteIsZero, blockMaxDataSize)
 			case cG3:
-				inv := d.firstVal(tPhotometricInterpretation) == pWhiteIsZero
+				opts, err := d.ccittOptions(cG3)
+				if err != nil {
+					return nil, err
+				}
 				order := ccittFillOrder(d.firstVal(tFillOrder))
-				r := ccitt.NewReader(io.NewSectionReader(d.r, offset, n), order, ccitt.Group3, blkW, blkH, &ccitt.Options{Invert: inv, Align: false})
-				d.buf, err = io.ReadAll(r)
+				r := ccitt.NewReader(io.NewSectionReader(d.r, offset, n), order, ccitt.Group3, blkW, blkH, opts)
+				d.buf, err = readBuf(r, d.buf, blockMaxDataSize)
 			case cG4:
-				inv := d.firstVal(tPhotometricInterpretation) == pWhiteIsZero
+				opts, err := d.ccittOptions(cG4)
+				if err != nil {
+					return nil, err
+				}
 				order := ccittFillOrder(d.firstVal(tFillOrder))
-				r := ccitt.NewReader(io.NewSectionReader(d.r, offset, n), order, ccitt.Group4, blkW, blkH, &ccitt.Options{Invert: inv, Align: false})
-				d.buf, err = io.ReadAll(r)
+				r := ccitt.NewReader(io.NewSectionReader(d.r, offset, n), order, ccitt.Group4, blkW, blkH, opts)
+				d.buf, err = readBuf(r, d.buf, blockMaxDataSize)
 			case cLZW:
-				r := lzw.NewReader(io.NewSectionReader(d.r, offset, n), true)
-				d.buf, err = io.ReadAll(r)
+				r := lzw.NewReader(io.NewSectionReader(d.r, offset, n), lzw.MSB, 8)
+				d.buf, err = readBuf(r, d.buf, blockMaxDataSize)
 				r.Close()
 			case cDeflate, cDeflateOld:
 				var r io.ReadCloser
@@ -811,22 +992,22 @@ func decode(d *decoder) (img image.Image, err error) {
 				if err != nil {
 					return nil, err
 				}
-				d.buf, err = io.ReadAll(r)
+				d.buf, err = readBuf(r, d.buf, blockMaxDataSize)
 				r.Close()
 			case cJPEGOld:
-				if err := d.decodeJPGOld(img, offset, n, i, j, blockWidth, blockHeight); err != nil {
+				if err := d.decodeJPGOld(img, offset, n, blockMaxDataSize, i, j, blockWidth, blockHeight); err != nil {
 					return nil, err
 				}
 				continue
 			case cJPEG:
 				if len(d.tables) == 0 {
-					if err := d.decodeJPGOld(img, offset, n, i, j, blockWidth, blockHeight); err != nil {
+					if err := d.decodeJPGOld(img, offset, n, blockMaxDataSize, i, j, blockWidth, blockHeight); err != nil {
 						return nil, err
 					}
 					continue
 				}
 				needAPP14 := len(d.features[tBitsPerSample]) == 4 && d.firstVal(tExtraSamples) > 0
-				rd, err := d.prepJPEG(offset, n, needAPP14, true)
+				rd, err := d.prepJPEG(offset, n, blockMaxDataSize, needAPP14, true)
 				if err != nil {
 					return nil, err
 				}
@@ -837,7 +1018,7 @@ func decode(d *decoder) (img image.Image, err error) {
 				d.copyStrip(img, img0, i*blockWidth, j*blockHeight)
 				continue
 			case cPackBits:
-				d.buf, err = unpackBits(io.NewSectionReader(d.r, offset, n))
+				d.buf, err = unpackBits(io.NewSectionReader(d.r, offset, n), blockMaxDataSize)
 			default:
 				err = UnsupportedError(fmt.Sprintf("compression value %d", d.firstVal(tCompression)))
 			}
@@ -856,6 +1037,12 @@ func decode(d *decoder) (img image.Image, err error) {
 		}
 	}
 	return
+}
+
+func readBuf(r io.Reader, buf []byte, lim int64) ([]byte, error) {
+	b := bytes.NewBuffer(buf[:0])
+	_, err := b.ReadFrom(io.LimitReader(r, lim))
+	return b.Bytes(), err
 }
 
 // Decode reads a TIFF image from r and returns it as an image.Image.

@@ -18,6 +18,7 @@ package model
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,12 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
+
+// ErrMissingPDFContext signals a missing required PDF context.
+var ErrMissingPDFContext = errors.New("missing PDF context")
+
+// ErrMissingXRefTable signals a missing required PDF cross-reference table.
+var ErrMissingXRefTable = errors.New("missing PDF cross-reference table")
 
 // Context represents an environment for processing PDF files.
 type Context struct {
@@ -84,6 +91,7 @@ func (rc *ReadContext) logReadContext(logStr *[]string) {
 	}
 }
 
+// String returns the string value of ctx.
 func (ctx *Context) String() string {
 
 	var logStr []string
@@ -159,6 +167,7 @@ func (ctx *Context) String() string {
 	return strings.Join(logStr, "")
 }
 
+// UnitString returns a string representation for ctx.Unit.
 func (ctx *Context) UnitString() string {
 	u := "points"
 	switch ctx.Unit {
@@ -294,11 +303,18 @@ type OptimizationContext struct {
 	// Image section
 	PageImages         []types.IntSet                // For each page a registry of image object numbers.
 	ImageObjects       map[int]*ImageObject          // ImageObject lookup table by image object number.
+	ImageObjectHashes  map[[32]byte][]int            // Image object numbers by encoded stream hash.
 	DuplicateImages    map[int]*DuplicateImageObject // Registry of duplicate image dicts.
 	DuplicateImageObjs types.IntSet                  // The set of objects that represents the union of the object graphs of all duplicate image dicts.
 
+	// ContentStreamCache maps object numbers to content streams used for duplicate detection.
 	ContentStreamCache map[int]*types.StreamDict
-	FormStreamCache    map[int]*types.StreamDict
+
+	// FormStreamCache maps object numbers to Form XObject streams used for duplicate detection.
+	FormStreamCache map[int]*types.StreamDict
+
+	// FormResourceCache contains processed Form XObject numbers by page number.
+	FormResourceCache map[int]types.IntSet
 
 	DuplicateInfoObjects types.IntSet // Possible result of manual info dict modification.
 	NonReferencedObjs    []int        // Objects that are not referenced.
@@ -316,11 +332,13 @@ func newOptimizationContext() *OptimizationContext {
 		DuplicateFontObjs: types.IntSet{},
 
 		ImageObjects:         map[int]*ImageObject{},
+		ImageObjectHashes:    map[[32]byte][]int{},
 		DuplicateImages:      map[int]*DuplicateImageObject{},
 		DuplicateImageObjs:   types.IntSet{},
 		DuplicateInfoObjects: types.IntSet{},
 		ContentStreamCache:   map[int]*types.StreamDict{},
 		FormStreamCache:      map[int]*types.StreamDict{},
+		FormResourceCache:    map[int]types.IntSet{},
 		Cache:                map[int]bool{},
 	}
 }

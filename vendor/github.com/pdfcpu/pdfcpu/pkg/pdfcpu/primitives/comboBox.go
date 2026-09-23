@@ -18,6 +18,7 @@ package primitives
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"unicode/utf8"
 
@@ -25,7 +26,6 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 // ComboBox represents a specific choice form field including a positioned label.
@@ -59,16 +59,17 @@ type ComboBox struct {
 	Hide            bool
 }
 
+// SetFontID sets font ID.
 func (cb *ComboBox) SetFontID(s string) {
 	cb.fontID = s
 }
 
 func (cb *ComboBox) validateID() error {
 	if cb.ID == "" {
-		return errors.New("pdfcpu: missing field id")
+		return errors.New("missing field id")
 	}
 	if cb.pdf.DuplicateField(cb.ID) {
-		return errors.Errorf("pdfcpu: duplicate form field: %s", cb.ID)
+		return fmt.Errorf("duplicate form field: %s", cb.ID)
 	}
 	cb.pdf.FieldIDs[cb.ID] = true
 	return nil
@@ -76,7 +77,7 @@ func (cb *ComboBox) validateID() error {
 
 func (cb *ComboBox) validatePosition() error {
 	if cb.Position[0] < 0 || cb.Position[1] < 0 {
-		return errors.Errorf("pdfcpu: field: %s pos value < 0", cb.ID)
+		return fmt.Errorf("field: %s pos value < 0", cb.ID)
 	}
 	cb.x, cb.y = cb.Position[0], cb.Position[1]
 	return nil
@@ -84,22 +85,22 @@ func (cb *ComboBox) validatePosition() error {
 
 func (cb *ComboBox) validateWidth() error {
 	if cb.Width == 0 {
-		return errors.Errorf("pdfcpu: field: %s width == 0", cb.ID)
+		return fmt.Errorf("field: %s width == 0", cb.ID)
 	}
 	return nil
 }
 
 func (cb *ComboBox) validateOptionsValueAndDefault() error {
 	if len(cb.Options) == 0 {
-		return errors.Errorf("pdfcpu: field: %s missing options", cb.ID)
+		return fmt.Errorf("field: %s missing options", cb.ID)
 	}
 
 	if len(cb.Value) > 0 && !types.MemberOf(cb.Value, cb.Options) {
-		return errors.Errorf("pdfcpu: field: %s invalid value: %s", cb.ID, cb.Value)
+		return fmt.Errorf("field: %s invalid value: %s", cb.ID, cb.Value)
 	}
 
 	if len(cb.Default) > 0 && !types.MemberOf(cb.Default, cb.Options) {
-		return errors.Errorf("pdfcpu: field: %s invalid default: %s", cb.ID, cb.Default)
+		return fmt.Errorf("field: %s invalid default: %s", cb.ID, cb.Default)
 	}
 
 	return nil
@@ -169,7 +170,7 @@ func (cb *ComboBox) validateLabel() error {
 
 func (cb *ComboBox) validateTab() error {
 	if cb.Tab < 0 {
-		return errors.Errorf("pdfcpu: field: %s negative tab value", cb.ID)
+		return fmt.Errorf("field: %s negative tab value", cb.ID)
 	}
 	if cb.Tab == 0 {
 		return nil
@@ -179,7 +180,7 @@ func (cb *ComboBox) validateTab() error {
 		page.Tabs = types.IntSet{}
 	} else {
 		if page.Tabs[cb.Tab] {
-			return errors.Errorf("pdfcpu: field: %s duplicate tab value %d", cb.ID, cb.Tab)
+			return fmt.Errorf("field: %s duplicate tab value %d", cb.ID, cb.Tab)
 		}
 	}
 	page.Tabs[cb.Tab] = true
@@ -275,7 +276,7 @@ func (cb *ComboBox) calcMargin() (float64, float64, float64, float64, error) {
 			mName := m.Name[1:]
 			m0 := cb.margin(mName)
 			if m0 == nil {
-				return mTop, mRight, mBottom, mLeft, errors.Errorf("pdfcpu: unknown named margin %s", mName)
+				return mTop, mRight, mBottom, mLeft, fmt.Errorf("unknown named margin %s", mName)
 			}
 			m.mergeIn(m0)
 		}
@@ -364,22 +365,23 @@ func (cb *ComboBox) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 	if font.IsCoreFont(f.Name) && utf8.ValidString(v) {
 		v = model.DecodeUTF8ToByte(v)
 	}
-	lineBB := model.CalcBoundingBox(v, 0, 0, f.Name, f.Size)
-	s := model.PrepBytes(xRefTable, v, f.Name, true, cb.RTL, f.FillFont)
-	x := 2 * boWidth
-	if x == 0 {
-		x = 2
+	lineBB, err := model.CalcBoundingBoxFloat(v, 0, 0, f.Name, f.Size)
+	if err != nil {
+		return nil, fmt.Errorf("combo box text: %w", err)
 	}
-	switch cb.HorAlign {
-	case types.AlignCenter:
-		x = w/2 - lineBB.Width()/2
-	case types.AlignRight:
-		x = w - lineBB.Width() - 2
+	s, err := model.PrepBytes(xRefTable, v, f.Name, true, cb.RTL, f.FillFont)
+	if err != nil {
+		return nil, fmt.Errorf("combo box text: %w", err)
 	}
+	x := alignedFieldTextX(cb.HorAlign, w, lineBB.Width(), boWidth)
 
-	y := (cb.BoundingBox.Height()-font.LineHeight(f.Name, f.Size))/2 + font.Descent(f.Name, f.Size)
+	lineHeight, descent, err := fontLineMetrics(f.Name, f.Size)
+	if err != nil {
+		return nil, fmt.Errorf("combo box text: %w", err)
+	}
+	y := (cb.BoundingBox.Height()-lineHeight)/2 + descent
 
-	fmt.Fprintf(buf, "BT /%s %d Tf ", cb.fontID, f.Size)
+	fmt.Fprintf(buf, "BT /%s %s Tf ", cb.fontID, formatFontSize(f.Size))
 	fmt.Fprintf(buf, "%.2f %.2f %.2f RG %.2f %.2f %.2f rg %.2f %.2f Td (%s) Tj ET ",
 		f.col.R, f.col.G, f.col.B,
 		f.col.R, f.col.G, f.col.B, x, y, s)
@@ -525,7 +527,7 @@ func (cb *ComboBox) prepareDict(fonts model.FontMap) (types.Dict, error) {
 	}
 	cb.fontID = fontID
 
-	da := fmt.Sprintf("/%s %d Tf %.2f %.2f %.2f rg", fontID, f.Size, fCol.R, fCol.G, fCol.B)
+	da := fmt.Sprintf("/%s %s Tf %.2f %.2f %.2f rg", fontID, formatFontSize(f.Size), fCol.R, fCol.G, fCol.B)
 	// Note: Mac Preview does not honour inherited "DA"
 	d["DA"] = types.StringLiteral(da)
 
@@ -595,7 +597,10 @@ func (cb *ComboBox) prepLabel(p *model.Page, pageNr int, fonts model.FontMap) er
 		td.ShowBackground, td.ShowTextBB, td.BackgroundCol = true, true, *l.BgCol
 	}
 
-	bb := model.WriteMultiLine(cb.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	bb, err := model.WriteMultiLine(cb.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	if err != nil {
+		return fmt.Errorf("combo box label: %w", err)
+	}
 	l.height = bb.Height() + 10
 
 	// Weird heuristic for vertical alignment with label
@@ -642,7 +647,10 @@ func (cb *ComboBox) prepForRender(p *model.Page, pageNr int, fonts model.FontMap
 		ScaleAbs: true,
 	}
 
-	bb := model.WriteMultiLine(cb.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	bb, err := model.WriteMultiLine(cb.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	if err != nil {
+		return fmt.Errorf("combo box text: %w", err)
+	}
 
 	if cb.Width < 0 {
 		// Extend width to maxWidth.
@@ -675,7 +683,9 @@ func (cb *ComboBox) doRender(p *model.Page, fonts model.FontMap) error {
 	}
 
 	if cb.Label != nil {
-		model.WriteColumn(cb.pdf.XRefTable, p.Buf, p.MediaBox, nil, *cb.Label.td, 0)
+		if _, err := model.WriteColumn(cb.pdf.XRefTable, p.Buf, p.MediaBox, nil, *cb.Label.td, 0); err != nil {
+			return fmt.Errorf("combo box label: %w", err)
+		}
 	}
 
 	if cb.Debug || cb.pdf.Debug {
@@ -777,6 +787,7 @@ func refreshComboBoxAP(ctx *model.Context, d types.Dict, v string, da *string, f
 	return updateForm(ctx.XRefTable, bb, irN)
 }
 
+// EnsureComboBoxAP ensures combo box ap.
 func EnsureComboBoxAP(ctx *model.Context, d types.Dict, v string, da *string, fonts map[string]types.IndirectRef) error {
 
 	apd := d.DictEntry("AP")

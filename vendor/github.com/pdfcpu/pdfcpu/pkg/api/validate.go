@@ -17,6 +17,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,15 +27,25 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pkg/errors"
 )
+
+func validationModeHint(mode int) string {
+	if mode != model.ValidationStrict {
+		return ""
+	}
+	return " (try --mode=relaxed)"
+}
+
+func validationError(ctx *model.Context, conf *model.Configuration, err error) error {
+	return fmt.Errorf("validation error (obj#:%d)%s: %w", ctx.CurObj, validationModeHint(conf.ValidationMode), err)
+}
 
 // Validate validates a PDF stream read from rs.
 func Validate(rs io.ReadSeeker, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: Validate: missing rs")
+		return ErrMissingPDFReadSeeker
 	}
 
 	if conf == nil {
@@ -46,26 +57,22 @@ func Validate(rs io.ReadSeeker, conf *model.Configuration) (err error) {
 
 	ctx, err := ReadContext(rs, conf)
 	if err != nil {
-		return err
+		return fmt.Errorf("read context: %w", err)
 	}
 
 	dur1 := time.Since(from1).Seconds()
 	from2 := time.Now()
 
 	if err = ValidateContext(ctx); err != nil {
-		s := ""
-		if conf.ValidationMode == model.ValidationStrict {
-			s = " (try --mode=relaxed)"
-		}
-		err = errors.Wrap(err, fmt.Sprintf("validation error (obj#:%d)%s", ctx.CurObj, s))
+		err = validationError(ctx, conf, err)
 	}
 
-	if err == nil {
-		if conf.Optimize {
-			if log.CLIEnabled() {
-				log.CLI.Println("optimizing...")
-			}
-			err = pdfcpu.OptimizeXRefTable(ctx)
+	if err == nil && conf.Optimize {
+		if log.CLIEnabled() {
+			log.CLI.Println("optimizing...")
+		}
+		if err = pdfcpu.OptimizeXRefTable(ctx); err != nil {
+			err = fmt.Errorf("optimize context: %w", err)
 		}
 	}
 
@@ -87,25 +94,41 @@ func Validate(rs io.ReadSeeker, conf *model.Configuration) (err error) {
 }
 
 // ValidateFile validates inFile.
-func ValidateFile(inFile string, conf *model.Configuration) error {
+func ValidateFile(inFile string, conf *model.Configuration) (err error) {
+	if inFile == "" {
+		return ErrMissingPDFInput
+	}
+
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
 	}
 
-	log.CLI.Printf("validating(mode=%s) %s ...\n", conf.ValidationModeString(), inFile)
+	if log.CLIEnabled() {
+		log.CLI.Printf("validating(mode=%s) %s ...\n", conf.ValidationModeString(), inFile)
+	}
 
 	f, err := os.Open(inFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("validate: open %s: %w", inFile, err)
 	}
 
-	defer f.Close()
+	defer func() {
+		closeErr := f.Close()
+		if err != nil {
+			return
+		}
+		if closeErr != nil {
+			err = fmt.Errorf("validate: close %s: %w", inFile, closeErr)
+		}
+	}()
 
 	if err = Validate(f, conf); err != nil {
-		return err
+		return fmt.Errorf("validate %s: %w", inFile, err)
 	}
 
-	log.CLI.Println("validation ok")
+	if log.CLIEnabled() {
+		log.CLI.Println("validation ok")
+	}
 
 	return nil
 }
@@ -116,62 +139,18 @@ func ValidateFiles(inFiles []string, conf *model.Configuration) error {
 		conf = model.NewDefaultConfiguration()
 	}
 
+	var errs []error
 	for i, fn := range inFiles {
-		if i > 0 {
+		if i > 0 && log.CLIEnabled() {
 			log.CLI.Println()
 		}
 		if err := ValidateFile(fn, conf); err != nil {
 			if len(inFiles) == 1 {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "%s: %v\n", fn, err)
+			errs = append(errs, fmt.Errorf("%s: %w", fn, err))
 		}
 	}
 
-	return nil
-}
-
-// DumpObject writes an object from rs to stdout.
-func DumpObject(rs io.ReadSeeker, mode, objNr int, conf *model.Configuration) error {
-	if rs == nil {
-		return errors.New("pdfcpu: DumpObject: missing rs")
-	}
-
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.DUMP
-
-	ctx, err := ReadContext(rs, conf)
-	if err != nil {
-		return err
-	}
-
-	if err = ValidateContext(ctx); err != nil {
-		s := ""
-		if conf.ValidationMode == model.ValidationStrict {
-			s = " (try --mode=relaxed)"
-		}
-		return errors.Wrap(err, fmt.Sprintf("validation error (obj#:%d)%s", ctx.CurObj, s))
-	}
-
-	ctx.DumpObject(objNr, mode)
-
-	return err
-}
-
-// DumpObjectFile writes an object from rs to stdout.
-func DumpObjectFile(inFile string, mode, objNr int, conf *model.Configuration) error {
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-
-	f, err := os.Open(inFile)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
-	return DumpObject(f, mode, objNr, conf)
+	return errors.Join(errs...)
 }

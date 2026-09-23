@@ -18,10 +18,11 @@ package primitives
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 type Buttons struct {
@@ -34,6 +35,7 @@ type Buttons struct {
 	boundingBox *types.Rectangle
 }
 
+// Rtl returns true if label is right to left.
 func (b *Buttons) Rtl() bool {
 	if b.Label == nil {
 		return false
@@ -44,23 +46,23 @@ func (b *Buttons) Rtl() bool {
 func (b *Buttons) validate(defValue, value string) error {
 
 	if len(b.Values) < 2 {
-		return errors.New("pdfcpu: radiobuttongroups.buttons missing values")
+		return errors.New("radiobuttongroups.buttons missing values")
 	}
 
 	if defValue != "" {
 		if !types.MemberOf(defValue, b.Values) {
-			return errors.Errorf("pdfcpu: radiobuttongroups invalid default: %s", defValue)
+			return fmt.Errorf("radiobuttongroups invalid default: %s", defValue)
 		}
 	}
 
 	if value != "" {
 		if !types.MemberOf(value, b.Values) {
-			return errors.Errorf("pdfcpu: radiobuttongroups invalid value: %s", value)
+			return fmt.Errorf("radiobuttongroups invalid value: %s", value)
 		}
 	}
 
 	if b.Label == nil {
-		return errors.New("pdfcpu: radiobuttongroups.buttons: missing label")
+		return errors.New("radiobuttongroups.buttons: missing label")
 	}
 
 	b.Label.pdf = b.pdf
@@ -70,7 +72,7 @@ func (b *Buttons) validate(defValue, value string) error {
 
 	pos := b.Label.relPos
 	if pos == types.RelPosTop || pos == types.RelPosBottom {
-		return errors.New("pdfcpu: radiobuttongroups.buttons.label: pos must be left or right")
+		return errors.New("radiobuttongroups.buttons.label: pos must be left or right")
 	}
 
 	b.Label.HorAlign = types.AlignLeft
@@ -86,11 +88,14 @@ func (b *Buttons) validate(defValue, value string) error {
 	return nil
 }
 
-func (b *Buttons) calcLeftAlignedHorLabelWidths(td model.TextDescriptor) {
+func (b *Buttons) calcLeftAlignedHorLabelWidths(td model.TextDescriptor) error {
 	var maxw float64
 	for i := 0; i < len(b.Values); i++ {
 		td.Text = b.Values[i]
-		bb := model.WriteMultiLine(b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+		bb, err := model.WriteMultiLine(b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+		if err != nil {
+			return fmt.Errorf("button label %d: %w", i+1, err)
+		}
 		// Leave last label width as is.
 		if i == len(b.Values)-1 {
 			b.maxWidth = maxw
@@ -100,19 +105,23 @@ func (b *Buttons) calcLeftAlignedHorLabelWidths(td model.TextDescriptor) {
 			if bb.Width() > maxw {
 				b.widths[i] = bb.Width()
 			}
-			return
+			return nil
 		}
 		if bb.Width() > maxw {
 			maxw = bb.Width()
 		}
 	}
+	return nil
 }
 
-func (b *Buttons) calcRightAlignedHorLabelWidths(td model.TextDescriptor) {
+func (b *Buttons) calcRightAlignedHorLabelWidths(td model.TextDescriptor) error {
 	var maxw float64
 	for i := 0; i < len(b.Values); i++ {
 		td.Text = b.Values[i]
-		bb := model.WriteMultiLine(b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+		bb, err := model.WriteMultiLine(b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+		if err != nil {
+			return fmt.Errorf("button label %d: %w", i+1, err)
+		}
 		// Leave first label width as is.
 		if i == 0 {
 			b.widths[0] = bb.Width()
@@ -129,21 +138,24 @@ func (b *Buttons) calcRightAlignedHorLabelWidths(td model.TextDescriptor) {
 	for i := 1; i < len(b.Values); i++ {
 		b.widths[i] = maxw
 	}
+	return nil
 }
 
-func (b *Buttons) calcHorLabelWidths(td model.TextDescriptor) {
+func (b *Buttons) calcHorLabelWidths(td model.TextDescriptor) error {
 	if b.Label.HorAlign == types.AlignLeft {
-		b.calcLeftAlignedHorLabelWidths(td)
-		return
+		return b.calcLeftAlignedHorLabelWidths(td)
 	}
-	b.calcRightAlignedHorLabelWidths(td)
+	return b.calcRightAlignedHorLabelWidths(td)
 }
 
-func (b *Buttons) calcVerLabelWidths(td model.TextDescriptor) {
+func (b *Buttons) calcVerLabelWidths(td model.TextDescriptor) error {
 	var maxw float64
-	for _, v := range b.Values {
+	for i, v := range b.Values {
 		td.Text = v
-		bb := model.WriteMultiLine(b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+		bb, err := model.WriteMultiLine(b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+		if err != nil {
+			return fmt.Errorf("button label %d: %w", i+1, err)
+		}
 		if bb.Width() > maxw {
 			maxw = bb.Width()
 		}
@@ -152,9 +164,10 @@ func (b *Buttons) calcVerLabelWidths(td model.TextDescriptor) {
 		b.widths[i] = maxw
 	}
 	b.maxWidth = maxw
+	return nil
 }
 
-func (b *Buttons) calcLabelWidths(hor bool) {
+func (b *Buttons) calcLabelWidths(hor bool) error {
 	b.widths = make([]float64, len(b.Values))
 	td := model.TextDescriptor{
 		FontName: b.Label.Font.Name,
@@ -164,8 +177,7 @@ func (b *Buttons) calcLabelWidths(hor bool) {
 		ScaleAbs: true,
 	}
 	if hor {
-		b.calcHorLabelWidths(td)
-		return
+		return b.calcHorLabelWidths(td)
 	}
-	b.calcVerLabelWidths(td)
+	return b.calcVerLabelWidths(td)
 }

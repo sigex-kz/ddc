@@ -141,6 +141,7 @@ func (a Array) indentedString(level int) string {
 	return strings.Join(logstr, "")
 }
 
+// String returns the string value of a.
 func (a Array) String() string {
 	return a.indentedString(1)
 }
@@ -195,6 +196,7 @@ func (a Array) PDFString() string {
 	return strings.Join(logstr, "")
 }
 
+// RemoveNulls removes nulls.
 func (a Array) RemoveNulls() Array {
 	if len(a) == 0 {
 		return a

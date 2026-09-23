@@ -17,11 +17,13 @@
 package primitives
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 // Content represents page content.
@@ -77,7 +79,7 @@ func (c *Content) validateBorders() error {
 	pdf := c.page.pdf
 	if c.Border != nil {
 		if len(c.Borders) > 0 {
-			return errors.New("pdfcpu: Please supply either content \"border\" or \"borders\"")
+			return errors.New("please supply either content \"border\" or \"borders\"")
 		}
 		c.Border.pdf = pdf
 		if err := c.Border.validate(); err != nil {
@@ -98,7 +100,7 @@ func (c *Content) validateBorders() error {
 func (c *Content) validateMargins() error {
 	if c.Margin != nil {
 		if len(c.Margins) > 0 {
-			return errors.New("pdfcpu: Please supply either page \"margin\" or \"margins\"")
+			return errors.New("please supply either page \"margin\" or \"margins\"")
 		}
 		if err := c.Margin.validate(); err != nil {
 			return err
@@ -117,7 +119,7 @@ func (c *Content) validateMargins() error {
 func (c *Content) validatePaddings() error {
 	if c.Padding != nil {
 		if len(c.Paddings) > 0 {
-			return errors.New("pdfcpu: Please supply either page \"padding\" or \"paddings\"")
+			return errors.New("please supply either page \"padding\" or \"paddings\"")
 		}
 		if err := c.Padding.validate(); err != nil {
 			return err
@@ -135,56 +137,56 @@ func (c *Content) validatePaddings() error {
 
 func (c *Content) validatePrimitives(s string) error {
 	if len(c.SimpleBoxPool) > 0 {
-		return errors.Errorf("pdfcpu: \"boxes\" %s", s)
+		return fmt.Errorf("\"boxes\" %s", s)
 	}
 	if len(c.SimpleBoxes) > 0 {
-		return errors.Errorf("pdfcpu: \"box\" %s", s)
+		return fmt.Errorf("\"box\" %s", s)
 	}
 	if len(c.TextBoxPool) > 0 {
-		return errors.Errorf("pdfcpu: \"texts\" %s", s)
+		return fmt.Errorf("\"texts\" %s", s)
 	}
 	if len(c.TextBoxes) > 0 {
-		return errors.Errorf("pdfcpu: \"text\" %s", s)
+		return fmt.Errorf("\"text\" %s", s)
 	}
 	if len(c.ImageBoxPool) > 0 {
-		return errors.Errorf("pdfcpu: \"images\" %s", s)
+		return fmt.Errorf("\"images\" %s", s)
 	}
 	if len(c.ImageBoxes) > 0 {
-		return errors.Errorf("pdfcpu: \"image\" %s", s)
+		return fmt.Errorf("\"image\" %s", s)
 	}
 	if len(c.TablePool) > 0 {
-		return errors.Errorf("pdfcpu: \"tables\" %s", s)
+		return fmt.Errorf("\"tables\" %s", s)
 	}
 	if len(c.Tables) > 0 {
-		return errors.Errorf("pdfcpu: \"table\" %s", s)
+		return fmt.Errorf("\"table\" %s", s)
 	}
 	return nil
 }
 
 func (c *Content) validateFormPrimitives(s string) error {
 	if len(c.FieldGroupPool) > 0 {
-		return errors.Errorf("pdfcpu: \"fieldgroups\" %s", s)
+		return fmt.Errorf("\"fieldgroups\" %s", s)
 	}
 	if len(c.FieldGroups) > 0 {
-		return errors.Errorf("pdfcpu: \"fieldgroup\" %s", s)
+		return fmt.Errorf("\"fieldgroup\" %s", s)
 	}
 	if len(c.TextFields) > 0 {
-		return errors.Errorf("pdfcpu: \"textfield\" %s", s)
+		return fmt.Errorf("\"textfield\" %s", s)
 	}
 	if len(c.DateFields) > 0 {
-		return errors.Errorf("pdfcpu: \"datefield\" %s", s)
+		return fmt.Errorf("\"datefield\" %s", s)
 	}
 	if len(c.CheckBoxes) > 0 {
-		return errors.Errorf("pdfcpu: \"checkbox\" %s", s)
+		return fmt.Errorf("\"checkbox\" %s", s)
 	}
 	if len(c.RadioButtonGroups) > 0 {
-		return errors.Errorf("pdfcpu: \"radiobuttongroup\" %s", s)
+		return fmt.Errorf("\"radiobuttongroup\" %s", s)
 	}
 	if len(c.ComboBoxes) > 0 {
-		return errors.Errorf("pdfcpu: \"combobox\" %s", s)
+		return fmt.Errorf("\"combobox\" %s", s)
 	}
 	if len(c.ListBoxes) > 0 {
-		return errors.Errorf("pdfcpu: \"listbox\" %s", s)
+		return fmt.Errorf("\"listbox\" %s", s)
 	}
 	return nil
 }
@@ -416,10 +418,31 @@ func (c *Content) validateListBoxes() error {
 	return nil
 }
 
-func (c *Content) validate() error {
+func (c *Content) validateFormPrimitiveGroups() error {
+	if err := c.validateTextFields(); err != nil {
+		return fmt.Errorf("text fields: %w", err)
+	}
+	if err := c.validateDateFields(); err != nil {
+		return fmt.Errorf("date fields: %w", err)
+	}
+	if err := c.validateCheckBoxes(); err != nil {
+		return fmt.Errorf("checkboxes: %w", err)
+	}
+	if err := c.validateRadioButtonGroups(); err != nil {
+		return fmt.Errorf("radio button groups: %w", err)
+	}
+	if err := c.validateComboBoxes(); err != nil {
+		return fmt.Errorf("combo boxes: %w", err)
+	}
+	if err := c.validateListBoxes(); err != nil {
+		return fmt.Errorf("list boxes: %w", err)
+	}
+	return nil
+}
 
+func (c *Content) validate() error {
 	if err := c.validateBackgroundColor(); err != nil {
-		return err
+		return fmt.Errorf("background color: %w", err)
 	}
 
 	for _, g := range c.Guides {
@@ -427,50 +450,36 @@ func (c *Content) validate() error {
 	}
 
 	if err := c.validateBorders(); err != nil {
-		return err
+		return fmt.Errorf("borders: %w", err)
 	}
 
 	if err := c.validateMargins(); err != nil {
-		return err
+		return fmt.Errorf("margins: %w", err)
 	}
 
 	if err := c.validatePaddings(); err != nil {
-		return err
+		return fmt.Errorf("paddings: %w", err)
 	}
 
 	if c.Regions != nil {
-		return c.validateRegions()
+		if err := c.validateRegions(); err != nil {
+			return fmt.Errorf("regions: %w", err)
+		}
+		return nil
 	}
 
 	if err := c.validateBars(); err != nil {
-		return err
+		return fmt.Errorf("bars: %w", err)
 	}
 
 	if err := c.validatePools(); err != nil {
-		return err
+		return fmt.Errorf("pools: %w", err)
 	}
 
-	if err := c.validateTextFields(); err != nil {
-		return err
+	if err := c.validateFormPrimitiveGroups(); err != nil {
+		return fmt.Errorf("form primitive groups: %w", err)
 	}
-
-	if err := c.validateDateFields(); err != nil {
-		return err
-	}
-
-	if err := c.validateCheckBoxes(); err != nil {
-		return err
-	}
-
-	if err := c.validateRadioButtonGroups(); err != nil {
-		return err
-	}
-
-	if err := c.validateComboBoxes(); err != nil {
-		return err
-	}
-
-	return c.validateListBoxes()
+	return nil
 }
 
 func (c *Content) namedFont(id string) *FormFont {
@@ -585,7 +594,6 @@ func (c *Content) namedFieldGroup(id string) *FieldGroup {
 }
 
 func (c *Content) calcFont(ff map[string]*FormFont) {
-
 	fff := map[string]*FormFont{}
 	for id, f0 := range ff {
 		fff[id] = f0
@@ -610,7 +618,7 @@ func (c *Content) calcFont(ff map[string]*FormFont) {
 func (c *Content) mergeIn(fName string, f *FormFont) error {
 	f0 := c.namedFont(fName)
 	if f0 == nil {
-		return errors.Errorf("pdfcpu: missing named font \"input\"")
+		return fmt.Errorf("missing named font \"input\"")
 	}
 	f.Name = f0.Name
 	if f.Size == 0 {
@@ -629,7 +637,6 @@ func (c *Content) mergeIn(fName string, f *FormFont) error {
 }
 
 func (c *Content) calcInputFont(f *FormFont) (*FormFont, error) {
-
 	if f != nil {
 		if f.Name == "" {
 			// Inherited named font "input".
@@ -648,7 +655,7 @@ func (c *Content) calcInputFont(f *FormFont) (*FormFont, error) {
 		// Use inherited named font "input".
 		f = c.namedFont("input")
 		if f == nil {
-			return nil, errors.Errorf("pdfcpu: missing named font \"input\"")
+			return nil, fmt.Errorf("missing named font \"input\"")
 		}
 	}
 
@@ -660,14 +667,13 @@ func (c *Content) calcInputFont(f *FormFont) (*FormFont, error) {
 }
 
 func (c *Content) calcLabelFont(f *FormFont) (*FormFont, error) {
-
 	if f != nil {
 		var f0 *FormFont
 		if f.Name == "" {
 			// Use inherited named font "label".
 			f0 = c.namedFont("label")
 			if f0 == nil {
-				return nil, errors.Errorf("pdfcpu: missing named font \"label\"")
+				return nil, fmt.Errorf("missing named font \"label\"")
 			}
 			f.Name = f0.Name
 			if f.Size == 0 {
@@ -685,7 +691,7 @@ func (c *Content) calcLabelFont(f *FormFont) (*FormFont, error) {
 			fName := f.Name[1:]
 			f0 := c.namedFont(fName)
 			if f0 == nil {
-				return nil, errors.Errorf("pdfcpu: unknown font name %s", fName)
+				return nil, fmt.Errorf("unknown font name %s", fName)
 			}
 			f.Name = f0.Name
 			if f.Size == 0 {
@@ -702,7 +708,7 @@ func (c *Content) calcLabelFont(f *FormFont) (*FormFont, error) {
 		// Use inherited named font "label".
 		f = c.namedFont("label")
 		if f == nil {
-			return nil, errors.Errorf("pdfcpu: missing named font \"label\"")
+			return nil, fmt.Errorf("missing named font \"label\"")
 		}
 	}
 
@@ -714,7 +720,6 @@ func (c *Content) calcLabelFont(f *FormFont) (*FormFont, error) {
 }
 
 func (c *Content) calcBorder(bb map[string]*Border) {
-
 	bbb := map[string]*Border{}
 	for id, b0 := range bb {
 		bbb[id] = b0
@@ -737,7 +742,6 @@ func (c *Content) calcBorder(bb map[string]*Border) {
 }
 
 func (c *Content) calcMargin(mm map[string]*Margin) {
-
 	mmm := map[string]*Margin{}
 	for id, m0 := range mm {
 		mmm[id] = m0
@@ -760,7 +764,6 @@ func (c *Content) calcMargin(mm map[string]*Margin) {
 }
 
 func (c *Content) calcPadding(pp map[string]*Padding) {
-
 	ppp := map[string]*Padding{}
 	for id, p0 := range pp {
 		ppp[id] = p0
@@ -783,7 +786,6 @@ func (c *Content) calcPadding(pp map[string]*Padding) {
 }
 
 func (c *Content) calcSimpleBoxes(bb map[string]*SimpleBox) {
-
 	bbb := map[string]*SimpleBox{}
 	for id, sb0 := range bb {
 		bbb[id] = sb0
@@ -806,7 +808,6 @@ func (c *Content) calcSimpleBoxes(bb map[string]*SimpleBox) {
 }
 
 func (c *Content) calcTextBoxes(bb map[string]*TextBox) {
-
 	bbb := map[string]*TextBox{}
 	for id, tb0 := range bb {
 		bbb[id] = tb0
@@ -829,7 +830,6 @@ func (c *Content) calcTextBoxes(bb map[string]*TextBox) {
 }
 
 func (c *Content) calcImageBoxes(bb map[string]*ImageBox) {
-
 	bbb := map[string]*ImageBox{}
 	for id, ib0 := range bb {
 		bbb[id] = ib0
@@ -852,7 +852,6 @@ func (c *Content) calcImageBoxes(bb map[string]*ImageBox) {
 }
 
 func (c *Content) calcTables(bb map[string]*Table) {
-
 	bbb := map[string]*Table{}
 	for id, t0 := range bb {
 		bbb[id] = t0
@@ -875,7 +874,6 @@ func (c *Content) calcTables(bb map[string]*Table) {
 }
 
 func (c *Content) calcFieldGroups(bb map[string]*FieldGroup) {
-
 	bbb := map[string]*FieldGroup{}
 	for id, fg0 := range bb {
 		bbb[id] = fg0
@@ -899,7 +897,6 @@ func (c *Content) calcFieldGroups(bb map[string]*FieldGroup) {
 
 // BorderRect returns the border rect for c.
 func (c *Content) BorderRect() *types.Rectangle {
-
 	if c.borderRect == nil {
 
 		mLeft, mRight, mTop, mBottom, borderWidth := 0., 0., 0., 0., 0.
@@ -928,8 +925,8 @@ func (c *Content) BorderRect() *types.Rectangle {
 	return c.borderRect
 }
 
+// Box retunrs a rectangle for c.
 func (c *Content) Box() *types.Rectangle {
-
 	if c.box == nil {
 
 		var mTop, mRight, mBottom, mLeft float64
@@ -976,7 +973,6 @@ func (c *Content) Box() *types.Rectangle {
 }
 
 func (c *Content) calcPosition(x, y, dx, dy, mTop, mRight, mBottom, mLeft float64) (float64, float64) {
-
 	cBox := c.Box()
 
 	r := cBox.CroppedCopy(0)
@@ -1034,19 +1030,19 @@ func (c *Content) calcPosition(x, y, dx, dy, mTop, mRight, mBottom, mLeft float6
 }
 
 func (c *Content) renderBars(p *model.Page) error {
-	for _, b := range c.Bars {
+	for i, b := range c.Bars {
 		if b.Hide {
 			continue
 		}
 		if err := b.render(p); err != nil {
-			return err
+			return fmt.Errorf("bar %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderSimpleBoxes(p *model.Page) error {
-	for _, sb := range c.SimpleBoxes {
+	for i, sb := range c.SimpleBoxes {
 		if sb.Hide {
 			continue
 		}
@@ -1055,19 +1051,19 @@ func (c *Content) renderSimpleBoxes(p *model.Page) error {
 			sbName := sb.Name[1:]
 			sb0 := c.namedSimpleBox(sbName)
 			if sb0 == nil {
-				return errors.Errorf("pdfcpu: unknown named box %s", sbName)
+				return fmt.Errorf("box %d: unknown named box %s", i+1, sbName)
 			}
 			sb.mergeIn(sb0)
 		}
 		if err := sb.render(p); err != nil {
-			return err
+			return fmt.Errorf("box %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderTextBoxes(p *model.Page, pageNr int, fonts model.FontMap) error {
-	for _, tb := range c.TextBoxes {
+	for i, tb := range c.TextBoxes {
 		if tb.Hide {
 			continue
 		}
@@ -1076,19 +1072,19 @@ func (c *Content) renderTextBoxes(p *model.Page, pageNr int, fonts model.FontMap
 			tbName := tb.Name[1:]
 			tb0 := c.namedTextBox(tbName)
 			if tb0 == nil {
-				return errors.Errorf("pdfcpu: unknown named text %s", tbName)
+				return fmt.Errorf("text %d: unknown named text %s", i+1, tbName)
 			}
 			tb.mergeIn(tb0)
 		}
 		if err := tb.render(p, pageNr, fonts); err != nil {
-			return err
+			return fmt.Errorf("text %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderImageBoxes(p *model.Page, pageNr int, images model.ImageMap) error {
-	for _, ib := range c.ImageBoxes {
+	for i, ib := range c.ImageBoxes {
 		if ib.Hide {
 			continue
 		}
@@ -1097,19 +1093,19 @@ func (c *Content) renderImageBoxes(p *model.Page, pageNr int, images model.Image
 			ibName := ib.Name[1:]
 			ib0 := c.namedImageBox(ibName)
 			if ib0 == nil {
-				return errors.Errorf("pdfcpu: unknown named image %s", ibName)
+				return fmt.Errorf("image %d: unknown named image %s", i+1, ibName)
 			}
 			ib.mergeIn(ib0)
 		}
 		if err := ib.render(p, pageNr, images); err != nil {
-			return err
+			return fmt.Errorf("image %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderTables(p *model.Page, pageNr int, fonts model.FontMap) error {
-	for _, t := range c.Tables {
+	for i, t := range c.Tables {
 		if t.Hide {
 			continue
 		}
@@ -1118,91 +1114,91 @@ func (c *Content) renderTables(p *model.Page, pageNr int, fonts model.FontMap) e
 			tName := t.Name[1:]
 			t0 := c.namedTable(tName)
 			if t0 == nil {
-				return errors.Errorf("pdfcpu: unknown named table %s", tName)
+				return fmt.Errorf("table %d: unknown named table %s", i+1, tName)
 			}
 			t.mergeIn(t0)
 		}
 		if err := t.render(p, pageNr, fonts); err != nil {
-			return err
+			return fmt.Errorf("table %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderTextFields(p *model.Page, pageNr int, fonts model.FontMap) error {
-	for _, tf := range c.TextFields {
+	for i, tf := range c.TextFields {
 		if tf.Hide {
 			continue
 		}
 		if err := tf.render(p, pageNr, fonts); err != nil {
-			return err
+			return fmt.Errorf("text field %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderDateFields(p *model.Page, pageNr int, fonts model.FontMap) error {
-	for _, df := range c.DateFields {
+	for i, df := range c.DateFields {
 		if df.Hide {
 			continue
 		}
 		if err := df.render(p, pageNr, fonts); err != nil {
-			return err
+			return fmt.Errorf("date field %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderCheckBoxes(p *model.Page, pageNr int, fonts model.FontMap) error {
-	for _, cb := range c.CheckBoxes {
+	for i, cb := range c.CheckBoxes {
 		if cb.Hide {
 			continue
 		}
 		if err := cb.render(p, pageNr, fonts); err != nil {
-			return err
+			return fmt.Errorf("checkbox %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderRadioButtonGroups(p *model.Page, pageNr int, fonts model.FontMap) error {
-	for _, rbg := range c.RadioButtonGroups {
+	for i, rbg := range c.RadioButtonGroups {
 		if rbg.Hide {
 			continue
 		}
 		if err := rbg.render(p, pageNr, fonts); err != nil {
-			return err
+			return fmt.Errorf("radio button group %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderComboBoxes(p *model.Page, pageNr int, fonts model.FontMap) error {
-	for _, cb := range c.ComboBoxes {
+	for i, cb := range c.ComboBoxes {
 		if cb.Hide {
 			continue
 		}
 		if err := cb.render(p, pageNr, fonts); err != nil {
-			return err
+			return fmt.Errorf("combo box %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderListBoxes(p *model.Page, pageNr int, fonts model.FontMap) error {
-	for _, lb := range c.ListBoxes {
+	for i, lb := range c.ListBoxes {
 		if lb.Hide {
 			continue
 		}
 		if err := lb.render(p, pageNr, fonts); err != nil {
-			return err
+			return fmt.Errorf("list box %d: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
 func (c *Content) renderFieldGroups(p *model.Page, pageNr int, fonts model.FontMap) error {
-	for _, fg := range c.FieldGroups {
+	for i, fg := range c.FieldGroups {
 		if fg.Hide {
 			continue
 		}
@@ -1211,12 +1207,12 @@ func (c *Content) renderFieldGroups(p *model.Page, pageNr int, fonts model.FontM
 			fgName := fg.Name[1:]
 			fg0 := c.namedFieldGroup(fgName)
 			if fg0 == nil {
-				return errors.Errorf("pdfcpu: unknown named field group %s", fgName)
+				return fmt.Errorf("field group %d: unknown named field group %s", i+1, fgName)
 			}
 			fg.mergeIn(fg0)
 		}
 		if err := fg.render(p, pageNr, fonts); err != nil {
-			return err
+			return fmt.Errorf("field group %d: %w", i+1, err)
 		}
 	}
 	return nil
@@ -1241,58 +1237,66 @@ func (c *Content) renderBoxesAndGuides(p *model.Page) {
 
 func (c *Content) renderPrimitives(p *model.Page, pageNr int, fonts model.FontMap, images model.ImageMap) error {
 	if err := c.renderBars(p); err != nil {
-		return err
+		return fmt.Errorf("bars: %w", err)
 	}
 
 	if err := c.renderSimpleBoxes(p); err != nil {
-		return err
+		return fmt.Errorf("boxes: %w", err)
 	}
 
 	if err := c.renderTextBoxes(p, pageNr, fonts); err != nil {
-		return err
+		return fmt.Errorf("text boxes: %w", err)
 	}
 
 	if err := c.renderImageBoxes(p, pageNr, images); err != nil {
-		return err
+		return fmt.Errorf("images: %w", err)
 	}
 
-	return c.renderTables(p, pageNr, fonts)
+	if err := c.renderTables(p, pageNr, fonts); err != nil {
+		return fmt.Errorf("tables: %w", err)
+	}
+	return nil
 }
 
 func (c *Content) renderFormPrimitives(p *model.Page, pageNr int, fonts model.FontMap) error {
 	if err := c.renderTextFields(p, pageNr, fonts); err != nil {
-		return err
+		return fmt.Errorf("text fields: %w", err)
 	}
 
 	if err := c.renderDateFields(p, pageNr, fonts); err != nil {
-		return err
+		return fmt.Errorf("date fields: %w", err)
 	}
 
 	if err := c.renderCheckBoxes(p, pageNr, fonts); err != nil {
-		return err
+		return fmt.Errorf("checkboxes: %w", err)
 	}
 
 	if err := c.renderRadioButtonGroups(p, pageNr, fonts); err != nil {
-		return err
+		return fmt.Errorf("radio button groups: %w", err)
 	}
 
 	if err := c.renderComboBoxes(p, pageNr, fonts); err != nil {
-		return err
+		return fmt.Errorf("combo boxes: %w", err)
 	}
 
 	if err := c.renderListBoxes(p, pageNr, fonts); err != nil {
-		return err
+		return fmt.Errorf("list boxes: %w", err)
 	}
 
-	return c.renderFieldGroups(p, pageNr, fonts)
+	if err := c.renderFieldGroups(p, pageNr, fonts); err != nil {
+		return fmt.Errorf("field groups: %w", err)
+	}
+	return nil
 }
 
 func (c *Content) render(p *model.Page, pageNr int, fonts model.FontMap, images model.ImageMap) error {
-
 	if c.Regions != nil {
 		c.Regions.mediaBox = c.mediaBox
 		c.Regions.page = c.page
-		return c.Regions.render(p, pageNr, fonts, images)
+		if err := c.Regions.render(p, pageNr, fonts, images); err != nil {
+			return fmt.Errorf("regions: %w", err)
+		}
+		return nil
 	}
 
 	// Render background
@@ -1307,11 +1311,11 @@ func (c *Content) render(p *model.Page, pageNr int, fonts model.FontMap, images 
 	}
 
 	if err := c.renderPrimitives(p, pageNr, fonts, images); err != nil {
-		return err
+		return fmt.Errorf("primitives: %w", err)
 	}
 
 	if err := c.renderFormPrimitives(p, pageNr, fonts); err != nil {
-		return err
+		return fmt.Errorf("form primitives: %w", err)
 	}
 
 	c.renderBoxesAndGuides(p)

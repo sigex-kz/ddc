@@ -17,17 +17,22 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pkg/errors"
 )
 
 // Permissions returns user access permissions for rs.
-func Permissions(rs io.ReadSeeker, conf *model.Configuration) (int, error) {
+func Permissions(rs io.ReadSeeker, conf *model.Configuration) (p int, err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
-		return 0, errors.New("pdfcpu: Permissions: missing rs")
+		return 0, ErrMissingPDFReadSeeker
 	}
 
 	if conf == nil {
@@ -37,10 +42,9 @@ func Permissions(rs io.ReadSeeker, conf *model.Configuration) (int, error) {
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("list permissions: %w", err)
 	}
 
-	p := 0
 	if ctx.E != nil {
 		p = ctx.E.P
 	}
@@ -48,85 +52,67 @@ func Permissions(rs io.ReadSeeker, conf *model.Configuration) (int, error) {
 	return p, nil
 }
 
+// PermissionsList returns formatted user access permissions for rs.
+func PermissionsList(rs io.ReadSeeker, conf *model.Configuration) ([]string, error) {
+	p, err := Permissions(rs, conf)
+	if err != nil {
+		return nil, err
+	}
+	return pdfcpu.PermissionsList(p), nil
+}
+
 // SetPermissions sets user access permissions.
 // inFile has to be encrypted.
 // A configuration containing the current passwords is required.
-func SetPermissions(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) error {
+func SetPermissions(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
-		return errors.New("pdfcpu: SetPermissions: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
 	}
 
 	if conf == nil {
-		return errors.New("pdfcpu: missing configuration for setting permissions")
+		return ErrMissingConfiguration
 	}
 	conf.Cmd = model.SETPERMISSIONS
 
 	ctx, err := ReadValidateAndOptimize(rs, conf)
 	if err != nil {
-		return err
+		return fmt.Errorf("set permissions: %w", err)
 	}
 
-	return WriteContext(ctx, w)
+	if err := WriteContext(ctx, w); err != nil {
+		return fmt.Errorf("set permissions: write output: %w", err)
+	}
+	return nil
 }
 
 // SetPermissionsFile sets inFile's user access permissions.
 // inFile has to be encrypted.
 // A configuration containing the current passwords is required.
-func SetPermissionsFile(inFile, outFile string, conf *model.Configuration) (err error) {
+func SetPermissionsFile(inFile, outFile string, conf *model.Configuration) error {
+	const op = "set permissions"
+
 	if conf == nil {
-		return errors.New("pdfcpu: missing configuration for setting permissions")
+		return ErrMissingConfiguration
+	}
+	if inFile == "" {
+		return ErrMissingPDFInput
 	}
 
-	var f1, f2 *os.File
-	ok := false
-
-	if f1, err = os.Open(inFile); err != nil {
-		return err
-	}
-
-	tmpFile := inFile + ".tmp"
-	if outFile != "" && inFile != outFile {
-		tmpFile = outFile
-		logWritingTo(outFile)
-	} else {
-		logWritingTo(inFile)
-	}
-	if f2, err = os.Create(tmpFile); err != nil {
-		_ = f1.Close()
-		return err
-	}
-
-	defer func() {
-		if !ok {
-			_ = f2.Close()
-			_ = f1.Close()
-			os.Remove(tmpFile)
-			return
-		}
-		if err = f2.Close(); err != nil {
-			return
-		}
-		if err = f1.Close(); err != nil {
-			return
-		}
-		if outFile == "" || inFile == outFile {
-			err = os.Rename(tmpFile, inFile)
-		}
-	}()
-
-	if err = SetPermissions(f1, f2, conf); err != nil {
-		return err
-	}
-
-	ok = true
-
-	return nil
+	return processSecurityFile(inFile, outFile, conf, op, SetPermissions)
 }
 
 // GetPermissions returns the permissions for rs.
-func GetPermissions(rs io.ReadSeeker, conf *model.Configuration) (*int16, error) {
+func GetPermissions(rs io.ReadSeeker, conf *model.Configuration) (p *int16, err error) {
+	defer fault.Catch(&err)
+
 	if rs == nil {
-		return nil, errors.New("pdfcpu: GetPermissions: missing rs")
+		return nil, ErrMissingPDFReadSeeker
 	}
 
 	if conf == nil {
@@ -136,25 +122,35 @@ func GetPermissions(rs io.ReadSeeker, conf *model.Configuration) (*int16, error)
 
 	ctx, err := ReadAndValidate(rs, conf)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get permissions: %w", err)
 	}
 
 	if ctx.E == nil {
 		// Full access - permissions don't apply.
 		return nil, nil
 	}
-	p := int16(ctx.E.P)
+	permissions := int16(ctx.E.P)
 
-	return &p, nil
+	return &permissions, nil
 }
 
 // GetPermissionsFile returns the permissions for inFile.
-func GetPermissionsFile(inFile string, conf *model.Configuration) (*int16, error) {
+func GetPermissionsFile(inFile string, conf *model.Configuration) (p *int16, err error) {
+	const op = "get permissions"
+
+	if inFile == "" {
+		return nil, ErrMissingPDFInput
+	}
+
 	f, err := os.Open(inFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: open input %s: %w", op, inFile, err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("%s: close input: %w", op, closeErr))
+		}
+	}()
 
 	return GetPermissions(f, conf)
 }

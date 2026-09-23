@@ -18,6 +18,7 @@ package model
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -25,7 +26,6 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 // Attachment is a Reader representing a PDF attachment.
@@ -37,6 +37,7 @@ type Attachment struct {
 	ModTime   *time.Time // time of last modification (optional)
 }
 
+// String returns the string value of a.
 func (a Attachment) String() string {
 	return fmt.Sprintf("Attachment: id:%s desc:%s modTime:%s", a.ID, a.Desc, a.ModTime)
 }
@@ -74,8 +75,11 @@ func fileSpecStreamDict(xRefTable *XRefTable, d types.Dict) (*types.StreamDict, 
 	}
 
 	d, err := xRefTable.DereferenceDict(o)
-	if err != nil || d == nil {
-		return nil, err
+	if err != nil {
+		return nil, fmt.Errorf("file spec EF: dereference dict: %w", err)
+	}
+	if d == nil {
+		return nil, nil
 	}
 
 	// Entry F holds the embedded file's data.
@@ -85,10 +89,13 @@ func fileSpecStreamDict(xRefTable *XRefTable, d types.Dict) (*types.StreamDict, 
 	}
 
 	sd, _, err := xRefTable.DereferenceStreamDict(o)
-	return sd, err
+	if err != nil {
+		return nil, fmt.Errorf("file spec EF/F: dereference stream dict: %w", err)
+	}
+	return sd, nil
 }
 
-// NewFileSpectDictForAttachment returns a fileSpecDict for a.
+// NewFileSpecDictForAttachment returns a fileSpecDict for a.
 func (xRefTable *XRefTable) NewFileSpecDictForAttachment(a Attachment) (types.Dict, error) {
 	modTime := time.Now()
 	if a.ModTime != nil {
@@ -96,27 +103,38 @@ func (xRefTable *XRefTable) NewFileSpecDictForAttachment(a Attachment) (types.Di
 	}
 	sd, err := xRefTable.NewEmbeddedStreamDict(a, modTime)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("attachment %q: create embedded stream: %w", a.ID, err)
 	}
 
 	// TODO insert (escaped) reverse solidus before solidus between file name components.
 
-	return xRefTable.NewFileSpecDict(a.ID, a.ID, a.Desc, *sd)
+	d, err := xRefTable.NewFileSpecDict(a.ID, a.ID, a.Desc, *sd)
+	if err != nil {
+		return nil, fmt.Errorf("attachment %q: create file spec: %w", a.ID, err)
+	}
+	return d, nil
 }
 
+var (
+	errInvalidModDateType = errors.New("invalid ModDate type")
+	errInvalidModDate     = errors.New("invalid ModDate")
+)
+
 func getModDate(xRefTable *XRefTable, obj types.Object) (*time.Time, error) {
-	errInvalidModDate := errors.New("pdfcpu: invalid date ModDate")
 	o, err := xRefTable.Dereference(obj)
-	if err != nil || o == nil {
-		return nil, errInvalidModDate
+	if err != nil {
+		return nil, fmt.Errorf("dereference: %w", err)
+	}
+	if o == nil {
+		return nil, errInvalidModDateType
 	}
 	sl, ok := o.(types.StringLiteral)
 	if !ok {
-		return nil, errInvalidModDate
+		return nil, errInvalidModDateType
 	}
 	s, err := types.StringLiteralToString(sl)
 	if err != nil {
-		return nil, errInvalidModDate
+		return nil, fmt.Errorf("decode text: %w", err)
 	}
 	md, ok := types.DateTime(s, xRefTable.ValidationMode == ValidationRelaxed)
 	if !ok {
@@ -128,7 +146,10 @@ func getModDate(xRefTable *XRefTable, obj types.Object) (*time.Time, error) {
 func fileSpecStreamDictInfo(xRefTable *XRefTable, id string, o types.Object, decode bool) (*types.StreamDict, string, string, *time.Time, error) {
 	d, err := xRefTable.DereferenceDict(o)
 	if err != nil {
-		return nil, "", "", nil, err
+		return nil, "", "", nil, fmt.Errorf("file spec %q: dereference dict: %w", id, err)
+	}
+	if d == nil {
+		return nil, "", "", nil, fmt.Errorf("file spec %q: missing dictionary", id)
 	}
 
 	var desc string
@@ -136,18 +157,21 @@ func fileSpecStreamDictInfo(xRefTable *XRefTable, id string, o types.Object, dec
 	if found {
 		desc, err = xRefTable.DereferenceStringOrHexLiteral(o, V10, nil)
 		if err != nil {
-			return nil, "", "", nil, err
+			return nil, "", "", nil, fmt.Errorf("file spec %q: Desc: %w", id, err)
 		}
 	}
 
 	fileName, err := fileSpecStreamFileName(xRefTable, d)
 	if err != nil {
-		return nil, "", "", nil, err
+		return nil, "", "", nil, fmt.Errorf("file spec %q: filename: %w", id, err)
 	}
 
 	sd, err := fileSpecStreamDict(xRefTable, d)
 	if err != nil {
-		return nil, "", "", nil, err
+		return nil, "", "", nil, fmt.Errorf("file spec %q: stream dict: %w", id, err)
+	}
+	if sd == nil {
+		return nil, "", "", nil, fmt.Errorf("file spec %q: missing embedded file stream", id)
 	}
 
 	var modDate *time.Time
@@ -156,22 +180,33 @@ func fileSpecStreamDictInfo(xRefTable *XRefTable, id string, o types.Object, dec
 		if ok {
 			modDate, err = getModDate(xRefTable, obj)
 			if err != nil {
-				return nil, desc, "", nil, err
+				return nil, desc, "", nil, fmt.Errorf("file spec %q: ModDate: %w", id, err)
 			}
 		}
 	}
 
-	err = decodeFileSpecStreamDict(sd)
+	if decode {
+		if err = decodeFileSpecStreamDict(sd); err != nil {
+			return nil, desc, fileName, modDate, fmt.Errorf("file spec %q: decode stream: %w", id, err)
+		}
+	}
 
-	return sd, desc, fileName, modDate, err
+	return sd, desc, fileName, modDate, nil
 }
 
 // ListAttachments returns a slice of attachment stubs (attachment w/o data).
 func (ctx *Context) ListAttachments() ([]Attachment, error) {
+	if ctx == nil {
+		return nil, ErrMissingPDFContext
+	}
+	if ctx.XRefTable == nil {
+		return nil, ErrMissingXRefTable
+	}
+
 	xRefTable := ctx.XRefTable
 	if !xRefTable.Valid {
 		if err := xRefTable.LocateNameTree("EmbeddedFiles", false); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("EmbeddedFiles name tree: locate: %w", err)
 		}
 	}
 	if xRefTable.Names["EmbeddedFiles"] == nil {
@@ -192,7 +227,7 @@ func (ctx *Context) ListAttachments() ([]Attachment, error) {
 
 	// Extract stub info.
 	if err := ctx.Names["EmbeddedFiles"].Process(xRefTable, createAttachmentStub); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("EmbeddedFiles name tree: list attachments: %w", err)
 	}
 
 	return aa, nil
@@ -202,13 +237,13 @@ func (ctx *Context) ListAttachments() ([]Attachment, error) {
 func (ctx *Context) AddAttachment(a Attachment, useCollection bool) error {
 	xRefTable := ctx.XRefTable
 	if err := xRefTable.LocateNameTree("EmbeddedFiles", true); err != nil {
-		return err
+		return fmt.Errorf("EmbeddedFiles name tree: locate: %w", err)
 	}
 
 	if useCollection {
 		// Ensure a Collection entry in the catalog.
 		if err := xRefTable.EnsureCollection(); err != nil {
-			return err
+			return fmt.Errorf("catalog Collection: ensure: %w", err)
 		}
 	}
 
@@ -219,19 +254,21 @@ func (ctx *Context) AddAttachment(a Attachment, useCollection bool) error {
 
 	ir, err := xRefTable.IndRefForNewObject(d)
 	if err != nil {
-		return err
+		return fmt.Errorf("attachment %q file spec: add object: %w", a.ID, err)
 	}
 
 	m := NameMap{a.ID: []types.Dict{d}}
 
-	return xRefTable.Names["EmbeddedFiles"].Add(xRefTable, a.ID, *ir, m, []string{"F", "UF"})
+	if err := xRefTable.Names["EmbeddedFiles"].Add(xRefTable, a.ID, *ir, m, []string{"F", "UF"}); err != nil {
+		return fmt.Errorf("EmbeddedFiles name tree: add attachment %q: %w", a.ID, err)
+	}
+	return nil
 }
 
 var errContentMatch = errors.New("name tree content match")
 
 // SearchEmbeddedFilesNameTreeNodeByContent tries to identify a name tree by content.
 func (ctx *Context) SearchEmbeddedFilesNameTreeNodeByContent(s string) (*string, types.Object, error) {
-
 	var (
 		k *string
 		v types.Object
@@ -252,8 +289,8 @@ func (ctx *Context) SearchEmbeddedFilesNameTreeNodeByContent(s string) (*string,
 	}
 
 	if err := ctx.Names["EmbeddedFiles"].Process(ctx.XRefTable, identifyAttachmentStub); err != nil {
-		if err != errContentMatch {
-			return nil, nil, err
+		if !errors.Is(err, errContentMatch) {
+			return nil, nil, fmt.Errorf("EmbeddedFiles name tree: search attachments: %w", err)
 		}
 		// Node identified.
 		return k, v, nil
@@ -270,12 +307,12 @@ func (ctx *Context) removeAttachment(id string) (bool, error) {
 	// EmbeddedFiles name tree containing at least one key value pair.
 	empty, ok, err := xRefTable.Names["EmbeddedFiles"].Remove(xRefTable, id)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("EmbeddedFiles name tree: remove attachment %q: %w", id, err)
 	}
 	if empty {
 		// Delete name tree root object.
 		if err := xRefTable.RemoveEmbeddedFilesNameTree(); err != nil {
-			return false, err
+			return false, fmt.Errorf("EmbeddedFiles name tree: remove root: %w", err)
 		}
 	}
 	if !ok {
@@ -292,12 +329,12 @@ func (ctx *Context) removeAttachment(id string) (bool, error) {
 		}
 		empty, _, err = xRefTable.Names["EmbeddedFiles"].Remove(xRefTable, *k)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("EmbeddedFiles name tree: remove attachment %q: %w", *k, err)
 		}
 		if empty {
 			// Delete name tree root object.
 			if err := xRefTable.RemoveEmbeddedFilesNameTree(); err != nil {
-				return false, err
+				return false, fmt.Errorf("EmbeddedFiles name tree: remove root: %w", err)
 			}
 		}
 	}
@@ -310,11 +347,11 @@ func (ctx *Context) RemoveAttachments(ids []string) (bool, error) {
 	xRefTable := ctx.XRefTable
 	if !xRefTable.Valid {
 		if err := xRefTable.LocateNameTree("EmbeddedFiles", false); err != nil {
-			return false, err
+			return false, fmt.Errorf("EmbeddedFiles name tree: locate: %w", err)
 		}
 	}
 	if xRefTable.Names["EmbeddedFiles"] == nil {
-		return false, errors.Errorf("no attachments available.")
+		return false, nil
 	}
 
 	if len(ids) == 0 {
@@ -323,7 +360,7 @@ func (ctx *Context) RemoveAttachments(ids []string) (bool, error) {
 			log.CLI.Println("removing all attachments")
 		}
 		if err := xRefTable.RemoveEmbeddedFilesNameTree(); err != nil {
-			return false, err
+			return false, fmt.Errorf("EmbeddedFiles name tree: remove root: %w", err)
 		}
 		return true, nil
 	}
@@ -351,11 +388,11 @@ func (ctx *Context) ExtractAttachments(ids []string) ([]Attachment, error) {
 	xRefTable := ctx.XRefTable
 	if !xRefTable.Valid {
 		if err := xRefTable.LocateNameTree("EmbeddedFiles", false); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("EmbeddedFiles name tree: locate: %w", err)
 		}
 	}
 	if xRefTable.Names["EmbeddedFiles"] == nil {
-		return nil, errors.Errorf("no attachments available.")
+		return nil, errors.New("EmbeddedFiles name tree: no attachments available")
 	}
 
 	aa := []Attachment{}
@@ -374,6 +411,7 @@ func (ctx *Context) ExtractAttachments(ids []string) ([]Attachment, error) {
 	// Search with UF,F,Desc
 	if len(ids) > 0 {
 		for _, id := range ids {
+			attachmentID := id
 			v, ok := ctx.Names["EmbeddedFiles"].Value(id)
 			if !ok {
 				// Try to identify name tree node by content.
@@ -390,9 +428,10 @@ func (ctx *Context) ExtractAttachments(ids []string) ([]Attachment, error) {
 					}
 					continue
 				}
+				attachmentID = *k
 				v = o
 			}
-			if err := createAttachment(ctx.XRefTable, id, &v); err != nil {
+			if err := createAttachment(ctx.XRefTable, attachmentID, &v); err != nil {
 				return nil, err
 			}
 		}
@@ -401,7 +440,7 @@ func (ctx *Context) ExtractAttachments(ids []string) ([]Attachment, error) {
 
 	// Extract all files.
 	if err := ctx.Names["EmbeddedFiles"].Process(ctx.XRefTable, createAttachment); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("EmbeddedFiles name tree: extract attachments: %w", err)
 	}
 
 	return aa, nil
@@ -414,11 +453,12 @@ func (ctx *Context) ExtractAttachment(a Attachment) (*Attachment, error) {
 		return nil, err
 	}
 	if len(aa) > 1 {
-		return nil, errors.Errorf("pdfcpu: unexpected number of attachments: %d", len(aa))
+		return nil, fmt.Errorf("unexpected number of attachments: %d", len(aa))
 	}
 	return &aa[0], nil
 }
 
+// AddAttachmentsToInfoDigest adds attachments to info digest.
 func (ctx *Context) AddAttachmentsToInfoDigest(ss *[]string) error {
 	aa, err := ctx.ListAttachments()
 	if err != nil {

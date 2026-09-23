@@ -17,7 +17,9 @@ limitations under the License.
 package validate
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -25,13 +27,11 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
-var errInvalidPageAnnotArray = errors.New("pdfcpu: validatePageAnnotations: page annotation array without indirect references.")
+var errInvalidPageAnnotArray = errors.New("page annotation array: expected indirect references")
 
 func validateBorderEffectDictEntry(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
-
 	// see 12.5.4
 
 	d1, err := validateDictEntry(xRefTable, d, dictName, entryName, required, sinceVersion, nil)
@@ -59,7 +59,6 @@ func validateBorderEffectDictEntry(xRefTable *model.XRefTable, d types.Dict, dic
 }
 
 func validateBorderStyleDict(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
-
 	// see 12.5.4
 
 	d1, err := validateDictEntry(xRefTable, d, dictName, entryName, required, sinceVersion, nil)
@@ -96,7 +95,6 @@ func validateBorderStyleDict(xRefTable *model.XRefTable, d types.Dict, dictName,
 }
 
 func validateIconFitDictEntry(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
-
 	// see table 247
 
 	d1, err := validateDictEntry(xRefTable, d, dictName, entryName, required, sinceVersion, nil)
@@ -131,7 +129,6 @@ func validateIconFitDictEntry(xRefTable *model.XRefTable, d types.Dict, dictName
 }
 
 func validateAppearanceCharacteristicsDictEntry(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
-
 	// see 12.5.6.19
 
 	d1, err := validateDictEntry(xRefTable, d, dictName, entryName, required, sinceVersion, nil)
@@ -197,8 +194,40 @@ func validateAppearanceCharacteristicsDictEntry(xRefTable *model.XRefTable, d ty
 	return err
 }
 
-func validateAnnotationDictText(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+func validateTextAnnotationState(xRefTable *model.XRefTable, dictName string, state, stateModel *string) error {
+	if state == nil {
+		if stateModel != nil {
+			return fmt.Errorf("dict=%s missing State for StateModel=%s", dictName, *stateModel)
+		}
+		return nil
+	}
 
+	standard := types.MemberOf(*stateModel, []string{"Marked", "Review"})
+	if !standard {
+		msg := fmt.Sprintf("dict=%s entry=StateModel invalid dict entry: %s", dictName, *stateModel)
+		if xRefTable.ValidationMode != model.ValidationRelaxed || len(*stateModel) == 0 {
+			return errors.New(msg)
+		}
+		if len(*state) == 0 {
+			return fmt.Errorf("dict=%s invalid State=%s for StateModel=%s", dictName, *state, *stateModel)
+		}
+		model.ShowDigestedSpecViolation(msg)
+		return nil
+	}
+
+	// Ensure that the state/model combo is valid.
+	validStates := []string{"Accepted", "Rejected", "Cancelled", "Completed", "None"} // stateModel "Review"
+	if *stateModel == "Marked" {
+		validStates = []string{"Marked", "Unmarked"}
+	}
+	if !types.MemberOf(*state, validStates) {
+		return fmt.Errorf("dict=%s invalid State=%s for StateModel=%s", dictName, *state, *stateModel)
+	}
+
+	return nil
+}
+
+func validateAnnotationDictText(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
 	// see 12.5.6.4
 
 	// Open, optional, boolean
@@ -222,44 +251,22 @@ func validateAnnotationDictText(xRefTable *model.XRefTable, d types.Dict, dictNa
 	}
 
 	// StateModel, text string, since V1.5
-	sinceVersion = model.V15
-	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		sinceVersion = model.V14
-	}
-	validate := func(s string) bool { return types.MemberOf(s, []string{"Marked", "Review"}) }
-	stateModel, err := validateStringEntry(xRefTable, d, dictName, "StateModel", state != nil, sinceVersion, validate)
+	stateModel, err := validateStringEntry(xRefTable, d, dictName, "StateModel", state != nil, sinceVersion, nil)
 	if err != nil {
 		return err
 	}
 
-	if state == nil {
-		if stateModel != nil {
-			return errors.Errorf("pdfcpu: validateAnnotationDictText: dict=%s missing state for statemodel=%s", dictName, *stateModel)
-		}
-		return nil
-	}
-
-	// Ensure that the state/model combo is valid.
-	validStates := []string{"Accepted", "Rejected", "Cancelled", "Completed", "None"} // stateModel "Review"
-	if *stateModel == "Marked" {
-		validStates = []string{"Marked", "Unmarked"}
-	}
-	if !types.MemberOf(*state, validStates) {
-		return errors.Errorf("pdfcpu: validateAnnotationDictText: dict=%s invalid state=%s for state model=%s", dictName, *state, *stateModel)
-	}
-
-	return nil
+	return validateTextAnnotationState(xRefTable, dictName, state, stateModel)
 }
 
 func validateActionOrDestination(xRefTable *model.XRefTable, d types.Dict, dictName string, sinceVersion model.Version) (string, error) {
-
 	// The action that shall be performed when this item is activated.
 	d1, err := validateDictEntry(xRefTable, d, dictName, "A", OPTIONAL, sinceVersion, nil)
 	if err != nil {
 		return "", err
 	}
 	if d1 != nil {
-		return "", validateActionDict(xRefTable, d1)
+		return "", validateActionDictObject(xRefTable, d1, d["A"], dictName+".A")
 	}
 
 	// A destination that shall be displayed when this item is activated.
@@ -285,7 +292,6 @@ func validateActionOrDestination(xRefTable *model.XRefTable, d types.Dict, dictN
 }
 
 func validateURIActionDictEntry(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
-
 	d1, err := validateDictEntry(xRefTable, d, dictName, entryName, required, sinceVersion, nil)
 	if err != nil || d1 == nil {
 		return err
@@ -307,7 +313,6 @@ func validateURIActionDictEntry(xRefTable *model.XRefTable, d types.Dict, dictNa
 }
 
 func validateAnnotationDictLink(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.5
 
 	// A or Dest, required either or
@@ -344,8 +349,35 @@ func validateAnnotationDictLink(xRefTable *model.XRefTable, d types.Dict, dictNa
 	return validateBorderStyleDict(xRefTable, d, dictName, "BS", OPTIONAL, sinceVersion)
 }
 
-func validateAPAndDA(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+func validateFreeTextDAName(xRefTable *model.XRefTable, d types.Dict, dictName string) (bool, error) {
+	o, ok := d.Find("DA")
+	if !ok {
+		return false, nil
+	}
 
+	o, err := xRefTable.Dereference(o)
+	if err != nil || o == nil {
+		return false, err
+	}
+
+	n, ok := o.(types.Name)
+	if !ok {
+		return false, nil
+	}
+
+	if err := xRefTable.ValidateVersion("dict="+dictName+" entry=DA", model.V10); err != nil {
+		return false, err
+	}
+
+	s := n.Value()
+	if !slices.Contains(strings.Fields(s), "Tf") || !validateDARelaxed(s) {
+		return false, fmt.Errorf("dict=%s entry=DA invalid type %T", dictName, n)
+	}
+
+	return true, nil
+}
+
+func validateAPAndDA(xRefTable *model.XRefTable, d types.Dict, dictName string) (bool, error) {
 	required := REQUIRED
 
 	// DA, required, string
@@ -357,31 +389,31 @@ func validateAPAndDA(xRefTable *model.XRefTable, d types.Dict, dictName string) 
 		// An existing AP entry takes precedence over a DA entry.
 		d1, err := validateDictEntry(xRefTable, d, dictName, "AP", OPTIONAL, model.V12, nil)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if len(d1) > 0 {
 			required = OPTIONAL
+		}
+
+		daName, err := validateFreeTextDAName(xRefTable, d, dictName)
+		if err != nil || daName {
+			return daName, err
 		}
 	}
 
 	da, err := validateStringEntry(xRefTable, d, dictName, "DA", required, model.V10, validate)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if xRefTable.ValidationMode == model.ValidationRelaxed && da != nil {
 		// Repair
 		d["DA"] = types.StringLiteral(*da)
 	}
 
-	return nil
+	return false, nil
 }
 
 func validateAnnotationDictFreeTextPart1(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
-	if err := validateAPAndDA(xRefTable, d, dictName); err != nil {
-		return err
-	}
-
 	// Q, optional, integer, since V1.4, 0,1,2
 	sinceVersion := model.V14
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
@@ -423,7 +455,6 @@ func validateAnnotationDictFreeTextPart1(xRefTable *model.XRefTable, d types.Dic
 }
 
 func validateAnnotationDictFreeTextPart2(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// IT, optional, name, since V1.6
 	sinceVersion := model.V16
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
@@ -474,18 +505,29 @@ func validateAnnotationDictFreeTextPart2(xRefTable *model.XRefTable, d types.Dic
 }
 
 func validateAnnotationDictFreeText(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.6
+
+	daName, err := validateAPAndDA(xRefTable, d, dictName)
+	if err != nil {
+		return err
+	}
 
 	if err := validateAnnotationDictFreeTextPart1(xRefTable, d, dictName); err != nil {
 		return err
 	}
 
-	return validateAnnotationDictFreeTextPart2(xRefTable, d, dictName)
+	if err := validateAnnotationDictFreeTextPart2(xRefTable, d, dictName); err != nil {
+		return err
+	}
+
+	if daName {
+		model.ShowDigestedSpecViolation(fmt.Sprintf("dict=%s entry=DA invalid type types.Name", dictName))
+	}
+
+	return nil
 }
 
 func validateEntryMeasure(xRefTable *model.XRefTable, d types.Dict, dictName string, required bool, sinceVersion model.Version) error {
-
 	d1, err := validateDictEntry(xRefTable, d, dictName, "Measure", required, sinceVersion, nil)
 	if err != nil {
 		return err
@@ -558,17 +600,22 @@ func validateAnnotationDictLinePart1(xRefTable *model.XRefTable, d types.Dict, d
 
 func validateAnnotationDictLinePart2(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
 	// IT, optional, name, since V1.6
-	if _, err := validateNameEntry(xRefTable, d, dictName, "IT", OPTIONAL, model.V16, nil); err != nil {
+	sinceVersion := model.V16
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		sinceVersion = model.V14
+	}
+	it, err := validateNameEntry(xRefTable, d, dictName, "IT", OPTIONAL, sinceVersion, nil)
+	if err != nil {
 		return err
 	}
 
-	// LLO, optionl, number, since V1.7, >0
+	// LLO, optional, number, since V1.7, >0
 	if _, err := validateNumberEntry(xRefTable, d, dictName, "LLO", OPTIONAL, model.V17, func(f float64) bool { return f > 0 }); err != nil {
 		return err
 	}
 
 	// CP, optional, name, since V1.7
-	sinceVersion := model.V17
+	sinceVersion = model.V17
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		sinceVersion = model.V15
 	}
@@ -586,13 +633,19 @@ func validateAnnotationDictLinePart2(xRefTable *model.XRefTable, d types.Dict, d
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		sinceVersion = model.V15
 	}
-	_, err := validateNumberArrayEntry(xRefTable, d, dictName, "CO", OPTIONAL, sinceVersion, func(a types.Array) bool { return len(a) == 2 })
+	if _, err = validateNumberArrayEntry(xRefTable, d, dictName, "CO", OPTIONAL, sinceVersion, func(a types.Array) bool {
+		return len(a) == 2
+	}); err != nil {
+		return err
+	}
+	if it != nil && xRefTable.ValidationMode == model.ValidationRelaxed && xRefTable.Version() < model.V16 {
+		showDigestedVersionViolation(xRefTable, "dict="+dictName+" entry=IT")
+	}
 
-	return err
+	return nil
 }
 
 func validateAnnotationDictLine(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.7
 
 	if err := validateAnnotationDictLinePart1(xRefTable, d, dictName); err != nil {
@@ -603,7 +656,6 @@ func validateAnnotationDictLine(xRefTable *model.XRefTable, d types.Dict, dictNa
 }
 
 func validateAnnotationDictCircleOrSquare(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.8
 
 	// BS, optional, border style dict
@@ -636,7 +688,6 @@ func validateAnnotationDictCircleOrSquare(xRefTable *model.XRefTable, d types.Di
 }
 
 func validateEntryIT(xRefTable *model.XRefTable, d types.Dict, dictName string, required bool, sinceVersion model.Version) error {
-
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		sinceVersion = model.V14
 	}
@@ -664,7 +715,6 @@ func validateEntryIT(xRefTable *model.XRefTable, d types.Dict, dictName string, 
 }
 
 func validateAnnotationDictPolyLine(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.9
 
 	// Vertices, required, array of numbers
@@ -708,7 +758,6 @@ func validateAnnotationDictPolyLine(xRefTable *model.XRefTable, d types.Dict, di
 }
 
 func validateTextMarkupAnnotation(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.10
 
 	required := REQUIRED
@@ -722,7 +771,6 @@ func validateTextMarkupAnnotation(xRefTable *model.XRefTable, d types.Dict, dict
 }
 
 func validateAnnotationDictStamp(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.12
 
 	// Name, optional, name
@@ -732,7 +780,6 @@ func validateAnnotationDictStamp(xRefTable *model.XRefTable, d types.Dict, dictN
 }
 
 func validateAnnotationDictCaret(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.11
 
 	// RD, optional, rectangle, since V1.5
@@ -745,13 +792,21 @@ func validateAnnotationDictCaret(xRefTable *model.XRefTable, d types.Dict, dictN
 	}
 
 	// Sy, optional, name
-	_, err := validateNameEntry(xRefTable, d, dictName, "Sy", OPTIONAL, model.V10, func(s string) bool { return s == "P" || s == "None" })
+	validateSy := func(s string) bool {
+		return s == "P" || s == "None" || (s == "S" && xRefTable.ValidationMode == model.ValidationRelaxed)
+	}
+	sy, err := validateNameEntry(xRefTable, d, dictName, "Sy", OPTIONAL, model.V10, validateSy)
+	if err != nil {
+		return err
+	}
+	if sy != nil && sy.Value() == "S" && xRefTable.ValidationMode == model.ValidationRelaxed {
+		model.ShowDigestedSpecViolation(fmt.Sprintf("dict=%s entry=Sy invalid dict entry: S", dictName))
+	}
 
-	return err
+	return nil
 }
 
 func validateAnnotationDictInk(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.13
 
 	// InkList, required, array of stroked path arrays
@@ -768,7 +823,6 @@ func validateAnnotationDictInk(xRefTable *model.XRefTable, d types.Dict, dictNam
 }
 
 func validateAnnotationDictPopup(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.14
 
 	// Parent, optional, dict indRef
@@ -790,7 +844,6 @@ func validateAnnotationDictPopup(xRefTable *model.XRefTable, d types.Dict, dictN
 }
 
 func validateAnnotationDictFileAttachment(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.15
 
 	// FS, required, file specification
@@ -803,7 +856,6 @@ func validateAnnotationDictFileAttachment(xRefTable *model.XRefTable, d types.Di
 }
 
 func validateAnnotationDictSound(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.16
 
 	// Sound, required, stream dict
@@ -818,7 +870,6 @@ func validateAnnotationDictSound(xRefTable *model.XRefTable, d types.Dict, dictN
 }
 
 func validateMovieDict(xRefTable *model.XRefTable, d types.Dict) error {
-
 	dictName := "movieDict"
 
 	// F, required, file specification
@@ -841,7 +892,6 @@ func validateMovieDict(xRefTable *model.XRefTable, d types.Dict) error {
 }
 
 func validateAnnotationDictMovie(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.17 Movie Annotations
 	// 13.4 Movies
 	// The features described in this sub-clause are obsolescent and their use is no longer recommended.
@@ -891,7 +941,6 @@ func validateAnnotationDictMovie(xRefTable *model.XRefTable, d types.Dict, dictN
 }
 
 func validateAnnotationDictWidget(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.19
 
 	// H, optional, name
@@ -914,7 +963,7 @@ func validateAnnotationDictWidget(xRefTable *model.XRefTable, d types.Dict, dict
 		return err
 	}
 	if d1 != nil {
-		if err = validateActionDict(xRefTable, d1); err != nil {
+		if err = validateActionDictObject(xRefTable, d1, d["A"], dictName+".A"); err != nil {
 			return err
 		}
 	}
@@ -940,7 +989,6 @@ func validateAnnotationDictWidget(xRefTable *model.XRefTable, d types.Dict, dict
 }
 
 func validateAnnotationDictScreen(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.18
 
 	// T, optional, text string
@@ -959,7 +1007,7 @@ func validateAnnotationDictScreen(xRefTable *model.XRefTable, d types.Dict, dict
 		return err
 	}
 	if d1 != nil {
-		if err = validateActionDict(xRefTable, d1); err != nil {
+		if err = validateActionDictObject(xRefTable, d1, d["A"], dictName+".A"); err != nil {
 			return err
 		}
 	}
@@ -969,7 +1017,6 @@ func validateAnnotationDictScreen(xRefTable *model.XRefTable, d types.Dict, dict
 }
 
 func validateAnnotationDictPrinterMark(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.20
 
 	// MN, optional, name
@@ -991,7 +1038,6 @@ func validateAnnotationDictPrinterMark(xRefTable *model.XRefTable, d types.Dict,
 }
 
 func validateAnnotationDictTrapNet(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.21
 
 	// LastModified, optional, date
@@ -1049,43 +1095,43 @@ func validateAnnotationDictTrapNet(xRefTable *model.XRefTable, d types.Dict, dic
 	return err
 }
 
-func validateAnnotationDictWatermark(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+func validateFixedPrintDict(xRefTable *model.XRefTable, d types.Dict) error {
+	dictName := "fixedPrintDict"
 
-	// see 12.5.6.22
-
-	// FixedPrint, optional, dict
-
-	validateFixedPrintDict := func(d types.Dict) bool {
-
-		dictName := "fixedPrintDict"
-
-		// Type, required, name
-		if _, err := validateNameEntry(xRefTable, d, dictName, "Type", REQUIRED, model.V10, func(s string) bool { return s == "FixedPrint" }); err != nil {
-			return false
-		}
-
-		// Matrix, optional, integer array, length = 6
-		if _, err := validateIntegerArrayEntry(xRefTable, d, dictName, "Matrix", OPTIONAL, model.V10, func(a types.Array) bool { return len(a) == 6 }); err != nil {
-			return false
-		}
-
-		// H, optional, number
-		if _, err := validateNumberEntry(xRefTable, d, dictName, "H", OPTIONAL, model.V10, nil); err != nil {
-			return false
-		}
-
-		// V, optional, number
-		_, err := validateNumberEntry(xRefTable, d, dictName, "V", OPTIONAL, model.V10, nil)
-		return err == nil
+	// Type, required, name
+	if _, err := validateNameEntry(xRefTable, d, dictName, "Type", REQUIRED, model.V10, func(s string) bool { return s == "FixedPrint" }); err != nil {
+		return err
 	}
 
-	_, err := validateDictEntry(xRefTable, d, dictName, "FixedPrint", OPTIONAL, model.V10, validateFixedPrintDict)
+	// Matrix, optional, number array, length = 6
+	if _, err := validateNumberArrayEntry(xRefTable, d, dictName, "Matrix", OPTIONAL, model.V10, func(a types.Array) bool { return len(a) == 6 }); err != nil {
+		return err
+	}
+
+	// H, optional, number
+	if _, err := validateNumberEntry(xRefTable, d, dictName, "H", OPTIONAL, model.V10, nil); err != nil {
+		return err
+	}
+
+	// V, optional, number
+	_, err := validateNumberEntry(xRefTable, d, dictName, "V", OPTIONAL, model.V10, nil)
 
 	return err
 }
 
-func validateAnnotationDict3D(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+func validateAnnotationDictWatermark(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+	// see 12.5.6.22
 
+	// FixedPrint, optional, dict
+	fixedPrint, err := validateDictEntry(xRefTable, d, dictName, "FixedPrint", OPTIONAL, model.V10, nil)
+	if err != nil || fixedPrint == nil {
+		return err
+	}
+
+	return validateFixedPrintDict(xRefTable, fixedPrint)
+}
+
+func validateAnnotationDict3D(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
 	// see 13.6.2
 
 	// AP with entry N, required
@@ -1112,7 +1158,6 @@ func validateAnnotationDict3D(xRefTable *model.XRefTable, d types.Dict, dictName
 }
 
 func validateEntryIC(xRefTable *model.XRefTable, d types.Dict, dictName string, required bool, sinceVersion model.Version) error {
-
 	// IC, optional, number array, length:3 [0.0 .. 1.0]
 	validateICArray := func(a types.Array) bool {
 
@@ -1149,7 +1194,6 @@ func validateEntryIC(xRefTable *model.XRefTable, d types.Dict, dictName string, 
 }
 
 func validateAnnotationDictRedact(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// see 12.5.6.23
 
 	// QuadPoints, optional, len: a multiple of 8
@@ -1203,7 +1247,6 @@ func validateRichMediaAnnotation(xRefTable *model.XRefTable, d types.Dict, dictN
 }
 
 func validateExDataDict(xRefTable *model.XRefTable, d types.Dict) error {
-
 	dictName := "ExData"
 
 	if _, err := validateNameEntry(xRefTable, d, dictName, "Type", OPTIONAL, model.V10, func(s string) bool { return s == "ExData" }); err != nil {
@@ -1216,7 +1259,6 @@ func validateExDataDict(xRefTable *model.XRefTable, d types.Dict) error {
 }
 
 func validatePopupEntry(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
-
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		sinceVersion = model.V12
 	}
@@ -1241,7 +1283,6 @@ func validatePopupEntry(xRefTable *model.XRefTable, d types.Dict, dictName, entr
 }
 
 func validateIRTEntry(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
-
 	d1, err := validateDictEntry(xRefTable, d, dictName, entryName, required, sinceVersion, nil)
 	if err != nil {
 		return err
@@ -1257,7 +1298,6 @@ func validateIRTEntry(xRefTable *model.XRefTable, d types.Dict, dictName, entryN
 }
 
 func validateMarkupAnnotationPart1(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// T, optional, text string, since V1.1
 	if _, err := validateStringEntry(xRefTable, d, dictName, "T", OPTIONAL, model.V11, nil); err != nil {
 		return err
@@ -1299,7 +1339,6 @@ func validateMarkupAnnotationPart1(xRefTable *model.XRefTable, d types.Dict, dic
 }
 
 func validateMarkupAnnotationPart2(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
-
 	// IRT, optional, (in reply to) dict, since V1.5
 	sinceVersion := model.V15
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
@@ -1352,7 +1391,6 @@ func validateMarkupAnnotationPart2(xRefTable *model.XRefTable, d types.Dict, dic
 }
 
 func validateMarkupAnnotation(xRefTable *model.XRefTable, d types.Dict) error {
-
 	dictName := "markupAnnot"
 
 	if err := validateMarkupAnnotationPart1(xRefTable, d, dictName); err != nil {
@@ -1367,7 +1405,6 @@ func validateMarkupAnnotation(xRefTable *model.XRefTable, d types.Dict) error {
 }
 
 func validateEntryP(xRefTable *model.XRefTable, d types.Dict, dictName string, required bool, sinceVersion model.Version) error {
-
 	ir, err := validateIndRefEntry(xRefTable, d, dictName, "P", required, sinceVersion)
 	if err != nil || ir == nil {
 		return err
@@ -1391,7 +1428,6 @@ func validateEntryP(xRefTable *model.XRefTable, d types.Dict, dictName string, r
 }
 
 func validateAppearDictEntry(xRefTable *model.XRefTable, d types.Dict, dictName string, required bool, sinceVersion model.Version) error {
-
 	d1, err := validateDictEntry(xRefTable, d, dictName, "AP", required, sinceVersion, nil)
 	if err != nil {
 		return err
@@ -1405,7 +1441,6 @@ func validateAppearDictEntry(xRefTable *model.XRefTable, d types.Dict, dictName 
 }
 
 func validateDashPatternArray(xRefTable *model.XRefTable, arr types.Array) bool {
-
 	// len must be 0,1,2,3 numbers (dont'allow only 0s)
 
 	if len(arr) > 3 {
@@ -1506,12 +1541,33 @@ func validateBorderArray(xRefTable *model.XRefTable, a types.Array) bool {
 	return true
 }
 
-func validateAnnotationDictGeneralPart1(xRefTable *model.XRefTable, d types.Dict, dictName string) (*types.Name, error) {
+func validateAnnotationType(xRefTable *model.XRefTable, d types.Dict, dictName string) (bool, error) {
 	// Type, optional, name
-	if _, err := validateNameEntry(xRefTable, d, dictName, "Type", OPTIONAL, model.V10, func(s string) bool { return s == "Annot" }); err != nil {
-		return nil, err
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		if o, ok := d.Find("Type"); ok {
+			o, err := xRefTable.Dereference(o)
+			if err != nil {
+				return false, err
+			}
+			if hl, ok := o.(types.HexLiteral); ok {
+				s, err := types.HexLiteralToString(hl)
+				if err != nil {
+					return false, fmt.Errorf("dict=%s entry=Type: decode hex literal: %w", dictName, err)
+				}
+				if s == "Annot" {
+					err = xRefTable.ValidateVersion("dict="+dictName+" entry=Type", model.V10)
+					return err == nil, err
+				}
+			}
+		}
 	}
 
+	_, err := validateNameEntry(xRefTable, d, dictName, "Type", OPTIONAL, model.V10, func(s string) bool { return s == "Annot" })
+
+	return false, err
+}
+
+func validateAnnotationDictGeneralPart1(xRefTable *model.XRefTable, d types.Dict, dictName string) (*types.Name, error) {
 	// Subtype, required, name
 	subtype, err := validateNameEntry(xRefTable, d, dictName, "Subtype", REQUIRED, model.V10, nil)
 	if err != nil {
@@ -1591,7 +1647,7 @@ func validateAnnotationDictGeneralPart2(xRefTable *model.XRefTable, d types.Dict
 			return err
 		}
 		if !validateBorderArray(xRefTable, a) {
-			return errors.Errorf("invalid border array: %s", a)
+			return fmt.Errorf("annotation border array: invalid value %s", a)
 		}
 	}
 
@@ -1618,7 +1674,6 @@ func validateAnnotationDictGeneral(xRefTable *model.XRefTable, d types.Dict, dic
 }
 
 func validateAnnotationDictConcrete(xRefTable *model.XRefTable, d types.Dict, dictName string, subtype types.Name) error {
-
 	// OC, optional, content group dict or content membership dict, since V1.5
 	// Specifying the optional content properties for the annotation.
 	sinceVersion := model.V15
@@ -1660,7 +1715,7 @@ func validateAnnotationDictConcrete(xRefTable *model.XRefTable, d types.Dict, di
 		"Screen":         {validateAnnotationDictScreen, model.V15, model.V14, false},
 		"PrinterMark":    {validateAnnotationDictPrinterMark, model.V14, model.V14, false},
 		"TrapNet":        {validateAnnotationDictTrapNet, model.V13, model.V13, false},
-		"Watermark":      {validateAnnotationDictWatermark, model.V16, model.V14, false},
+		"Watermark":      {validateAnnotationDictWatermark, model.V16, model.V13, false},
 		"3D":             {validateAnnotationDict3D, model.V16, model.V16, false},
 		"Redact":         {validateAnnotationDictRedact, model.V17, model.V17, true},
 		"RichMedia":      {validateRichMediaAnnotation, model.V17, model.V14, false},
@@ -1684,7 +1739,13 @@ func validateAnnotationDictConcrete(xRefTable *model.XRefTable, d types.Dict, di
 				}
 			}
 
-			return v.validate(xRefTable, d, k)
+			if err = v.validate(xRefTable, d, k); err != nil {
+				return err
+			}
+			if xRefTable.ValidationMode == model.ValidationRelaxed && xRefTable.Version() < v.sinceVersion {
+				showDigestedVersionViolation(xRefTable, k+" annotation")
+			}
+			return nil
 		}
 	}
 
@@ -1694,8 +1755,12 @@ func validateAnnotationDictConcrete(xRefTable *model.XRefTable, d types.Dict, di
 }
 
 func validateAnnotationDict(xRefTable *model.XRefTable, d types.Dict) (isTrapNet bool, err error) {
-
 	dictName := "annotDict"
+
+	hexType, err := validateAnnotationType(xRefTable, d, dictName)
+	if err != nil {
+		return false, err
+	}
 
 	subtype, err := validateAnnotationDictGeneral(xRefTable, d, dictName)
 	if err != nil {
@@ -1704,6 +1769,10 @@ func validateAnnotationDict(xRefTable *model.XRefTable, d types.Dict) (isTrapNet
 
 	if err = validateAnnotationDictConcrete(xRefTable, d, dictName, *subtype); err != nil {
 		return false, err
+	}
+
+	if hexType {
+		model.ShowDigestedSpecViolation("dict=" + dictName + " entry=Type invalid type types.HexLiteral")
 	}
 
 	return *subtype == "TrapNet", nil
@@ -1733,8 +1802,17 @@ func detectSignature(xRefTable *model.XRefTable, annotDict types.Dict, objNr, in
 	return cacheSig(xRefTable, annotDict, "formFieldDict", false, objNr, incr)
 }
 
-func validateAnnotationsArray(xRefTable *model.XRefTable, a types.Array) (types.Array, error) {
+func pageAnnotationError(err error, hasIndRef bool, indRef types.IndirectRef, i int, phase string) error {
+	if err == nil {
+		return nil
+	}
+	if hasIndRef {
+		return fmt.Errorf("page annotation obj#%d: %s: %w", indRef.ObjectNumber.Value(), phase, err)
+	}
+	return fmt.Errorf("page annotation array[%d]: %s: %w", i, phase, err)
+}
 
+func validateAnnotationsArray(xRefTable *model.XRefTable, a types.Array) (types.Array, error) {
 	// a ... array of indrefs to annotation dicts.
 
 	var annotDict types.Dict
@@ -1750,7 +1828,7 @@ func validateAnnotationsArray(xRefTable *model.XRefTable, a types.Array) (types.
 	for i, v := range a {
 
 		if hasTrapNet {
-			return nil, errors.New("pdfcpu: validatePageAnnotations: invalid page annotation list, \"TrapNet\" has to be the last entry")
+			return nil, errors.New("page annotation array: TrapNet must be the last entry")
 		}
 
 		var (
@@ -1768,7 +1846,7 @@ func validateAnnotationsArray(xRefTable *model.XRefTable, a types.Array) (types.
 			}
 			annotDict, incr, err = xRefTable.DereferenceDictWithIncr(indRef)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("page annotation obj#%d: dereference: %w", indRef.ObjectNumber.Value(), err)
 			}
 			if annotDict == nil {
 				// Skip nil dicts.
@@ -1792,13 +1870,13 @@ func validateAnnotationsArray(xRefTable *model.XRefTable, a types.Array) (types.
 
 		if hasIndRef {
 			if err := detectSignature(xRefTable, annotDict, indRef.ObjectNumber.Value(), incr); err != nil {
-				return nil, err
+				return nil, pageAnnotationError(err, hasIndRef, indRef, i, "signature")
 			}
 		}
 
 		hasTrapNet, err = validateAnnotationDict(xRefTable, annotDict)
 		if err != nil {
-			return nil, err
+			return nil, pageAnnotationError(err, hasIndRef, indRef, i, "validate")
 		}
 
 		// Collect annotation.
@@ -1807,7 +1885,7 @@ func validateAnnotationsArray(xRefTable *model.XRefTable, a types.Array) (types.
 
 		ann, err := pdfcpu.Annotation(xRefTable, annotDict)
 		if err != nil {
-			return nil, err
+			return nil, pageAnnotationError(err, hasIndRef, indRef, i, "render")
 		}
 
 		addAnnotation(ann, pgAnnots, i, hasIndRef, indRef)
@@ -1846,12 +1924,18 @@ func validatePageAnnotations(xRefTable *model.XRefTable, d types.Dict) error {
 	return nil
 }
 
-func validatePagesAnnotations(xRefTable *model.XRefTable, d types.Dict, curPage int) (int, error) {
+func pageAnnotationWalkKidContext(o types.Object, i int) string {
+	if ir, ok := o.(types.IndirectRef); ok {
+		return fmt.Sprintf("page tree annotation walk: kid obj#%d", ir.ObjectNumber.Value())
+	}
+	return fmt.Sprintf("page tree annotation walk: kid[%d]", i)
+}
 
+func validatePagesAnnotations(xRefTable *model.XRefTable, d types.Dict, curPage int) (int, error) {
 	// Iterate over page tree.
 	kidsArray := d.ArrayEntry("Kids")
 
-	for _, v := range kidsArray {
+	for i, v := range kidsArray {
 
 		if v == nil {
 			if log.ValidateEnabled() {
@@ -1862,14 +1946,17 @@ func validatePagesAnnotations(xRefTable *model.XRefTable, d types.Dict, curPage 
 
 		d, err := xRefTable.DereferenceDict(v)
 		if err != nil {
-			return curPage, err
+			if ir, ok := v.(types.IndirectRef); ok {
+				return curPage, fmt.Errorf("page tree annotation walk: kid obj#%d: dereference: %w", ir.ObjectNumber.Value(), err)
+			}
+			return curPage, fmt.Errorf("page tree annotation walk: dereference kid: %w", err)
 		}
 		if d == nil {
-			return curPage, errors.New("pdfcpu: validatePagesAnnotations: pageNodeDict is null")
+			return curPage, fmt.Errorf("%s: page node is null", pageAnnotationWalkKidContext(v, i))
 		}
 		dictType := d.Type()
 		if dictType == nil {
-			return curPage, errors.New("pdfcpu: validatePagesAnnotations: missing pageNodeDict type")
+			return curPage, fmt.Errorf("%s: missing page node Type", pageAnnotationWalkKidContext(v, i))
 		}
 
 		switch *dictType {
@@ -1878,18 +1965,18 @@ func validatePagesAnnotations(xRefTable *model.XRefTable, d types.Dict, curPage 
 			// Recurse over pagetree
 			curPage, err = validatePagesAnnotations(xRefTable, d, curPage)
 			if err != nil {
-				return curPage, err
+				return curPage, fmt.Errorf("%s: %w", pageAnnotationWalkKidContext(v, i), err)
 			}
 
 		case "Page":
 			curPage++
 			xRefTable.CurPage = curPage
 			if err = validatePageAnnotations(xRefTable, d); err != nil {
-				return curPage, err
+				return curPage, fmt.Errorf("page annotations: page %d: %w", curPage, err)
 			}
 
 		default:
-			return curPage, errors.Errorf("validatePagesAnnotations: expected dict type: %s\n", *dictType)
+			return curPage, fmt.Errorf("%s: unexpected page node Type %s", pageAnnotationWalkKidContext(v, i), *dictType)
 
 		}
 

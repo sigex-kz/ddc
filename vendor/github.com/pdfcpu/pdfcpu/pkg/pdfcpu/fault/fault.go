@@ -27,9 +27,9 @@ type Panic struct {
 	Stack []byte
 }
 
-// Error implements the error interface, combining the message and stack.
+// Error implements the error interface.
 func (p Panic) Error() string {
-	return fmt.Sprintf("%v\n\nStack Trace:\n%s", p.Err, p.Stack)
+	return p.Err.Error()
 }
 
 // Unwrap allows standard library errors.Is/As to work.
@@ -41,7 +41,7 @@ func (p Panic) Unwrap() error {
 func Fail(format string, args ...interface{}) {
 	panic(Panic{
 		// Use %w if you want to allow wrapping other errors passed in args
-		Err:   fmt.Errorf("pdfcpu: "+format, args...),
+		Err:   fmt.Errorf(format, args...),
 		Stack: debug.Stack(),
 	})
 }

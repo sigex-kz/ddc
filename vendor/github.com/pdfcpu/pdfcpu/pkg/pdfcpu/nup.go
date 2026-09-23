@@ -18,6 +18,7 @@ package pdfcpu
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,12 +32,11 @@ import (
 	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
 var (
-	errInvalidGridDims  = errors.New("pdfcpu grid: dimensions must be: m > 0, n > 0")
-	errInvalidNUpConfig = errors.New("pdfcpu: invalid configuration string")
+	errInvalidGridDims  = errors.New("grid: dimensions must be: m > 0, n > 0")
+	errInvalidNUpConfig = errors.New("invalid configuration string")
 )
 
 var (
@@ -53,9 +53,7 @@ var (
 	}
 )
 
-type nUpParamMap map[string]func(string, *model.NUp) error
-
-var nupParamMap = nUpParamMap{
+var nupParamMap = parameterMap[model.NUp]{
 	"dimensions":      parseDimensionsNUp,
 	"formsize":        parsePageFormatNUp,
 	"papersize":       parsePageFormatNUp,
@@ -73,32 +71,9 @@ var nupParamMap = nUpParamMap{
 	"enforce":         parseEnforce,
 }
 
-// Handle applies parameter completion and if successful
-// parses the parameter values into import.
-func (m nUpParamMap) Handle(paramPrefix, paramValueStr string, nup *model.NUp) error {
-	var param string
-
-	// Completion support
-	for k := range m {
-		if !strings.HasPrefix(k, strings.ToLower(paramPrefix)) {
-			continue
-		}
-		if len(param) > 0 {
-			return errors.Errorf("pdfcpu: ambiguous parameter prefix \"%s\"", paramPrefix)
-		}
-		param = k
-	}
-
-	if param == "" {
-		return errors.Errorf("pdfcpu: ambiguous parameter prefix \"%s\"", paramPrefix)
-	}
-
-	return m[param](paramValueStr, nup)
-}
-
 func parsePageFormatNUp(s string, nup *model.NUp) (err error) {
 	if nup.UserDim {
-		return errors.New("pdfcpu: only one of formsize(papersize) or dimensions allowed")
+		return errAmbiguousPageDim
 	}
 	nup.PageDim, nup.PageSize, err = types.ParsePageFormat(s)
 	nup.UserDim = true
@@ -107,7 +82,7 @@ func parsePageFormatNUp(s string, nup *model.NUp) (err error) {
 
 func parseDimensionsNUp(s string, nup *model.NUp) (err error) {
 	if nup.UserDim {
-		return errors.New("pdfcpu: only one of formsize(papersize) or dimensions allowed")
+		return errAmbiguousPageDim
 	}
 	nup.PageDim, nup.PageSize, err = ParsePageDim(s, nup.InpUnit)
 	nup.UserDim = true
@@ -126,7 +101,7 @@ func parseOrientation(s string, nup *model.NUp) error {
 	case "dl":
 		nup.Orient = model.DownLeft
 	default:
-		return errors.Errorf("pdfcpu: unknown nUp orientation: %s", s)
+		return fmt.Errorf("unknown nUp orientation: %s", s)
 	}
 
 	return nil
@@ -139,7 +114,7 @@ func parseEnforce(s string, nup *model.NUp) error {
 	case "off", "false", "f":
 		nup.Enforce = false
 	default:
-		return errors.New("pdfcpu: enforce best-fit orientation of content, please provide one of: on/off true/false")
+		return errors.New("enforce best-fit orientation of content, please provide one of: on/off true/false")
 	}
 
 	return nil
@@ -152,7 +127,7 @@ func parseElementBorder(s string, nup *model.NUp) error {
 	case "off", "false", "f":
 		nup.Border = false
 	default:
-		return errors.New("pdfcpu: nUp border, please provide one of: on/off true/false t/f")
+		return errors.New("nUp border, please provide one of: on/off true/false t/f")
 	}
 
 	return nil
@@ -170,7 +145,7 @@ func parseElementBorderOnCropbox(s string, nup *model.NUp) error {
 
 	b := strings.Split(s, " ")
 	if len(b) == 0 || len(b) > 5 {
-		return errors.Errorf("pdfcpu: borders: need 1,2,3,4 or 5 int values, %s\n", s)
+		return fmt.Errorf("borders: need 1,2,3,4 or 5 int values, %s", s)
 	}
 
 	switch b[0] {
@@ -187,7 +162,7 @@ func parseElementBorderOnCropbox(s string, nup *model.NUp) error {
 		return err
 	}
 	if width == 0 {
-		return errors.New("pdfcpu: borders: need width > 0")
+		return errors.New("borders: need width > 0")
 	}
 	nup.BorderOnCropbox.Width = width
 
@@ -217,7 +192,7 @@ func parseBookletGuides(s string, nup *model.NUp) error {
 	case "off", "false", "f":
 		nup.BookletGuides = false
 	default:
-		return errors.New("pdfcpu: booklet guides, please provide one of: on/off true/false t/f")
+		return errors.New("booklet guides, please provide one of: on/off true/false t/f")
 	}
 
 	return nil
@@ -230,7 +205,7 @@ func parseBookletMultifolio(s string, nup *model.NUp) error {
 	case "off", "false", "f":
 		nup.MultiFolio = false
 	default:
-		return errors.New("pdfcpu: booklet guides, please provide one of: on/off true/false t/f")
+		return errors.New("booklet guides, please provide one of: on/off true/false t/f")
 	}
 
 	return nil
@@ -239,7 +214,7 @@ func parseBookletMultifolio(s string, nup *model.NUp) error {
 func parseBookletFolioSize(s string, nup *model.NUp) error {
 	i, err := strconv.Atoi(s)
 	if err != nil {
-		return errors.Errorf("pdfcpu: illegal folio size: must be an numeric value, %s\n", s)
+		return fmt.Errorf("illegal folio size: must be an numeric value, %s", s)
 	}
 
 	nup.FolioSize = i
@@ -255,7 +230,7 @@ func parseBookletType(s string, nup *model.NUp) error {
 	case "perfectbound":
 		nup.BookletType = model.BookletPerfectBound
 	default:
-		return errors.New("pdfcpu: booklet type, please provide one of: booklet perfectbound")
+		return errors.New("booklet type, please provide one of: booklet perfectbound")
 	}
 	return nil
 }
@@ -267,7 +242,7 @@ func parseBookletBinding(s string, nup *model.NUp) error {
 	case "long":
 		nup.BookletBinding = model.LongEdge
 	default:
-		return errors.New("pdfcpu: booklet binding, please provide one of: short long")
+		return errors.New("booklet binding, please provide one of: short long")
 	}
 	return nil
 }
@@ -279,7 +254,7 @@ func parseElementMargin(s string, nup *model.NUp) error {
 	}
 
 	if f < 0 {
-		return errors.New("pdfcpu: nUp margin, Please provide a positive value")
+		return errors.New("nUp margin, Please provide a positive value")
 	}
 
 	nup.Margin = types.ToUserSpace(f, nup.InpUnit)
@@ -314,7 +289,7 @@ func ParseNUpDetails(s string, nup *model.NUp) error {
 		paramPrefix := strings.TrimSpace(ss1[0])
 		paramValueStr := strings.TrimSpace(ss1[1])
 
-		if err := nupParamMap.Handle(paramPrefix, paramValueStr, nup); err != nil {
+		if err := handleParameter(nupParamMap, paramPrefix, paramValueStr, nup); err != nil {
 			return err
 		}
 	}
@@ -339,7 +314,7 @@ func PDFNUpConfig(val int, desc string, conf *model.Configuration) (*model.NUp, 
 		for i, v := range NUpValues {
 			ss[i] = strconv.Itoa(v)
 		}
-		return nil, errors.Errorf("pdfcpu: n must be one of %s", strings.Join(ss, ", "))
+		return nil, fmt.Errorf("n must be one of %s", strings.Join(ss, ", "))
 	}
 	return nup, ParseNUpValue(val, nup)
 }
@@ -354,7 +329,7 @@ func ImageNUpConfig(val int, desc string, conf *model.Configuration) (*model.NUp
 	return nup, nil
 }
 
-// PDFGridConfig returns a grid configuration for Nup-ing PDF files.
+// PDFGridConfig returns a grid configuration for PDF files.
 func PDFGridConfig(rows, cols int, desc string, conf *model.Configuration) (*model.NUp, error) {
 	nup := model.DefaultNUpConfig()
 	if conf == nil {
@@ -370,7 +345,7 @@ func PDFGridConfig(rows, cols int, desc string, conf *model.Configuration) (*mod
 	return nup, ParseNUpGridDefinition(rows, cols, nup)
 }
 
-// ImageGridConfig returns a grid configuration for Nup-ing image files.
+// ImageGridConfig returns a grid configuration for image files.
 func ImageGridConfig(rows, cols int, desc string, conf *model.Configuration) (*model.NUp, error) {
 	nup, err := PDFGridConfig(rows, cols, desc, conf)
 	if err != nil {
@@ -402,7 +377,7 @@ func ParseNUpValue(n int, nUp *model.NUp) error {
 	return nil
 }
 
-// ParseNUpGridDefinition parses NUp grid dimensions into an internal structure.
+// ParseNUpGridDefinition parses grid dimensions into a shared imposition configuration.
 func ParseNUpGridDefinition(rows, cols int, nUp *model.NUp) error {
 	m := cols
 	if m <= 0 {
@@ -426,8 +401,13 @@ func nUpImagePDFBytes(w io.Writer, imgWidth, imgHeight int, nup *model.NUp, form
 	}
 }
 
-func createNUpFormForImage(xRefTable *model.XRefTable, imgIndRef *types.IndirectRef, w, h, i int) (*types.IndirectRef, error) {
-	imgResID := fmt.Sprintf("Im%d", i)
+func createNUpFormForImage(xRefTable *model.XRefTable, imgIndRef *types.IndirectRef, w, h, formIndex int) (*types.IndirectRef, error) {
+	return createImageForm("n-up", xRefTable, imgIndRef, w, h, formIndex)
+}
+
+func createImageForm(operation string, xRefTable *model.XRefTable, imgIndRef *types.IndirectRef, w, h, formIndex int) (*types.IndirectRef, error) {
+	imgResID := fmt.Sprintf("Im%d", formIndex)
+	formNr := formIndex + 1
 	bb := types.RectForDim(float64(w), float64(h))
 
 	var b bytes.Buffer
@@ -442,7 +422,7 @@ func createNUpFormForImage(xRefTable *model.XRefTable, imgIndRef *types.Indirect
 
 	ir, err := xRefTable.IndRefForNewObject(d)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s image form %d: store resource dictionary: %w", operation, formNr, err)
 	}
 
 	sd := types.StreamDict{
@@ -462,35 +442,81 @@ func createNUpFormForImage(xRefTable *model.XRefTable, imgIndRef *types.Indirect
 	sd.InsertName("Filter", filter.Flate)
 
 	if err = sd.Encode(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s image form %d: encode form stream: %w", operation, formNr, err)
 	}
 
-	return xRefTable.IndRefForNewObject(sd)
+	formIndRef, err := xRefTable.IndRefForNewObject(sd)
+	if err != nil {
+		return nil, fmt.Errorf("%s image form %d: store form stream: %w", operation, formNr, err)
+	}
+	return formIndRef, nil
 }
 
-// NewNUpPageForImage creates a new page dict in xRefTable for given image filename and n-up conf.
-func NewNUpPageForImage(xRefTable *model.XRefTable, fileName string, parentIndRef *types.IndirectRef, nup *model.NUp) (*types.IndirectRef, error) {
+func wrapImageError(operation string, imageNr int, fileName, phase string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s image %d %q: %s: %w", operation, imageNr, fileName, phase, err)
+}
+
+func loadImageResource(
+	operation string,
+	xRefTable *model.XRefTable,
+	imageNr int,
+	fileName string) (imgIndRef *types.IndirectRef, w, h int, err error) {
+	return loadImageResourceWith(operation, xRefTable, imageNr, fileName, model.CreateImageResource)
+}
+
+func loadNUpImageResourceWith(
+	xRefTable *model.XRefTable,
+	imageNr int,
+	fileName string,
+	createImageResource func(*model.XRefTable, io.Reader) (*types.IndirectRef, int, int, error),
+) (imgIndRef *types.IndirectRef, w, h int, err error) {
+	return loadImageResourceWith("n-up", xRefTable, imageNr, fileName, createImageResource)
+}
+
+func loadImageResourceWith(
+	operation string,
+	xRefTable *model.XRefTable,
+	imageNr int,
+	fileName string,
+	createImageResource func(*model.XRefTable, io.Reader) (*types.IndirectRef, int, int, error),
+) (imgIndRef *types.IndirectRef, w, h int, err error) {
 	f, err := os.Open(fileName)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, wrapImageError(operation, imageNr, fileName, "open", err)
 	}
-	defer f.Close()
+	defer func() {
+		err = errors.Join(err, wrapImageError(operation, imageNr, fileName, "close", f.Close()))
+	}()
 
-	// create image dict.
-	imgIndRef, w, h, err := model.CreateImageResource(xRefTable, f)
+	imgIndRef, w, h, err = createImageResource(xRefTable, f)
+	if err != nil {
+		err = wrapImageError(operation, imageNr, fileName, "create resource", err)
+	}
+	return imgIndRef, w, h, err
+}
+
+func newPageForImage(
+	operation string,
+	xRefTable *model.XRefTable,
+	imageNr int,
+	fileName string,
+	parentIndRef *types.IndirectRef,
+	nup *model.NUp) (*types.IndirectRef, error) {
+	imgIndRef, w, h, err := loadImageResource(operation, xRefTable, imageNr, fileName)
 	if err != nil {
 		return nil, err
 	}
 
 	resID := 0
-
-	formIndRef, err := createNUpFormForImage(xRefTable, imgIndRef, w, h, resID)
+	formIndRef, err := createImageForm(operation, xRefTable, imgIndRef, w, h, resID)
 	if err != nil {
-		return nil, err
+		return nil, wrapImageError(operation, imageNr, fileName, "create form", err)
 	}
 
 	formResID := fmt.Sprintf("Fm%d", resID)
-
 	resourceDict := types.Dict(
 		map[string]types.Object{
 			"XObject": types.Dict(map[string]types.Object{formResID: *formIndRef}),
@@ -499,24 +525,26 @@ func NewNUpPageForImage(xRefTable *model.XRefTable, fileName string, parentIndRe
 
 	resIndRef, err := xRefTable.IndRefForNewObject(resourceDict)
 	if err != nil {
-		return nil, err
+		return nil, wrapImageError(operation, imageNr, fileName, "store page resources", err)
 	}
 
 	var buf bytes.Buffer
 	nUpImagePDFBytes(&buf, w, h, nup, formResID)
-	sd, _ := xRefTable.NewStreamDictForBuf(buf.Bytes())
+	sd, err := xRefTable.NewStreamDictForBuf(buf.Bytes())
+	if err != nil {
+		return nil, wrapImageError(operation, imageNr, fileName, "create page content", err)
+	}
 	if err = sd.Encode(); err != nil {
-		return nil, err
+		return nil, wrapImageError(operation, imageNr, fileName, "encode page content", err)
 	}
 
 	contentsIndRef, err := xRefTable.IndRefForNewObject(*sd)
 	if err != nil {
-		return nil, err
+		return nil, wrapImageError(operation, imageNr, fileName, "store page content", err)
 	}
 
 	dim := nup.PageDim
 	mediaBox := types.RectForDim(dim.Width, dim.Height)
-
 	pageDict := types.Dict(
 		map[string]types.Object{
 			"Type":      types.Name("Page"),
@@ -527,36 +555,58 @@ func NewNUpPageForImage(xRefTable *model.XRefTable, fileName string, parentIndRe
 		},
 	)
 
-	return xRefTable.IndRefForNewObject(pageDict)
+	indRef, err := xRefTable.IndRefForNewObject(pageDict)
+	if err != nil {
+		return nil, wrapImageError(operation, imageNr, fileName, "store page dictionary", err)
+	}
+	return indRef, nil
 }
 
 // NUpFromOneImage creates one page with instances of one image.
+// On failure, ctx may contain partial objects and its PageCount remains unchanged.
 func NUpFromOneImage(ctx *model.Context, fileName string, nup *model.NUp, pagesDict types.Dict, pagesIndRef *types.IndirectRef) error {
-	indRef, err := NewNUpPageForImage(ctx.XRefTable, fileName, pagesIndRef, nup)
+	return fromOneImage("n-up", ctx, fileName, nup, pagesDict, pagesIndRef)
+}
+
+// GridFromOneImage creates one grid page with instances of one image.
+// On failure, ctx may contain partial objects and its PageCount remains unchanged.
+func GridFromOneImage(ctx *model.Context, fileName string, nup *model.NUp, pagesDict types.Dict, pagesIndRef *types.IndirectRef) error {
+	return fromOneImage("grid", ctx, fileName, nup, pagesDict, pagesIndRef)
+}
+
+func fromOneImage(operation string, ctx *model.Context, fileName string, nup *model.NUp, pagesDict types.Dict, pagesIndRef *types.IndirectRef) error {
+	indRef, err := newPageForImage(operation, ctx.XRefTable, 1, fileName, pagesIndRef, nup)
 	if err != nil {
 		return err
 	}
 
 	if err := ctx.SetValid(*indRef); err != nil {
-		return err
+		return wrapImageError(operation, 1, fileName, "mark page valid", err)
 	}
 
 	if err = model.AppendPageTree(indRef, 1, pagesDict); err != nil {
-		return err
+		return wrapImageError(operation, 1, fileName, "append page tree", err)
 	}
 
 	ctx.PageCount++
-
 	return nil
 }
 
 func wrapUpPage(ctx *model.Context, nup *model.NUp, d types.Dict, buf bytes.Buffer, pagesDict types.Dict, pagesIndRef *types.IndirectRef) error {
+	return wrapUpPageForOperation("n-up", ctx, nup, d, buf, pagesDict, pagesIndRef)
+}
+
+func wrapUpPageForOperation(operation string, ctx *model.Context, nup *model.NUp, d types.Dict, buf bytes.Buffer, pagesDict types.Dict, pagesIndRef *types.IndirectRef) error {
 	xRefTable := ctx.XRefTable
 
 	var fm model.FontMap
 	if nup.BookletGuides {
 		// For booklets only.
-		fm = model.DrawBookletGuides(nup, &buf)
+		var err error
+		fm, err = model.DrawBookletGuides(xRefTable, nup, &buf)
+		if err != nil {
+			return fmt.Errorf("%s output page: render booklet guides: %w", operation, err)
+		}
 	}
 
 	resourceDict := types.Dict(
@@ -567,7 +617,7 @@ func wrapUpPage(ctx *model.Context, nup *model.NUp, d types.Dict, buf bytes.Buff
 
 	fontRes, err := pdffont.FontResources(xRefTable, fm)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s output page: create font resources: %w", operation, err)
 	}
 
 	if len(fontRes) > 0 {
@@ -576,17 +626,25 @@ func wrapUpPage(ctx *model.Context, nup *model.NUp, d types.Dict, buf bytes.Buff
 
 	resIndRef, err := xRefTable.IndRefForNewObject(resourceDict)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s output page: store resource dictionary: %w", operation, err)
 	}
 
-	sd, _ := xRefTable.NewStreamDictForBuf(buf.Bytes())
+	bb := buf.Bytes()
+	bbCopy := make([]byte, len(bb))
+	copy(bbCopy, bb)
+
+	sd, err := xRefTable.NewStreamDictForBuf(bbCopy)
+	if err != nil {
+		return fmt.Errorf("%s output page: create content stream: %w", operation, err)
+	}
+
 	if err = sd.Encode(); err != nil {
-		return err
+		return fmt.Errorf("%s output page: encode content stream: %w", operation, err)
 	}
 
 	contentsIndRef, err := xRefTable.IndRefForNewObject(*sd)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s output page: store content stream: %w", operation, err)
 	}
 
 	dim := nup.PageDim
@@ -604,18 +662,16 @@ func wrapUpPage(ctx *model.Context, nup *model.NUp, d types.Dict, buf bytes.Buff
 
 	indRef, err := xRefTable.IndRefForNewObject(pageDict)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s output page: store page dictionary: %w", operation, err)
 	}
 
 	if err := ctx.SetValid(*indRef); err != nil {
-		return err
+		return fmt.Errorf("%s output page: mark page valid: %w", operation, err)
 	}
 
 	if err = model.AppendPageTree(indRef, 1, pagesDict); err != nil {
-		return err
+		return fmt.Errorf("%s output page: append page tree: %w", operation, err)
 	}
-
-	ctx.PageCount++
 
 	return nil
 }
@@ -639,16 +695,17 @@ func sortSelectedPages(pages types.IntSet) []int {
 	return pageNumbers
 }
 
-func nupPages(
+func impositionPages(
+	operation string,
 	ctx *model.Context,
 	selectedPages types.IntSet,
 	nup *model.NUp,
 	pagesDict types.Dict,
-	pagesIndRef *types.IndirectRef) error {
-
+	pagesIndRef *types.IndirectRef) (int, error) {
 	var buf bytes.Buffer
 	formsResDict := types.NewDict()
 	rr := nup.RectsForGrid()
+	outputPageNr := 1
 
 	sortedPageNumbers := sortSelectedPages(selectedPages)
 	pageCount := len(sortedPageNumbers)
@@ -662,9 +719,10 @@ func nupPages(
 
 		if i > 0 && i%len(rr) == 0 {
 			// Wrap complete page.
-			if err := wrapUpPage(ctx, nup, formsResDict, buf, pagesDict, pagesIndRef); err != nil {
-				return err
+			if err := wrapUpPageForOperation(operation, ctx, nup, formsResDict, buf, pagesDict, pagesIndRef); err != nil {
+				return 0, fmt.Errorf("%s output page %d: wrap page: %w", operation, outputPageNr, err)
 			}
+			outputPageNr++
 			buf.Reset()
 			formsResDict = types.NewDict()
 		}
@@ -680,26 +738,49 @@ func nupPages(
 			continue
 		}
 
-		if err := ctx.NUpTilePDFBytesForPDF(pageNr, formsResDict, &buf, rDest, nup, false); err != nil {
-			return err
+		if err := ctx.TilePDFBytesForImposition(operation, pageNr, formsResDict, &buf, rDest, nup, false); err != nil {
+			return 0, fmt.Errorf("%s page imposition: %w", operation, err)
 		}
 	}
 
-	// Wrap incomplete nUp page.
-	return wrapUpPage(ctx, nup, formsResDict, buf, pagesDict, pagesIndRef)
+	// Wrap incomplete output page.
+	if err := wrapUpPageForOperation(operation, ctx, nup, formsResDict, buf, pagesDict, pagesIndRef); err != nil {
+		return 0, fmt.Errorf("%s output page %d: wrap page: %w", operation, outputPageNr, err)
+	}
+	return outputPageNr, nil
+}
+
+func impositionImageConfiguration(nup *model.NUp) *model.NUp {
+	operationNUp := *nup
+	pageDim := *nup.PageDim
+	if nup.PageGrid {
+		pageDim.Width *= nup.Grid.Width
+		pageDim.Height *= nup.Grid.Height
+	}
+	operationNUp.PageDim = &pageDim
+	return &operationNUp
 }
 
 // NUpFromMultipleImages creates pages in NUp-style rendering each image once.
+// On failure, ctx may contain partial objects or page-tree changes and its PageCount remains unchanged.
 func NUpFromMultipleImages(ctx *model.Context, fileNames []string, nup *model.NUp, pagesDict types.Dict, pagesIndRef *types.IndirectRef) error {
-	if nup.PageGrid {
-		nup.PageDim.Width *= nup.Grid.Width
-		nup.PageDim.Height *= nup.Grid.Height
-	}
+	return fromMultipleImages("n-up", ctx, fileNames, nup, pagesDict, pagesIndRef)
+}
+
+// GridFromMultipleImages creates grid pages containing each image once.
+// On failure, ctx may contain partial objects or page-tree changes and its PageCount remains unchanged.
+func GridFromMultipleImages(ctx *model.Context, fileNames []string, nup *model.NUp, pagesDict types.Dict, pagesIndRef *types.IndirectRef) error {
+	return fromMultipleImages("grid", ctx, fileNames, nup, pagesDict, pagesIndRef)
+}
+
+func fromMultipleImages(operation string, ctx *model.Context, fileNames []string, nup *model.NUp, pagesDict types.Dict, pagesIndRef *types.IndirectRef) error {
+	nup = impositionImageConfiguration(nup)
 
 	xRefTable := ctx.XRefTable
 	formsResDict := types.NewDict()
 	var buf bytes.Buffer
 	rr := nup.RectsForGrid()
+	outputPageNr := 1
 
 	// fileCount must be a multiple of n.
 	// If not, we will insert blank pages at the end.
@@ -712,9 +793,10 @@ func NUpFromMultipleImages(ctx *model.Context, fileNames []string, nup *model.NU
 
 		if i > 0 && i%len(rr) == 0 {
 			// Wrap complete nUp page.
-			if err := wrapUpPage(ctx, nup, formsResDict, buf, pagesDict, pagesIndRef); err != nil {
-				return err
+			if err := wrapUpPageForOperation(operation, ctx, nup, formsResDict, buf, pagesDict, pagesIndRef); err != nil {
+				return fmt.Errorf("%s output page %d: wrap page: %w", operation, outputPageNr, err)
 			}
+			outputPageNr++
 			buf.Reset()
 			formsResDict = types.NewDict()
 		}
@@ -734,23 +816,15 @@ func NUpFromMultipleImages(ctx *model.Context, fileNames []string, nup *model.NU
 			continue
 		}
 
-		f, err := os.Open(fileName)
+		imageNr := i + 1
+		imgIndRef, w, h, err := loadImageResource(operation, xRefTable, imageNr, fileName)
 		if err != nil {
 			return err
 		}
 
-		imgIndRef, w, h, err := model.CreateImageResource(xRefTable, f)
+		formIndRef, err := createImageForm(operation, xRefTable, imgIndRef, w, h, i)
 		if err != nil {
-			return err
-		}
-
-		if err := f.Close(); err != nil {
-			return err
-		}
-
-		formIndRef, err := createNUpFormForImage(xRefTable, imgIndRef, w, h, i)
-		if err != nil {
-			return err
+			return wrapImageError(operation, imageNr, fileName, "create form", err)
 		}
 
 		formResID := fmt.Sprintf("Fm%d", i)
@@ -761,45 +835,65 @@ func NUpFromMultipleImages(ctx *model.Context, fileNames []string, nup *model.NU
 	}
 
 	// Wrap incomplete nUp page.
-	return wrapUpPage(ctx, nup, formsResDict, buf, pagesDict, pagesIndRef)
+	if err := wrapUpPageForOperation(operation, ctx, nup, formsResDict, buf, pagesDict, pagesIndRef); err != nil {
+		return fmt.Errorf("%s output page %d: wrap page: %w", operation, outputPageNr, err)
+	}
+	ctx.PageCount += outputPageNr
+	return nil
 }
 
-// NUpFromPDF creates an n-up version of the PDF represented by xRefTable.
-func NUpFromPDF(ctx *model.Context, selectedPages types.IntSet, nup *model.NUp) error {
+func impositionPDFConfiguration(operation string, ctx *model.Context, nup *model.NUp) (*model.NUp, *types.Rectangle, error) {
+	operationNUp := *nup
 	var mb *types.Rectangle
 	if nup.PageDim == nil {
-		// No page dimensions specified, use cropBox of page 1 as mediaBox(=cropBox).
 		consolidateRes := false
 		d, _, inhPAttrs, err := ctx.PageDict(1, consolidateRes)
 		if err != nil {
-			return err
+			return nil, nil, fmt.Errorf("%s page tree: derive dimensions from source page 1: %w", operation, err)
 		}
 		if d == nil {
-			return errors.Errorf("unknown page number: %d\n", 1)
+			return nil, nil, fmt.Errorf("%s page tree: derive dimensions from source page 1: %w", operation, model.ErrPageNotFound)
 		}
-
 		cropBox := inhPAttrs.MediaBox
 		if inhPAttrs.CropBox != nil {
 			cropBox = inhPAttrs.CropBox
 		}
-
-		// Account for existing rotation.
-		if inhPAttrs.Rotate != 0 {
-			if types.IntMemberOf(inhPAttrs.Rotate, []int{+90, -90, +270, -270}) {
-				w := cropBox.Width()
-				cropBox.UR.X = cropBox.LL.X + cropBox.Height()
-				cropBox.UR.Y = cropBox.LL.Y + w
-			}
+		mb = cropBox.Clone()
+		if types.IntMemberOf(inhPAttrs.Rotate, []int{+90, -90, +270, -270}) {
+			w := mb.Width()
+			mb.UR.X = mb.LL.X + mb.Height()
+			mb.UR.Y = mb.LL.Y + w
 		}
-
-		mb = cropBox
 	} else {
-		mb = types.RectForDim(nup.PageDim.Width, nup.PageDim.Height)
+		pageDim := *nup.PageDim
+		operationNUp.PageDim = &pageDim
+		mb = types.RectForDim(pageDim.Width, pageDim.Height)
 	}
 
 	if nup.PageGrid {
-		mb.UR.X = mb.LL.X + float64(nup.Grid.Width)*mb.Width()
-		mb.UR.Y = mb.LL.Y + float64(nup.Grid.Height)*mb.Height()
+		mb.UR.X = mb.LL.X + nup.Grid.Width*mb.Width()
+		mb.UR.Y = mb.LL.Y + nup.Grid.Height*mb.Height()
+	}
+	operationNUp.PageDim = &types.Dim{Width: mb.Width(), Height: mb.Height()}
+	return &operationNUp, mb, nil
+}
+
+// NUpFromPDF creates an n-up version of the PDF represented by xRefTable.
+// On failure, the original page tree and PageCount remain authoritative; ctx may contain orphaned partial output objects.
+func NUpFromPDF(ctx *model.Context, selectedPages types.IntSet, nup *model.NUp) error {
+	return fromPDF("n-up", ctx, selectedPages, nup)
+}
+
+// GridFromPDF creates a grid version of the PDF represented by xRefTable.
+// On failure, the original page tree and PageCount remain authoritative; ctx may contain orphaned partial output objects.
+func GridFromPDF(ctx *model.Context, selectedPages types.IntSet, nup *model.NUp) error {
+	return fromPDF("grid", ctx, selectedPages, nup)
+}
+
+func fromPDF(operation string, ctx *model.Context, selectedPages types.IntSet, nup *model.NUp) error {
+	nup, mb, err := impositionPDFConfiguration(operation, ctx, nup)
+	if err != nil {
+		return err
 	}
 
 	pagesDict := types.Dict(
@@ -812,22 +906,21 @@ func NUpFromPDF(ctx *model.Context, selectedPages types.IntSet, nup *model.NUp) 
 
 	pagesIndRef, err := ctx.IndRefForNewObject(pagesDict)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s page tree: create root: %w", operation, err)
 	}
 
-	nup.PageDim = &types.Dim{Width: mb.Width(), Height: mb.Height()}
-
-	if err = nupPages(ctx, selectedPages, nup, pagesDict, pagesIndRef); err != nil {
+	pageCount, err := impositionPages(operation, ctx, selectedPages, nup, pagesDict, pagesIndRef)
+	if err != nil {
 		return err
 	}
 
 	// Replace original pagesDict.
 	rootDict, err := ctx.Catalog()
 	if err != nil {
-		return err
+		return fmt.Errorf("%s page tree: access catalog: %w", operation, err)
 	}
 
 	rootDict.Update("Pages", *pagesIndRef)
-
+	ctx.PageCount = pageCount
 	return nil
 }

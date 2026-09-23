@@ -17,12 +17,12 @@
 package api
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pkg/errors"
 )
 
 // PDFInfo returns information about rs.
@@ -30,7 +30,7 @@ func PDFInfo(rs io.ReadSeeker, fileName string, selectedPages []string, fonts bo
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return nil, errors.New("pdfcpu: PDFInfo: missing rs")
+		return nil, ErrMissingPDFReadSeeker
 	}
 
 	if conf == nil {
@@ -42,23 +42,27 @@ func PDFInfo(rs io.ReadSeeker, fileName string, selectedPages []string, fonts bo
 
 	ctx, err := ReadAndValidate(rs, conf)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("info: prepare PDF context: %w", err)
 	}
 
 	if fonts {
 		if err = OptimizeContext(ctx); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("info: optimize context: %w", err)
 		}
 	}
 
 	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, false, true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("info: parse page selection: %w", err)
 	}
 
 	if err := pdfcpu.DetectWatermarks(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("info: detect watermarks: %w", err)
 	}
 
-	return pdfcpu.Info(ctx, fileName, pages, fonts)
+	info, err = pdfcpu.Info(ctx, fileName, pages, fonts)
+	if err != nil {
+		return nil, fmt.Errorf("info: collect document info: %w", err)
+	}
+	return info, nil
 }

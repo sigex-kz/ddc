@@ -36,7 +36,7 @@ func IntMemberOf(i int, list []int) bool {
 	return false
 }
 
-// IntMemberOf returns true if list contains i.
+// IndRefMemberOf returns true if list contains i.
 func IndRefMemberOf(i IndirectRef, arr Array) bool {
 	for _, v := range arr {
 		if i == v {
@@ -46,6 +46,7 @@ func IndRefMemberOf(i IndirectRef, arr Array) bool {
 	return false
 }
 
+// EqualSlices returns true for equal slices.
 func EqualSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

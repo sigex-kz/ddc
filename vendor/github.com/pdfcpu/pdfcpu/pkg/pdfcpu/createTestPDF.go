@@ -33,6 +33,7 @@ var (
 	testAudioFileWAV = filepath.Join(testDir, "resources", "test.wav")
 )
 
+// CreateXRefTableWithRootDict creates x ref table with root dict.
 func CreateXRefTableWithRootDict() (*model.XRefTable, error) {
 	// TODO
 	//xRefTable := model.NewXRefTable(nil)
@@ -171,7 +172,9 @@ func addPageTreeForResourceDictInheritanceDemo(xRefTable *model.XRefTable, rootD
 		Y:        400,
 	}
 
-	model.WriteMultiLine(xRefTable, p.Buf, p.MediaBox, nil, td)
+	if _, err := model.WriteMultiLine(xRefTable, p.Buf, p.MediaBox, nil, td); err != nil {
+		return fmt.Errorf("render Times-Roman demo text: %w", err)
+	}
 
 	fontName = "Courier"
 	td = model.TextDescriptor{
@@ -185,7 +188,9 @@ func addPageTreeForResourceDictInheritanceDemo(xRefTable *model.XRefTable, rootD
 		Y:        300,
 	}
 
-	model.WriteMultiLine(xRefTable, p.Buf, p.MediaBox, nil, td)
+	if _, err := model.WriteMultiLine(xRefTable, p.Buf, p.MediaBox, nil, td); err != nil {
+		return fmt.Errorf("render Courier demo text: %w", err)
+	}
 
 	fontName = "Courier-Bold"
 	td = model.TextDescriptor{
@@ -199,7 +204,9 @@ func addPageTreeForResourceDictInheritanceDemo(xRefTable *model.XRefTable, rootD
 		Y:        350,
 	}
 
-	model.WriteMultiLine(xRefTable, p.Buf, p.MediaBox, nil, td)
+	if _, err := model.WriteMultiLine(xRefTable, p.Buf, p.MediaBox, nil, td); err != nil {
+		return fmt.Errorf("render Courier-Bold demo text: %w", err)
+	}
 
 	pageIndRef, err := createDemoPage(xRefTable, *pagesIndRef, p)
 	if err != nil {
@@ -1000,6 +1007,7 @@ func addPageTreeWithoutPage(xRefTable *model.XRefTable, rootDict types.Dict, d *
 	return nil
 }
 
+// AddPageTreeWithSamplePage adds page tree with sample page.
 func AddPageTreeWithSamplePage(xRefTable *model.XRefTable, rootDict types.Dict, p model.Page) error {
 
 	// mediabox = physical page dimensions

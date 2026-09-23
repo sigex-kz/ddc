@@ -17,14 +17,16 @@ limitations under the License.
 package model
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
+// Zoom represents page-content zoom configuration.
 type Zoom struct {
 	Factor  float64            // zoom factor x > 0, x > 1 zooms in, x < 1 zooms out
 	HMargin float64            // horizontal margin implying some (usually negative) scale factor
@@ -34,30 +36,42 @@ type Zoom struct {
 	BgColor *color.SimpleColor // background color when zooming out
 }
 
+// EnsureFactorAndMargins ensures factor and margins.
 func (z *Zoom) EnsureFactorAndMargins(w, h float64) error {
 	if z.Factor > 0 {
 		z.HMargin = (w - (w * z.Factor)) / 2
 		z.VMargin = (h - (h * z.Factor)) / 2
 		return nil
 	}
-	if z.HMargin > 0 {
-		z.Factor = (w - 2*z.HMargin) / w
-		z.VMargin = (h - (h * z.Factor)) / 2
+	if z.HMargin != 0 {
+		factor := (w - 2*z.HMargin) / w
+		if factor <= 0 {
+			return fmt.Errorf("horizontal margin %.2f yields non-positive zoom factor for page width %.2f", z.HMargin, w)
+		}
+		z.Factor = factor
+		z.VMargin = (h - (h * factor)) / 2
+		return nil
 	}
-	z.Factor = (h - 2*z.VMargin) / h
-	z.HMargin = (w - (w * z.Factor)) / 2
-
+	factor := (h - 2*z.VMargin) / h
+	if factor <= 0 {
+		return fmt.Errorf("vertical margin %.2f yields non-positive zoom factor for page height %.2f", z.VMargin, h)
+	}
+	z.Factor = factor
+	z.HMargin = (w - (w * factor)) / 2
 	return nil
 }
 
 func parseHMargin(s string, zoom *Zoom) error {
 	m, err := strconv.ParseFloat(s, 64)
-	if err != nil || m == 0 {
-		return errors.Errorf("pdfcpu: \"hmargin\" must be a numeric value and must not be 0, got %s\n", s)
+	if err != nil {
+		return fmt.Errorf("\"hmargin\": parse numeric value %q: %w", s, err)
+	}
+	if m == 0 {
+		return fmt.Errorf("\"hmargin\" must not be 0, got %s", s)
 	}
 
 	if zoom.VMargin != 0 {
-		return errors.New("pdfcpu: only one of \"hmargin\" and \"vmargin\" allowed")
+		return errors.New("only one of \"hmargin\" and \"vmargin\" allowed")
 	}
 
 	zoom.HMargin = types.ToUserSpace(m, zoom.Unit)
@@ -66,30 +80,33 @@ func parseHMargin(s string, zoom *Zoom) error {
 
 func parseVMargin(s string, zoom *Zoom) error {
 	m, err := strconv.ParseFloat(s, 64)
-	if err != nil || m == 0 {
-		return errors.Errorf("pdfcpu: \"vmargin\" must be a numeric value and must not be 0, got %s\n", s)
+	if err != nil {
+		return fmt.Errorf("\"vmargin\": parse numeric value %q: %w", s, err)
+	}
+	if m == 0 {
+		return fmt.Errorf("\"vmargin\" must not be 0, got %s", s)
 	}
 
 	if zoom.HMargin != 0 {
-		return errors.New("pdfcpu: only one of \"hmargin\" and \"vmargin\" allowed")
+		return errors.New("only one of \"hmargin\" and \"vmargin\" allowed")
 	}
 
 	zoom.VMargin = types.ToUserSpace(m, zoom.Unit)
 	return nil
 }
 
-func parseZoomFactor(s string, zoom *Zoom) (err error) {
+func parseZoomFactor(s string, zoom *Zoom) error {
 	zf, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return errors.Errorf("pdfcpu: zoom factor must be a float value: %s\n", s)
+		return fmt.Errorf("zoom factor: parse float value %q: %w", s, err)
 	}
 
 	if zf <= 0 || zf == 1 {
-		return errors.Errorf("pdfcpu: invalid zoom factor %.2f: 0.0 < i < 1.0 or i > 1.0\n", zf)
+		return fmt.Errorf("invalid zoom factor %.2f: 0.0 < i < 1.0 or i > 1.0", zf)
 	}
 
 	zoom.Factor = zf
-	return err
+	return nil
 }
 
 func parseBackgroundColorZoom(s string, zoom *Zoom) error {
@@ -108,7 +125,7 @@ func parseBorderZoom(s string, zoom *Zoom) error {
 	case "off", "false", "f":
 		zoom.Border = false
 	default:
-		return errors.New("pdfcpu: zoom border, please provide one of: on/off true/false t/f")
+		return errors.New("zoom border, please provide one of: on/off true/false t/f")
 	}
 
 	return nil
@@ -116,32 +133,11 @@ func parseBorderZoom(s string, zoom *Zoom) error {
 
 type zoomParameterMap map[string]func(string, *Zoom) error
 
+// ZoomParamMap maps zoom configuration parameter names to parser functions.
 var ZoomParamMap = zoomParameterMap{
 	"factor":  parseZoomFactor,
 	"hmargin": parseHMargin,
 	"vmargin": parseVMargin,
 	"bgcolor": parseBackgroundColorZoom,
 	"border":  parseBorderZoom,
-}
-
-// Handle applies parameter completion and on success parse parameter values into zoom.
-func (m zoomParameterMap) Handle(paramPrefix, paramValueStr string, zoom *Zoom) error {
-	var param string
-
-	// Completion support
-	for k := range m {
-		if !strings.HasPrefix(k, strings.ToLower(paramPrefix)) {
-			continue
-		}
-		if len(param) > 0 {
-			return errors.Errorf("pdfcpu: ambiguous parameter prefix \"%s\"", paramPrefix)
-		}
-		param = k
-	}
-
-	if param == "" {
-		return errors.Errorf("pdfcpu: unknown parameter prefix \"%s\"", paramPrefix)
-	}
-
-	return m[param](paramValueStr, zoom)
 }

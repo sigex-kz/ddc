@@ -19,10 +19,11 @@ package filter
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pkg/errors"
 )
 
 // PDF defines the following filters. See also 7.4 in the PDF spec.
@@ -33,13 +34,21 @@ const (
 	LZW       = "LZWDecode"
 	Flate     = "FlateDecode"
 	CCITTFax  = "CCITTFaxDecode"
-	JBIG2     = "JBIG2Decode"
+	JBIG2     = "JBIG2Decode" // TODO
 	DCT       = "DCTDecode"
-	JPX       = "JPXDecode"
+	JPX       = "JPXDecode" // TODO
 )
 
 // ErrUnsupportedFilter signals unsupported filter encountered.
-var ErrUnsupportedFilter = errors.New("pdfcpu: filter not supported")
+var ErrUnsupportedFilter = errors.New("filter not supported")
+
+// ErrDecodeLimitExceeded signals that decoded filter output exceeds the configured decode limit.
+var ErrDecodeLimitExceeded = errors.New("filter decode limit exceeded")
+
+const DefaultMaxDecodeBytes int64 = 512 << 20 // 512 MiB
+
+const maxInt = int(^uint(0) >> 1)
+const maxInt64 = int64(^uint64(0) >> 1)
 
 // Filter defines an interface for encoding/decoding PDF object streams.
 type Filter interface {
@@ -52,29 +61,33 @@ type Filter interface {
 }
 
 // NewFilter returns a filter for given filterName and an optional parameter dictionary.
-func NewFilter(filterName string, parms map[string]int) (filter Filter, err error) {
+func NewFilter(filterName string, parms map[string]int, maxDecodeBytes ...int64) (filter Filter, err error) {
+	limit := DefaultMaxDecodeBytes
+	if len(maxDecodeBytes) > 0 {
+		limit = maxDecodeBytes[0]
+	}
 	switch filterName {
 
 	case ASCII85:
-		filter = ascii85Decode{baseFilter{}}
+		filter = ascii85Decode{baseFilter{maxDecodeBytes: limit}}
 
 	case ASCIIHex:
-		filter = asciiHexDecode{baseFilter{}}
+		filter = asciiHexDecode{baseFilter{maxDecodeBytes: limit}}
 
 	case RunLength:
-		filter = runLengthDecode{baseFilter{parms}}
+		filter = runLengthDecode{baseFilter{parms: parms, maxDecodeBytes: limit}}
 
 	case LZW:
-		filter = lzwDecode{baseFilter{parms}}
+		filter = lzwDecode{baseFilter{parms: parms, maxDecodeBytes: limit}}
 
 	case Flate:
-		filter = flate{baseFilter{parms}}
+		filter = flate{baseFilter{parms: parms, maxDecodeBytes: limit}}
 
 	case CCITTFax:
-		filter = ccittDecode{baseFilter{parms}}
+		filter = ccittDecode{baseFilter{parms: parms, maxDecodeBytes: limit}}
 
 	case DCT:
-		filter = dctDecode{baseFilter{parms}}
+		filter = dctDecode{baseFilter{parms: parms, maxDecodeBytes: limit}}
 
 	case JBIG2:
 		// Unsupported
@@ -88,7 +101,7 @@ func NewFilter(filterName string, parms map[string]int) (filter Filter, err erro
 		err = ErrUnsupportedFilter
 
 	default:
-		err = errors.Errorf("Invalid filter: <%s>", filterName)
+		err = fmt.Errorf("invalid filter: <%s>", filterName)
 	}
 
 	return filter, err
@@ -101,9 +114,11 @@ func List() []string {
 }
 
 type baseFilter struct {
-	parms map[string]int
+	parms          map[string]int
+	maxDecodeBytes int64
 }
 
+// SupportsDecodeParms returns true if filterName supports decode parameters.
 func SupportsDecodeParms(f string) bool {
 	return f == CCITTFax || f == LZW || f == Flate
 }
@@ -122,4 +137,44 @@ func getReaderBytes(r io.Reader) ([]byte, error) {
 	}
 
 	return bb, nil
+}
+
+func (f baseFilter) decodeLimit(maxLen int64) int64 {
+	if maxLen >= 0 {
+		return maxLen
+	}
+	if f.maxDecodeBytes == 0 {
+		return DefaultMaxDecodeBytes
+	}
+	return f.maxDecodeBytes
+}
+
+func (f baseFilter) copyDecoded(r io.Reader, maxLen int64) (*bytes.Buffer, error) {
+	if maxLen >= 0 {
+		var b bytes.Buffer
+		_, err := io.CopyN(&b, r, maxLen)
+		return &b, err
+	}
+
+	limit := f.decodeLimit(maxLen)
+	if limit < 0 {
+		var b bytes.Buffer
+		_, err := io.Copy(&b, r)
+		return &b, err
+	}
+	if limit == maxInt64 {
+		var b bytes.Buffer
+		_, err := io.Copy(&b, r)
+		return &b, err
+	}
+
+	lr := &io.LimitedReader{R: r, N: limit + 1}
+	var b bytes.Buffer
+	if _, err := io.Copy(&b, lr); err != nil {
+		return &b, err
+	}
+	if int64(b.Len()) > limit {
+		return nil, ErrDecodeLimitExceeded
+	}
+	return &b, nil
 }

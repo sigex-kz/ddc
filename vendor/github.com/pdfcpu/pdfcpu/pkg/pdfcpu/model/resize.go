@@ -17,14 +17,16 @@ limitations under the License.
 package model
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
 
+// Resize represents a page resize configuration.
 type Resize struct {
 	Scale         float64            // scale factor x > 0, x > 1 enlarges, x < 1 shrinks down
 	Unit          types.DisplayUnit  // display unit
@@ -36,25 +38,25 @@ type Resize struct {
 	BgColor       *color.SimpleColor // background color
 }
 
+// EnforceOrientation reports whether the configured page orientation must be preserved.
 func (r Resize) EnforceOrientation() bool {
 	return r.EnforceOrient || strings.HasSuffix(r.PageSize, "P") || strings.HasSuffix(r.PageSize, "L")
 }
 
 func parsePageDimRes(v string, u types.DisplayUnit) (*types.Dim, string, error) {
-
 	ss := strings.Split(v, " ")
 	if len(ss) != 2 {
-		return nil, v, errors.Errorf("pdfcpu: illegal dimension string: need 2 values one may be 0, %s\n", v)
+		return nil, v, fmt.Errorf("illegal dimension string: need 2 values one may be 0, %s", v)
 	}
 
 	w, err := strconv.ParseFloat(ss[0], 64)
 	if err != nil || w < 0 {
-		return nil, v, errors.Errorf("pdfcpu: dimension width must be >= 0: %s\n", ss[0])
+		return nil, v, fmt.Errorf("dimension width must be >= 0: %s", ss[0])
 	}
 
 	h, err := strconv.ParseFloat(ss[1], 64)
 	if err != nil || h < 0 {
-		return nil, v, errors.Errorf("pdfcpu: dimension height must >= 0: %s\n", ss[1])
+		return nil, v, fmt.Errorf("dimension height must >= 0: %s", ss[1])
 	}
 
 	d := types.Dim{Width: types.ToUserSpace(w, u), Height: types.ToUserSpace(h, u)}
@@ -75,14 +77,13 @@ func parseEnforceOrientation(s string, res *Resize) error {
 	case "off", "false", "f":
 		res.EnforceOrient = false
 	default:
-		return errors.New("pdfcpu: enforce orientation, please provide one of: on/off true/false")
+		return errors.New("enforce orientation, please provide one of: on/off true/false")
 	}
 
 	return nil
 }
 
 func parsePageFormatRes(s string, res *Resize) error {
-
 	// Optional: appended last letter L indicates landscape mode.
 	// Optional: appended last letter P indicates portrait mode.
 	// eg. A4L means A4 in landscape mode whereas A4 defaults to A4P
@@ -101,8 +102,9 @@ func parsePageFormatRes(s string, res *Resize) error {
 
 	d, ok := types.PaperSize[v]
 	if !ok {
-		return errors.Errorf("pdfcpu: page format %s is unsupported.\n", v)
+		return fmt.Errorf("page format %s is unsupported", v)
 	}
+	res.EnforceOrient = landscape || portrait
 
 	if (d.Portrait() && landscape) || (d.Landscape() && portrait) {
 		d.Width, d.Height = d.Height, d.Width
@@ -116,14 +118,13 @@ func parsePageFormatRes(s string, res *Resize) error {
 }
 
 func parseScaleFactorSimple(s string) (float64, error) {
-
 	sc, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return 0, errors.Errorf("pdfcpu: scale factor must be a float value: %s\n", s)
+		return 0, fmt.Errorf("scale factor must be a float value: %s", s)
 	}
 
 	if sc <= 0 || sc == 1 {
-		return 0, errors.Errorf("pdfcpu: invalid scale factor %.2f: 0.0 < i < 1.0 or i > 1.0\n", sc)
+		return 0, fmt.Errorf("invalid scale factor %.2f: 0.0 < i < 1.0 or i > 1.0", sc)
 	}
 
 	return sc, nil
@@ -150,7 +151,7 @@ func parseBorderRes(s string, res *Resize) error {
 	case "off", "false", "f":
 		res.Border = false
 	default:
-		return errors.New("pdfcpu: resize border, please provide one of: on/off true/false t/f")
+		return errors.New("resize border, please provide one of: on/off true/false t/f")
 	}
 
 	return nil
@@ -158,6 +159,7 @@ func parseBorderRes(s string, res *Resize) error {
 
 type resizeParameterMap map[string]func(string, *Resize) error
 
+// ResizeParamMap maps resize configuration parameter names to parser functions.
 var ResizeParamMap = resizeParameterMap{
 	"dimensions":  parseDimensionsRes,
 	"enforce":     parseEnforceOrientation,
@@ -166,27 +168,4 @@ var ResizeParamMap = resizeParameterMap{
 	"scalefactor": parseScaleFactorRes,
 	"bgcolor":     parseBackgroundColorRes,
 	"border":      parseBorderRes,
-}
-
-// Handle applies parameter completion and on success parse parameter values into resize.
-func (m resizeParameterMap) Handle(paramPrefix, paramValueStr string, res *Resize) error {
-
-	var param string
-
-	// Completion support
-	for k := range m {
-		if !strings.HasPrefix(k, strings.ToLower(paramPrefix)) {
-			continue
-		}
-		if len(param) > 0 {
-			return errors.Errorf("pdfcpu: ambiguous parameter prefix \"%s\"", paramPrefix)
-		}
-		param = k
-	}
-
-	if param == "" {
-		return errors.Errorf("pdfcpu: unknown parameter prefix \"%s\"", paramPrefix)
-	}
-
-	return m[param](paramValueStr, res)
 }

@@ -17,21 +17,34 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
+
+func validPageMode(pm model.PageMode) bool {
+	return pm >= model.PageModeUseNone && pm <= model.PageModeUseAttachments
+}
+
+func invalidPageModeError(pm model.PageMode) error {
+	return fmt.Errorf("set page mode: invalid value %d: %w", pm, ErrInvalidPageMode)
+}
+
+func closePageModeInput(err error, f *os.File, context string) error {
+	return errors.Join(err, closeFile(f, context))
+}
 
 // PageMode returns rs's page mode.
 func PageMode(rs io.ReadSeeker, conf *model.Configuration) (pm *model.PageMode, err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return nil, errors.New("pdfcpu: PageMode: missing rs")
+		return nil, ErrMissingPDFReadSeeker
 	}
 
 	if conf == nil {
@@ -43,19 +56,25 @@ func PageMode(rs io.ReadSeeker, conf *model.Configuration) (pm *model.PageMode, 
 
 	ctx, err := ReadAndValidate(rs, conf)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list page mode: prepare PDF context: %w", err)
 	}
 
 	return ctx.PageMode, nil
 }
 
 // PageModeFile returns inFile's page mode.
-func PageModeFile(inFile string, conf *model.Configuration) (*model.PageMode, error) {
+func PageModeFile(inFile string, conf *model.Configuration) (pm *model.PageMode, err error) {
+	if inFile == "" {
+		return nil, ErrMissingPDFInput
+	}
+
 	f, err := os.Open(inFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list page mode: open input %s: %w", inFile, err)
 	}
-	defer f.Close()
+	defer func() {
+		err = closePageModeInput(err, f, "list page mode: close input")
+	}()
 
 	return PageMode(f, conf)
 }
@@ -65,7 +84,7 @@ func ListPageMode(rs io.ReadSeeker, conf *model.Configuration) (ss []string, err
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return nil, errors.New("pdfcpu: ListPageMode: missing rs")
+		return nil, ErrMissingPDFReadSeeker
 	}
 
 	if conf == nil {
@@ -77,7 +96,7 @@ func ListPageMode(rs io.ReadSeeker, conf *model.Configuration) (ss []string, err
 
 	ctx, err := ReadAndValidate(rs, conf)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list page mode: prepare PDF context: %w", err)
 	}
 
 	if ctx.PageMode != nil {
@@ -88,12 +107,18 @@ func ListPageMode(rs io.ReadSeeker, conf *model.Configuration) (ss []string, err
 }
 
 // ListPageModeFile lists inFile's page mode.
-func ListPageModeFile(inFile string, conf *model.Configuration) ([]string, error) {
+func ListPageModeFile(inFile string, conf *model.Configuration) (ss []string, err error) {
+	if inFile == "" {
+		return nil, ErrMissingPDFInput
+	}
+
 	f, err := os.Open(inFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list page mode: open input %s: %w", inFile, err)
 	}
-	defer f.Close()
+	defer func() {
+		err = closePageModeInput(err, f, "list page mode: close input")
+	}()
 
 	return ListPageMode(f, conf)
 }
@@ -103,7 +128,15 @@ func SetPageMode(rs io.ReadSeeker, w io.Writer, val model.PageMode, conf *model.
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: SetPageMode: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
+	}
+
+	if !validPageMode(val) {
+		return invalidPageModeError(val)
 	}
 
 	if conf == nil {
@@ -115,12 +148,15 @@ func SetPageMode(rs io.ReadSeeker, w io.Writer, val model.PageMode, conf *model.
 
 	ctx, err := ReadAndValidate(rs, conf)
 	if err != nil {
-		return err
+		return fmt.Errorf("set page mode: prepare PDF context: %w", err)
 	}
 
 	ctx.RootDict["PageMode"] = types.Name(val.String())
 
-	return Write(ctx, w, conf)
+	if err = Write(ctx, w, conf); err != nil {
+		return fmt.Errorf("set page mode: write output: %w", err)
+	}
+	return nil
 }
 
 // SetPageModeFile sets inFile's page mode and writes the result to outFile.
@@ -128,35 +164,37 @@ func SetPageModeFile(inFile, outFile string, val model.PageMode, conf *model.Con
 	var f1, f2 *os.File
 	ok := false
 
-	if f1, err = os.Open(inFile); err != nil {
-		return err
+	if inFile == "" {
+		return ErrMissingPDFInput
 	}
 
-	tmpFile := inFile + ".tmp"
+	if !validPageMode(val) {
+		return invalidPageModeError(val)
+	}
+
+	if f1, err = os.Open(inFile); err != nil {
+		return fmt.Errorf("set page mode: open input %s: %w", inFile, err)
+	}
+
+	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
 	}
-	if f2, err = os.Create(tmpFile); err != nil {
-		_ = f1.Close()
-		return err
+	staged, err := openStagedOutput(f1, inFile, tmpFile, "set page mode")
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("set page mode: create output: %w", err),
+			closeFile(f1, "set page mode: close input"),
+		)
 	}
+	f2 = staged.output.file
 
 	defer func() {
 		if !ok {
-			_ = f2.Close()
-			_ = f1.Close()
-			os.Remove(tmpFile)
+			err = staged.cleanup(err)
 			return
 		}
-		if err = f2.Close(); err != nil {
-			return
-		}
-		if err = f1.Close(); err != nil {
-			return
-		}
-		if outFile == "" || inFile == outFile {
-			err = os.Rename(tmpFile, inFile)
-		}
+		err = staged.commit()
 	}()
 
 	if err = SetPageMode(f1, f2, val, conf); err != nil {
@@ -169,11 +207,16 @@ func SetPageModeFile(inFile, outFile string, val model.PageMode, conf *model.Con
 }
 
 // ResetPageMode resets rs's page mode and writes the result to w.
+// It is idempotent and writes output even when rs has no page mode.
 func ResetPageMode(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
 	if rs == nil {
-		return errors.New("pdfcpu: ResetPageMode: missing rs")
+		return ErrMissingPDFReadSeeker
+	}
+
+	if w == nil {
+		return ErrMissingPDFWriter
 	}
 
 	if conf == nil {
@@ -185,48 +228,50 @@ func ResetPageMode(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (er
 
 	ctx, err := ReadAndValidate(rs, conf)
 	if err != nil {
-		return err
+		return fmt.Errorf("reset page mode: prepare PDF context: %w", err)
 	}
 
 	delete(ctx.RootDict, "PageMode")
 
-	return Write(ctx, w, conf)
+	if err = Write(ctx, w, conf); err != nil {
+		return fmt.Errorf("reset page mode: write output: %w", err)
+	}
+	return nil
 }
 
 // ResetPageModeFile resets inFile's page mode and writes the result to outFile.
+// It is idempotent and writes output even when inFile has no page mode.
 func ResetPageModeFile(inFile, outFile string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
-	if f1, err = os.Open(inFile); err != nil {
-		return err
+	if inFile == "" {
+		return ErrMissingPDFInput
 	}
 
-	tmpFile := inFile + ".tmp"
+	if f1, err = os.Open(inFile); err != nil {
+		return fmt.Errorf("reset page mode: open input %s: %w", inFile, err)
+	}
+
+	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
 	}
-	if f2, err = os.Create(tmpFile); err != nil {
-		_ = f1.Close()
-		return err
+	staged, err := openStagedOutput(f1, inFile, tmpFile, "reset page mode")
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("reset page mode: create output: %w", err),
+			closeFile(f1, "reset page mode: close input"),
+		)
 	}
+	f2 = staged.output.file
 
 	defer func() {
 		if !ok {
-			_ = f2.Close()
-			_ = f1.Close()
-			os.Remove(tmpFile)
+			err = staged.cleanup(err)
 			return
 		}
-		if err = f2.Close(); err != nil {
-			return
-		}
-		if err = f1.Close(); err != nil {
-			return
-		}
-		if outFile == "" || inFile == outFile {
-			err = os.Rename(tmpFile, inFile)
-		}
+		err = staged.commit()
 	}()
 
 	if err = ResetPageMode(f1, f2, conf); err != nil {

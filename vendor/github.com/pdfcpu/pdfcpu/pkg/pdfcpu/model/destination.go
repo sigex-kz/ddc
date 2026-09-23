@@ -53,14 +53,17 @@ type Destination struct {
 	Zoom                     float32
 }
 
+// String returns the string value of dest.
 func (dest Destination) String() string {
 	return DestinationTypeStrings[dest.Typ]
 }
 
+// Name returns a name for dest.
 func (dest Destination) Name() types.Name {
 	return types.Name(DestinationTypeStrings[dest.Typ])
 }
 
+// Array returns a destination array for dest using indRef.
 func (dest Destination) Array(indRef types.IndirectRef) types.Array {
 	arr := types.Array{indRef, dest.Name()}
 	switch dest.Typ {

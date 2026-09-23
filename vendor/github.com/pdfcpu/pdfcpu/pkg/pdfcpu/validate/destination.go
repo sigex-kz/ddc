@@ -17,15 +17,42 @@ limitations under the License.
 package validate
 
 import (
+	"fmt"
+
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
+
+func indirectRefObjectNumber(o types.Object) (int, bool) {
+	ir, ok := o.(types.IndirectRef)
+	if !ok {
+		return 0, false
+	}
+	return ir.ObjectNumber.Value(), true
+}
+
+func dictEntryContext(dictName, entryName string, o types.Object) string {
+	context := dictName + "." + entryName
+	if objNr, ok := indirectRefObjectNumber(o); ok {
+		context = fmt.Sprintf("%s obj#%d", context, objNr)
+	}
+	return context
+}
+
+func objectContext(context string, o types.Object) string {
+	if objNr, ok := indirectRefObjectNumber(o); ok {
+		return fmt.Sprintf("%s obj#%d", context, objNr)
+	}
+	return context
+}
 
 func validateDestinationArrayFirstElement(xRefTable *model.XRefTable, a types.Array) (types.Object, error) {
 	o, err := xRefTable.Dereference(a[0])
-	if err != nil || o == nil {
-		return nil, err
+	if err != nil {
+		return nil, fmt.Errorf("destination array[0]: dereference page: %w", err)
+	}
+	if o == nil {
+		return nil, nil
 	}
 
 	s := "destination array: first element is not a page dict: " + a.String()
@@ -38,7 +65,11 @@ func validateDestinationArrayFirstElement(xRefTable *model.XRefTable, a types.Ar
 				model.ShowDigestedSpecViolation(s)
 				return nil, nil
 			}
-			err = errors.Errorf("%s", s)
+			dictType := "<missing>"
+			if o.Type() != nil {
+				dictType = *o.Type()
+			}
+			err = fmt.Errorf("destination array[0]: expected page dict, got dict type %q", dictType)
 		}
 
 	default:
@@ -46,7 +77,7 @@ func validateDestinationArrayFirstElement(xRefTable *model.XRefTable, a types.Ar
 			model.ShowDigestedSpecViolation(s)
 			return nil, nil
 		}
-		err = errors.Errorf("%s", s)
+		err = fmt.Errorf("destination array[0]: expected page dict, got %T", o)
 	}
 
 	return o, err
@@ -61,25 +92,25 @@ func validateDestType(a types.Array, destType types.Name) error {
 	case "Fit":
 	case "FitB":
 		if len(a) > 2 {
-			return errors.Errorf("pdfcpu: validateDestinationArray: %s - invalid length: %d", destType, len(a))
+			return fmt.Errorf("destination array mode %s: invalid length %d", destType, len(a))
 		}
 	case "FitH":
 	case "FitV":
 	case "FitBH":
 	case "FitBV":
 		if len(a) > 3 {
-			return errors.Errorf("pdfcpu: validateDestinationArray: %s - invalid length: %d", destType, len(a))
+			return fmt.Errorf("destination array mode %s: invalid length %d", destType, len(a))
 		}
 	case "XYZ":
 		if len(a) > 5 {
-			return errors.Errorf("pdfcpu: validateDestinationArray: %s - invalid length: %d", destType, len(a))
+			return fmt.Errorf("destination array mode %s: invalid length %d", destType, len(a))
 		}
 	case "FitR":
 		if len(a) > 6 {
-			return errors.Errorf("pdfcpu: validateDestinationArray: %s - invalid length: %d", destType, len(a))
+			return fmt.Errorf("destination array mode %s: invalid length %d", destType, len(a))
 		}
 	default:
-		return errors.Errorf("pdfcpu: validateDestinationArray     j- invalid mode: %s", destType)
+		return fmt.Errorf("destination array mode: invalid mode %q", destType)
 	}
 
 	return nil
@@ -88,7 +119,7 @@ func validateDestType(a types.Array, destType types.Name) error {
 func validateDestinationArray(xRefTable *model.XRefTable, a types.Array) error {
 	if !validateDestinationArrayLength(a) {
 		if xRefTable.ValidationMode == model.ValidationStrict {
-			return errors.Errorf("pdfcpu: validateDestinationArray: invalid length: %d", len(a))
+			return fmt.Errorf("destination array: invalid length %d", len(a))
 		}
 		return nil
 	}
@@ -101,28 +132,37 @@ func validateDestinationArray(xRefTable *model.XRefTable, a types.Array) error {
 
 	name, ok := a[1].(types.Name)
 	if !ok {
-		return errors.Errorf("pdfcpu: validateDestinationArray: second element must be a name %v", a[1])
+		return fmt.Errorf("destination array[1]: expected name, got %T", a[1])
 	}
 
 	return validateDestType(a, name)
 }
 
 func validateDestinationDict(xRefTable *model.XRefTable, d types.Dict) error {
-
 	// D, required, array
+	o, _ := d.Find("D")
 	a, err := validateArrayEntry(xRefTable, d, "DestinationDict", "D", REQUIRED, model.V10, nil)
 	if err != nil || a == nil {
-		return err
+		if err != nil {
+			return fmt.Errorf("%s: %w", dictEntryContext("destination dictionary", "D", o), err)
+		}
+		return nil
 	}
 
-	return validateDestinationArray(xRefTable, a)
+	if err := validateDestinationArray(xRefTable, a); err != nil {
+		return fmt.Errorf("%s: %w", dictEntryContext("destination dictionary", "D", o), err)
+	}
+
+	return nil
 }
 
 func validateDestination(xRefTable *model.XRefTable, o types.Object, forAction bool) (string, error) {
-
 	o, err := xRefTable.Dereference(o)
-	if err != nil || o == nil {
-		return "", err
+	if err != nil {
+		return "", fmt.Errorf("destination: dereference: %w", err)
+	}
+	if o == nil {
+		return "", nil
 	}
 
 	switch o := o.(type) {
@@ -138,7 +178,7 @@ func validateDestination(xRefTable *model.XRefTable, o types.Object, forAction b
 
 	case types.Dict:
 		if forAction {
-			return "", errors.New("pdfcpu: validateDestination: unsupported PDF object")
+			return "", fmt.Errorf("destination: action destination cannot be dict")
 		}
 		err = validateDestinationDict(xRefTable, o)
 
@@ -146,7 +186,7 @@ func validateDestination(xRefTable *model.XRefTable, o types.Object, forAction b
 		err = validateDestinationArray(xRefTable, o)
 
 	default:
-		err = errors.New("pdfcpu: validateDestination: unsupported PDF object")
+		err = fmt.Errorf("destination: unsupported object type %T", o)
 
 	}
 
@@ -154,17 +194,16 @@ func validateDestination(xRefTable *model.XRefTable, o types.Object, forAction b
 }
 
 func validateActionDestinationEntry(xRefTable *model.XRefTable, d types.Dict, dictName string, entryName string, required bool, sinceVersion model.Version) error {
-
 	// see 12.3.2
 
 	o, err := validateEntry(xRefTable, d, dictName, entryName, required, sinceVersion)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", dictEntryContext(dictName, entryName, d[entryName]), err)
 	}
 
 	name, err := validateDestination(xRefTable, o, true)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", dictEntryContext(dictName, entryName, d[entryName]), err)
 	}
 
 	if len(name) > 0 && xRefTable.IsMerging() {

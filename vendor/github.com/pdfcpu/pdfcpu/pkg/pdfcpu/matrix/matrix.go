@@ -52,6 +52,7 @@ func (m Matrix) Transform(p types.Point) types.Point {
 	return types.Point{X: x, Y: y}
 }
 
+// String returns the string value of m.
 func (m Matrix) String() string {
 	return fmt.Sprintf("%3.2f %3.2f %3.2f\n%3.2f %3.2f %3.2f\n%3.2f %3.2f %3.2f\n",
 		m[0][0], m[0][1], m[0][2],

@@ -17,15 +17,15 @@
 package primitives
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
-	"strings"
-	"time"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
@@ -33,8 +33,9 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/matrix"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"github.com/pkg/errors"
 )
+
+var imageBoxUserAgent = "pdfcpu/" + model.VersionStr + " (+https://github.com/pdfcpu/pdfcpu)"
 
 // ImageData represents a more direct way for providing image data for form filling scenarios.
 type ImageData struct {
@@ -86,7 +87,7 @@ func (ib *ImageBox) resolveFileName(s string) (string, error) {
 func (ib *ImageBox) parseAnchor() (types.Anchor, error) {
 	if ib.Position[0] != 0 || ib.Position[1] != 0 {
 		var a types.Anchor
-		return a, errors.New("pdfcpu: Please supply \"pos\" or \"anchor\"")
+		return a, errors.New("please supply \"pos\" or \"anchor\"")
 	}
 	return types.ParseAnchor(ib.Anchor)
 }
@@ -97,7 +98,7 @@ func (ib *ImageBox) validate() error {
 	ib.y = ib.Position[1]
 
 	if ib.Name == "$" {
-		return errors.New("pdfcpu: invalid image reference $")
+		return errors.New("invalid image reference $")
 	}
 
 	// TODO Validate width, height inside content box
@@ -262,50 +263,52 @@ func (ib *ImageBox) checkForExistingImage(sd *types.StreamDict, w, h int) (*type
 }
 
 func (ib *ImageBox) resource() (io.ReadCloser, error) {
-	pdf := ib.pdf
-	var f io.ReadCloser
-	if strings.HasPrefix(ib.Src, "http") {
-		if pdf.Offline {
-			if log.CLIEnabled() {
-				log.CLI.Printf("pdfcpu is offline, can't get %s\n", ib.Src)
-			}
-			return nil, nil
-		}
-		client := pdf.httpClient
-		if client == nil {
-			pdf.httpClient = &http.Client{
-				Timeout: time.Duration(pdf.Timeout) * time.Second,
-			}
-			client = pdf.httpClient
-		}
-		resp, err := client.Get(ib.Src)
-		if err != nil {
-			if e, ok := err.(net.Error); ok && e.Timeout() {
-				if log.CLIEnabled() {
-					log.CLI.Printf("timeout: %s\n", ib.Src)
-				}
-			} else {
-				if log.CLIEnabled() {
-					log.CLI.Printf("%v: %s\n", err, ib.Src)
-				}
-			}
-			return nil, err
-		}
-		if resp.StatusCode != http.StatusOK {
-			if log.CLIEnabled() {
-				log.CLI.Printf("http status %d: %s\n", resp.StatusCode, ib.Src)
-			}
-			return nil, nil
-		}
-		f = resp.Body
-	} else {
-		var err error
-		f, err = os.Open(ib.Src)
+	if u, ok, err := imageBoxRemoteURL(ib.Src); ok || err != nil {
 		if err != nil {
 			return nil, err
 		}
+		return ib.remoteResource(u)
 	}
-	return f, nil
+
+	return os.Open(ib.Src)
+}
+
+func (ib *ImageBox) remoteResource(u *url.URL) (io.ReadCloser, error) {
+	pdf := ib.pdf
+	if pdf.Offline {
+		if log.CLIEnabled() {
+			log.CLI.Printf("pdfcpu is offline, can't get %s\n", ib.Src)
+		}
+		return nil, nil
+	}
+
+	client := pdf.imageBoxHTTPClient()
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", imageBoxUserAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		if e, ok := err.(net.Error); ok && e.Timeout() {
+			if log.CLIEnabled() {
+				log.CLI.Printf("timeout: %s\n", ib.Src)
+			}
+			return nil, err
+		}
+		if log.CLIEnabled() {
+			log.CLI.Printf("%v: %s\n", err, ib.Src)
+		}
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		if log.CLIEnabled() {
+			log.CLI.Printf("http status %d: %s\n", resp.StatusCode, ib.Src)
+		}
+		return nil, nil
+	}
+	return resp.Body, nil
 }
 
 func (ib *ImageBox) imageResource(pageImages, images model.ImageMap, pageNr int) (*model.ImageResource, error) {
@@ -437,7 +440,7 @@ func (ib *ImageBox) prepareMargin() (float64, float64, float64, float64, error) 
 			mName := m.Name[1:]
 			m0 := ib.margin(mName)
 			if m0 == nil {
-				return mTop, mRight, mBot, mLeft, errors.Errorf("pdfcpu: unknown named margin %s", mName)
+				return mTop, mRight, mBot, mLeft, fmt.Errorf("unknown named margin %s", mName)
 			}
 			m.mergeIn(m0)
 		}
@@ -472,7 +475,7 @@ func (ib *ImageBox) prepareBorder() (float64, *color.SimpleColor, types.LineJoin
 			bName := b.Name[1:]
 			b0 := ib.border(bName)
 			if b0 == nil {
-				return bWidth, bCol, bStyle, errors.Errorf("pdfcpu: unknown named border %s", bName)
+				return bWidth, bCol, bStyle, fmt.Errorf("unknown named border %s", bName)
 			}
 			b.mergeIn(b0)
 		}
@@ -505,7 +508,7 @@ func (ib *ImageBox) preparePadding() (float64, float64, float64, float64, error)
 			pName := p.Name[1:]
 			p0 := ib.padding(pName)
 			if p0 == nil {
-				return pTop, pRight, pBot, pLeft, errors.Errorf("pdfcpu: unknown named padding %s", pName)
+				return pTop, pRight, pBot, pLeft, fmt.Errorf("unknown named padding %s", pName)
 			}
 			p.mergeIn(p0)
 		}

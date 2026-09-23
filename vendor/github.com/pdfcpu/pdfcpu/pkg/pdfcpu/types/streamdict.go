@@ -19,13 +19,12 @@ package types
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/pdfcpu/pdfcpu/pkg/filter"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
-
-	"github.com/pkg/errors"
 )
 
 // PDFFilter represents a PDF stream filter object.
@@ -91,6 +90,7 @@ func (sd StreamDict) HasSoleFilterNamed(filterName string) bool {
 	return fpl[0].Name == filterName
 }
 
+// Image returns the image stream dictionary data.
 func (sd StreamDict) Image() bool {
 	s := sd.Type()
 	if s == nil || *s != "XObject" {
@@ -115,6 +115,7 @@ type LazyObjectStreamObject struct {
 	decodedError  error
 }
 
+// NewLazyObjectStreamObject returns a lazy object stream object.
 func NewLazyObjectStreamObject(osd *ObjectStreamDict, startOffset, endOffset int, decodeFunc DecodeLazyObjectStreamObjectFunc) Object {
 	return LazyObjectStreamObject{
 		osd:         osd,
@@ -125,6 +126,7 @@ func NewLazyObjectStreamObject(osd *ObjectStreamDict, startOffset, endOffset int
 	}
 }
 
+// Clone returns a copy of sd.
 func (l LazyObjectStreamObject) Clone() Object {
 	return LazyObjectStreamObject{
 		osd:         l.osd,
@@ -137,6 +139,7 @@ func (l LazyObjectStreamObject) Clone() Object {
 	}
 }
 
+// PDFString returns a PDF string representation of sd.
 func (l LazyObjectStreamObject) PDFString() string {
 	data, err := l.GetData()
 	if err != nil {
@@ -146,24 +149,33 @@ func (l LazyObjectStreamObject) PDFString() string {
 	return string(data)
 }
 
+// String returns the string value of l.
 func (l LazyObjectStreamObject) String() string {
 	return l.PDFString()
 }
 
+// GetData returns the stream data.
 func (l *LazyObjectStreamObject) GetData() ([]byte, error) {
-	if err := l.osd.Decode(); err != nil {
+	if err := l.osd.DecodeWithLimit(l.osd.MaxDecodeBytes); err != nil {
 		return nil, err
 	}
 
 	var data []byte
 	if l.endOffset == -1 {
+		if l.startOffset < 0 || l.startOffset > len(l.osd.Content) {
+			return nil, fmt.Errorf("object stream offset %d out of bounds", l.startOffset)
+		}
 		data = l.osd.Content[l.startOffset:]
 	} else {
+		if l.startOffset < 0 || l.startOffset > l.endOffset || l.endOffset > len(l.osd.Content) {
+			return nil, fmt.Errorf("object stream offset range [%d:%d] out of bounds", l.startOffset, l.endOffset)
+		}
 		data = l.osd.Content[l.startOffset:l.endOffset]
 	}
 	return data, nil
 }
 
+// DecodedObject returns the decoded object at index i.
 func (l *LazyObjectStreamObject) DecodedObject(c context.Context) (Object, error) {
 	if l.decodedObject == nil && l.decodedError == nil {
 		data, err := l.GetData()
@@ -193,6 +205,7 @@ type ObjectStreamDict struct {
 	Prolog         []byte
 	ObjCount       int
 	FirstObjOffset int
+	MaxDecodeBytes int64
 	ObjArray       Array
 }
 
@@ -311,7 +324,7 @@ func fixParms(f PDFFilter, parms map[string]int, sd *StreamDict) error {
 		if !ok {
 			ip := sd.IntEntry("Height")
 			if ip == nil {
-				return errors.New("pdfcpu: ccitt: \"Height\" required")
+				return errors.New("ccitt: \"Height\" required")
 			}
 			parms["Rows"] = *ip
 		}
@@ -319,20 +332,48 @@ func fixParms(f PDFFilter, parms map[string]int, sd *StreamDict) error {
 	return nil
 }
 
+func preserveEncodedImageFilter(name string) bool {
+	return name == filter.JPX || name == filter.JBIG2
+}
+
+func decodedContent(r io.Reader) ([]byte, error) {
+	if r == nil {
+		return nil, errors.New("copy decoded content: missing reader")
+	}
+	if bb, ok := r.(*bytes.Buffer); ok {
+		return bb.Bytes(), nil
+	}
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		return nil, fmt.Errorf("copy decoded content: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
 // Decode applies sd's filter pipeline to sd.Raw in order to produce sd.Content.
 func (sd *StreamDict) Decode() error {
-	_, err := sd.DecodeLength(-1)
+	_, err := sd.DecodeLengthWithLimit(-1, filter.DefaultMaxDecodeBytes)
 	return err
 }
 
-func (sd *StreamDict) decodeLength(maxLen int64) ([]byte, error) {
+// DecodeWithLimit decodes sd with resource limits.
+func (sd *StreamDict) DecodeWithLimit(maxDecodeBytes int64) error {
+	_, err := sd.DecodeLengthWithLimit(-1, maxDecodeBytes)
+	return err
+}
+
+func (sd *StreamDict) decodeLength(maxLen, maxDecodeBytes int64) ([]byte, error) {
 	var b, c io.Reader
 	b = bytes.NewReader(sd.Raw)
 
 	// Apply each filter in the pipeline to result of preceding filter.
 	for idx, f := range sd.FilterPipeline {
 
-		if f.Name == filter.JPX {
+		if preserveEncodedImageFilter(f.Name) {
+			if idx != len(sd.FilterPipeline)-1 {
+				return nil, fmt.Errorf("stream filter[%d] %q: decode: %w", idx, f.Name, filter.ErrUnsupportedFilter)
+			}
+			c = b
 			break
 		}
 
@@ -355,12 +396,12 @@ func (sd *StreamDict) decodeLength(maxLen int64) ([]byte, error) {
 
 		parms := parmsForFilter(f.DecodeParms)
 		if err := fixParms(f, parms, sd); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("stream filter[%d] %q: prepare parameters: %w", idx, f.Name, err)
 		}
 
-		fi, err := filter.NewFilter(f.Name, parms)
+		fi, err := filter.NewFilter(f.Name, parms, maxDecodeBytes)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("stream filter[%d] %q: construct: %w", idx, f.Name, err)
 		}
 
 		if maxLen >= 0 && idx == len(sd.FilterPipeline)-1 {
@@ -369,38 +410,43 @@ func (sd *StreamDict) decodeLength(maxLen int64) ([]byte, error) {
 			c, err = fi.Decode(b)
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("stream filter[%d] %q: decode: %w", idx, f.Name, err)
 		}
 
 		//fmt.Printf("decodedStream after:%s\n%s\n", f.Name, hex.Dump(c.Bytes()))
 		b = c
 	}
 
-	var data []byte
-	if bb, ok := c.(*bytes.Buffer); ok {
-		data = bb.Bytes()
-	} else {
-		var buf bytes.Buffer
-		if _, err := io.Copy(&buf, c); err != nil {
-			return nil, err
-		}
-
-		data = buf.Bytes()
+	data, err := decodedContent(c)
+	if err != nil {
+		return nil, err
 	}
 
 	if maxLen < 0 {
 		sd.Content = data
 		return data, nil
 	}
+	if maxLen > int64(len(data)) {
+		return nil, io.ErrUnexpectedEOF
+	}
 
 	return data[:maxLen], nil
 }
 
+// DecodeLength decodes sd with a maximum output length.
 func (sd *StreamDict) DecodeLength(maxLen int64) ([]byte, error) {
+	return sd.DecodeLengthWithLimit(maxLen, filter.DefaultMaxDecodeBytes)
+}
+
+// DecodeLengthWithLimit decodes sd with a maximum output length and resource limits.
+func (sd *StreamDict) DecodeLengthWithLimit(maxLen, maxDecodeBytes int64) ([]byte, error) {
 	if sd.Content != nil {
 		// This stream has already been decoded.
 		if maxLen < 0 {
 			return sd.Content, nil
+		}
+		if maxLen > int64(len(sd.Content)) {
+			return nil, io.ErrUnexpectedEOF
 		}
 
 		return sd.Content[:maxLen], nil
@@ -408,12 +454,16 @@ func (sd *StreamDict) DecodeLength(maxLen int64) ([]byte, error) {
 
 	fpl := sd.FilterPipeline
 
-	// No filter or sole filter DTC && !CMYK or JPX - nothing to decode.
-	if fpl == nil || len(fpl) == 1 && ((fpl[0].Name == filter.DCT && sd.CSComponents != 4) || fpl[0].Name == filter.JPX) {
+	// No filter, sole DCT except CMYK, or terminal opaque image filters:
+	// nothing to decode for consumers that can preserve the original image stream.
+	if fpl == nil || len(fpl) == 1 && ((fpl[0].Name == filter.DCT && sd.CSComponents != 4) || preserveEncodedImageFilter(fpl[0].Name)) {
 		sd.Content = sd.Raw
 		//fmt.Printf("decodedStream returning %d(#%02x)bytes: \n%s\n", len(sd.Content), len(sd.Content), hex.Dump(sd.Content))
 		if maxLen < 0 {
 			return sd.Content, nil
+		}
+		if maxLen > int64(len(sd.Content)) {
+			return nil, io.ErrUnexpectedEOF
 		}
 
 		return sd.Content[:maxLen], nil
@@ -421,13 +471,13 @@ func (sd *StreamDict) DecodeLength(maxLen int64) ([]byte, error) {
 
 	//fmt.Printf("decodedStream before:\n%s\n", hex.Dump(sd.Raw))
 
-	return sd.decodeLength(maxLen)
+	return sd.decodeLength(maxLen, maxDecodeBytes)
 }
 
 // IndexedObject returns the object at given index from a ObjectStreamDict.
 func (osd *ObjectStreamDict) IndexedObject(index int) (Object, error) {
 	if osd.ObjArray == nil || index < 0 || index >= len(osd.ObjArray) {
-		return nil, errors.Errorf("IndexedObject(%d): object not available", index)
+		return nil, fmt.Errorf("IndexedObject(%d): object not available", index)
 	}
 	return osd.ObjArray[index], nil
 }

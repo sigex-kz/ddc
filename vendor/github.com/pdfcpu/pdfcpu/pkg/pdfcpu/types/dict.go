@@ -23,7 +23,6 @@ import (
 	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pkg/errors"
 )
 
 // Dict represents a PDF dict object.
@@ -110,6 +109,12 @@ func (d Dict) Find(key string) (Object, bool) {
 	return nil, false
 }
 
+// HasEntry returns true if key exists and maps to a non-nil object.
+func (d Dict) HasEntry(key string) bool {
+	v, found := d.Find(key)
+	return found && v != nil
+}
+
 // Delete deletes the Object for given key.
 func (d Dict) Delete(key string) (value Object) {
 	value, found := d.Find(key)
@@ -137,14 +142,14 @@ func (d Dict) Entry(dictName, key string, required bool) (Object, bool, error) {
 	obj, found := d.Find(key)
 	if !found {
 		if required {
-			return nil, false, errors.Errorf("dict=%s required entry=%s missing", dictName, key)
+			return nil, false, fmt.Errorf("dict=%s required entry=%s missing", dictName, key)
 		}
 		return nil, false, nil
 	}
 
 	if obj == nil {
 		if required {
-			return nil, true, errors.Errorf("dict=%s required entry=%s corrupt", dictName, key)
+			return nil, true, fmt.Errorf("dict=%s required entry=%s corrupt", dictName, key)
 		}
 	}
 
@@ -336,6 +341,7 @@ func (d Dict) HexLiteralEntry(key string) *HexLiteral {
 	return nil
 }
 
+// StringOrHexLiteralEntry string or hex literal entry.
 func (d Dict) StringOrHexLiteralEntry(key string) (*string, error) {
 	if obj, ok := d.Find(key); ok {
 		return StringOrHexLiteral(obj)
@@ -377,6 +383,7 @@ func (d Dict) Size() *int {
 	return d.IntEntry("Size")
 }
 
+// IsPage reports whether page.
 func (d Dict) IsPage() bool {
 	return d.Type() != nil && *d.Type() == "Page"
 }
@@ -420,7 +427,7 @@ func (d Dict) IsLinearizationParmDict() bool {
 func (d *Dict) IncrementBy(key string, i int) error {
 	v := d.IntEntry(key)
 	if v == nil {
-		return errors.Errorf("IncrementBy: unknown key: %s", key)
+		return fmt.Errorf("incrementBy: unknown key: %s", key)
 	}
 	*v += i
 	d.Update(key, Integer(*v))
@@ -521,6 +528,7 @@ func (d Dict) PDFString() string {
 	return strings.Join(logstr, "")
 }
 
+// String returns the string value of d.
 func (d Dict) String() string {
 	return d.indentedString(1)
 }
