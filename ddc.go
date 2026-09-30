@@ -572,7 +572,7 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 
 		pageInDDC := fmt.Sprintf("%v-%v", ddc.infoBlockNumPages+1, ddc.infoBlockNumPages+ddc.embeddedPDFNumPages)
 		selectedPages := []string{pageInDDC}
-		pages, errPages := pdfcpuapi.PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+		pages, errPages := pdfcpuapi.PagesForSelection(ctx.PageCount, selectedPages, true)
 		if errPages != nil {
 			return errPages
 		}
