@@ -2582,8 +2582,7 @@ func BenchmarkBuild(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// Register builder id
 
 		brArgs := BuilderRegisterArgs{
@@ -2882,8 +2881,7 @@ func BenchmarkParse(b *testing.B) {
 		b.Fatal(bdResp.Error)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// Register extractor id
 
 		erArgs := ExtractorRegisterArgs{}

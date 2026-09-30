@@ -88,7 +88,7 @@ func TestPingPongFullFeatured(t *testing.T) {
 		t.Fatalf("quantity of extracted signatures (%v) does not match the original (%v)", len(signatures), len(di.Signatures))
 	}
 
-	for i := 0; i < len(signatures); i++ {
+	for i := range signatures {
 		if signatures[i].Name != di.Signatures[i].FileName {
 			t.Fatalf("unexpected signature file name (%v), expected (%v)", signatures[i].Name, di.Signatures[i].FileName)
 		}
@@ -179,7 +179,7 @@ func TestPingPongNonPDFDocument(t *testing.T) {
 		t.Fatalf("quantity of extracted signatures (%v) does not match the original (%v)", len(signatures), len(di.Signatures))
 	}
 
-	for i := 0; i < len(signatures); i++ {
+	for i := range signatures {
 		if signatures[i].Name != di.Signatures[i].FileName {
 			t.Fatalf("unexpected signature file name (%v), expected (%v)", signatures[i].Name, di.Signatures[i].FileName)
 		}
@@ -657,7 +657,7 @@ func TestBuildWithEmbeddedFonts(t *testing.T) {
 		t.Fatalf("quantity of extracted signatures (%v) does not match the original (%v)", len(signatures), len(di.Signatures))
 	}
 
-	for i := 0; i < len(signatures); i++ {
+	for i := range signatures {
 		if signatures[i].Name != di.Signatures[i].FileName {
 			t.Fatalf("unexpected signature file name (%v), expected (%v)", signatures[i].Name, di.Signatures[i].FileName)
 		}
@@ -741,7 +741,7 @@ func TestDifferentPageConfigs(t *testing.T) {
 		t.Fatalf("quantity of extracted signatures (%v) does not match the original (%v)", len(signatures), len(di.Signatures))
 	}
 
-	for i := 0; i < len(signatures); i++ {
+	for i := range signatures {
 		if signatures[i].Name != di.Signatures[i].FileName {
 			t.Fatalf("unexpected signature file name (%v), expected (%v)", signatures[i].Name, di.Signatures[i].FileName)
 		}
@@ -813,8 +813,7 @@ func BenchmarkBuild(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		di := DocumentInfo{}
 		err = json.Unmarshal(jsonBytes, &di)
 		if err != nil {
@@ -879,8 +878,7 @@ func BenchmarkParse(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		doc, signatures, err := ExtractAttachments(bytes.NewReader(bB.Bytes()))
 		if err != nil {
 			b.Fatal(err)

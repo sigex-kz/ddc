@@ -55,10 +55,7 @@ func clamAVScan(data []byte) error {
 	}
 
 	for remainderSize := len(data); remainderSize > 0; remainderSize -= chunkSize {
-		thisChunkSize := chunkSize
-		if remainderSize < chunkSize {
-			thisChunkSize = remainderSize
-		}
+		thisChunkSize := min(remainderSize, chunkSize)
 		if thisChunkSize > math.MaxUint32 || thisChunkSize < 0 {
 			panic("thisChunkSize does not fit into uint32")
 		}
