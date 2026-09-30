@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	consthowToVerifyString = "Для того, чтобы выполнить проверку подписи, перейдите по ссылке https://sigex.kz/ и перетащите этот файл в область Найти документ (либо кликните на область Найти документ и выберите файл в диалоговом окне). Сервис извлечет вложенные файлы, найдет страницу подписанного документа, сравнит подписи в системе и файле и выполнит их проверку. Так же сервис предоставит возможность скачать извлеченный подлинник электронного документа."
+	constHowToVerifyString = "Для того, чтобы выполнить проверку подписи, перейдите по ссылке https://sigex.kz/ и перетащите этот файл в область Найти документ (либо кликните на область Найти документ и выберите файл в диалоговом окне). Сервис извлечет вложенные файлы, найдет страницу подписанного документа, сравнит подписи в системе и файле и выполнит их проверку. Так же сервис предоставит возможность скачать извлеченный подлинник электронного документа."
 )
 
 func TestPingPongFullFeatured(t *testing.T) {
@@ -45,7 +45,7 @@ func TestPingPongFullFeatured(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,12 +131,12 @@ func TestPingPongNonPDFDocument(t *testing.T) {
 
 	var b bytes.Buffer
 
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err == nil {
 		t.Fatal("should fail")
 	}
 
-	err = ddc.Build(false, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(false, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, false, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(true, false, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 	}
 
 	b = bytes.Buffer{}
-	err = ddc.Build(false, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(false, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 	}
 
 	b = bytes.Buffer{}
-	err = ddc.Build(false, false, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(false, false, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestBuildNoQRCodes(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +374,7 @@ func TestBuildLongStrings(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +423,7 @@ func TestBuildNoID(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestBuildKK(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestBuildKKRU(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +568,7 @@ func TestBuildNoSignersNames(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +614,7 @@ func TestBuildWithEmbeddedFonts(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -698,7 +698,7 @@ func TestDifferentPageConfigs(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "ddc test builder", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -789,7 +789,7 @@ func TestBuildLotsOfSignatures(t *testing.T) {
 	}
 
 	var b bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", consthowToVerifyString, &b)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", constHowToVerifyString, &b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -837,7 +837,7 @@ func BenchmarkBuild(b *testing.B) {
 		}
 
 		var bB bytes.Buffer
-		err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", consthowToVerifyString, &bB)
+		err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", constHowToVerifyString, &bB)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -874,7 +874,7 @@ func BenchmarkParse(b *testing.B) {
 	}
 
 	var bB bytes.Buffer
-	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", consthowToVerifyString, &bB)
+	err = ddc.Build(true, true, "2021.01.01 13:45:00 UTC+6", "сервис формирования карточек электронных документов", constHowToVerifyString, &bB)
 	if err != nil {
 		b.Fatal(err)
 	}

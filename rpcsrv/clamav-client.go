@@ -60,7 +60,7 @@ func clamAVScan(data []byte) error {
 			thisChunkSize = remainderSize
 		}
 		if thisChunkSize > math.MaxUint32 || thisChunkSize < 0 {
-			panic("thisChunkSize does not fint into uint32")
+			panic("thisChunkSize does not fit into uint32")
 		}
 		thisChunkSizeUint32 := uint32(thisChunkSize)
 

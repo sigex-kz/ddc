@@ -166,7 +166,7 @@ type BuilderBuildArgs struct {
 	ID string
 
 	// CreationDate should be current date and time in format "2021.01.31 13:45:00 UTC+6"
-	// converted to time zone of Nur-Sultan.
+	// converted to time zone of Astana.
 	CreationDate string
 
 	// BuilderName would be embedded into DDC visualization
@@ -188,7 +188,7 @@ type BuilderBuildResp struct {
 	Error string
 }
 
-// Build DDC in the specified slot, should be called once after all data've been passed
+// Build DDC in the specified slot, should be called once after all data have been passed
 // to the slot via calls to AppendDocumentPart and AppendSignature
 func (t *Builder) Build(args *BuilderBuildArgs, resp *BuilderBuildResp) error {
 	e, err := getStoreEntry(args.ID)

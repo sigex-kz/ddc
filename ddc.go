@@ -117,11 +117,11 @@ type SignatureVisualization struct {
 	// Signature algorithm in the following format "Human readable name (OID)"
 	SignatureAlgorithm string `json:"signatureAlgorithm"`
 
-	// Time stamp imformation
+	// Time stamp information
 	TSP struct {
 
 		// Time stamp from TSP response in format "19.05.2021 04:01:52 UTC+5"
-		// converted to time zone of Nur-Sultan
+		// converted to time zone of Astana
 		GeneratedAt string `json:"generatedAt"`
 
 		// Serial number of the TSP signers certificate
@@ -138,7 +138,7 @@ type SignatureVisualization struct {
 	OCSP struct {
 
 		// ThisUpdate value from OCSP response in format "19.05.2021 04:01:52 UTC+5"
-		// converted to time zone of Nur-Sultan
+		// converted to time zone of Astana
 		GeneratedAt string `json:"generatedAt"`
 
 		// CertStatus from OCSP response as a string (one of "good", "revoked", or "unknown")
@@ -179,7 +179,7 @@ type SignatureVisualization struct {
 		Issuer string `json:"issuer"`
 	} `json:"dts"`
 
-	// Signature body encoded as a sey of QR codes and stored as PNG images (optional)
+	// Signature body encoded as a set of QR codes and stored as PNG images (optional)
 	QRCodes [][]byte `json:"qrCodes"`
 }
 
@@ -618,27 +618,27 @@ func (ddc *Builder) attachFiles(dryRun bool) error {
 		Description: ddc.t("Подлинник электронного документа"),
 	}
 
-	for si, signtaure := range ddc.di.Signatures {
-		signer := signtaure.SignerName
-		if signtaure.SignatureVisualization != nil {
-			signer = signtaure.SignatureVisualization.SubjectName
+	for si, signature := range ddc.di.Signatures {
+		signer := signature.SignerName
+		if signature.SignatureVisualization != nil {
+			signer = signature.SignatureVisualization.SubjectName
 		}
 
-		if signer == "" && signtaure.SignatureVisualization.SubjectID != "" {
-			signer = fmt.Sprintf(ddc.t("ИИН %v"), signtaure.SignatureVisualization.SubjectID)
+		if signer == "" && signature.SignatureVisualization.SubjectID != "" {
+			signer = fmt.Sprintf(ddc.t("ИИН %v"), signature.SignatureVisualization.SubjectID)
 		}
 
 		if signer == "" {
 			return errors.New("subject ID not provided")
 		}
 
-		if signtaure.FileName == "" {
+		if signature.FileName == "" {
 			return errors.New("signature file name not provided")
 		}
 
 		ddc.attachments[1+si] = gofpdf.Attachment{
-			Content:     signtaure.Body,
-			Filename:    signtaure.FileName,
+			Content:     signature.Body,
+			Filename:    signature.FileName,
 			Description: fmt.Sprintf(ddc.t("ЭЦП, %v"), signer),
 		}
 	}

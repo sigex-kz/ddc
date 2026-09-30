@@ -90,7 +90,7 @@ type ExtractorParseResp struct {
 	DocumentFileName string
 }
 
-// Parse DDC in the specified slot, should be called after all parts of DDC've been
+// Parse DDC in the specified slot, should be called after all parts of DDC have been
 // transmitted via AppendDDCPart
 func (t *Extractor) Parse(args *ExtractorParseArgs, resp *ExtractorParseResp) error {
 	e, err := getStoreEntry(args.ID)
@@ -236,7 +236,7 @@ type ExtractorGetSignatureResp struct {
 	IsFinal bool
 }
 
-// GetSignature retrieves signatures that've benn embedded into DDC successively, should be called after Parse
+// GetSignature retrieves signatures that have been embedded into DDC successively, should be called after Parse
 func (t *Extractor) GetSignature(args *ExtractorGetSignatureArgs, resp *ExtractorGetSignatureResp) error {
 	e, err := getStoreEntry(args.ID)
 	if err != nil {
