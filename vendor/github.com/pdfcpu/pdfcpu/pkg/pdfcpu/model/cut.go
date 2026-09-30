@@ -26,6 +26,7 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
+// Cut contains page subdivision and output settings for cut and poster operations.
 type Cut struct {
 	Hor      []float64          // Horizontal cut points
 	Vert     []float64          // Vertical cut points
@@ -43,7 +44,6 @@ type Cut struct {
 type cutParameterMap map[string]func(string, *Cut) error
 
 func parseHorCut(v string, cut *Cut) (err error) {
-
 	for _, s := range strings.Split(v, " ") {
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
@@ -59,7 +59,6 @@ func parseHorCut(v string, cut *Cut) (err error) {
 }
 
 func parseVertCut(v string, cut *Cut) (err error) {
-
 	for _, s := range strings.Split(v, " ") {
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
@@ -75,7 +74,6 @@ func parseVertCut(v string, cut *Cut) (err error) {
 }
 
 func parsePageDimCut(v string, u types.DisplayUnit) (*types.Dim, string, error) {
-
 	ss := strings.Split(v, " ")
 	if len(ss) != 2 {
 		return nil, v, fmt.Errorf("illegal dimension string: need 2 values one may be 0, %s", v)
@@ -106,7 +104,6 @@ func parseDimensionsCut(s string, cut *Cut) (err error) {
 }
 
 func parsePageFormatCut(s string, cut *Cut) error {
-
 	// Optional: appended last letter L indicates landscape mode.
 	// Optional: appended last letter P indicates portrait mode.
 	// eg. A4L means A4 in landscape mode whereas A4 defaults to A4P
@@ -139,7 +136,6 @@ func parsePageFormatCut(s string, cut *Cut) error {
 }
 
 func parseScaleFactorCut(s string, cut *Cut) (err error) {
-
 	sc, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return fmt.Errorf("scale factor must be a float value: %s", s)

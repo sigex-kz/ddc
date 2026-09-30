@@ -23,6 +23,8 @@ import (
 	"embed"
 	"os"
 	"path/filepath"
+
+	"github.com/pdfcpu/pdfcpu/internal/fileutil"
 )
 
 const bundledDefaultCertificates = true
@@ -30,13 +32,13 @@ const bundledDefaultCertificates = true
 //go:embed resources/certs/*.p7c
 var certFilesEU embed.FS
 
-func installDefaultCertificates() error {
+func installDefaultCertificates(trustedCertDir string) error {
 	files, err := certFilesEU.ReadDir("resources/certs")
 	if err != nil {
 		return err
 	}
 
-	euDir := filepath.Join(TrustedCertDir, "eu")
+	euDir := filepath.Join(trustedCertDir, "eu")
 	if err := os.MkdirAll(euDir, 0755); err != nil {
 		return err
 	}
@@ -56,5 +58,5 @@ func installDefaultCertificate(name, dir string) error {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(dir, name), content, 0644)
+	return fileutil.WriteFile(filepath.Join(dir, name), content, 0644)
 }

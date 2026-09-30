@@ -25,8 +25,10 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
+// PageMode identifies how a document is displayed when opened.
 type PageMode int
 
+// Supported initial page modes.
 const (
 	PageModeUseNone PageMode = iota
 	PageModeUseOutlines
@@ -84,8 +86,10 @@ func (pm *PageMode) String() string {
 	}
 }
 
+// PageLayout identifies the page arrangement used when a document is opened.
 type PageLayout int
 
+// Supported initial page layouts.
 const (
 	PageLayoutSinglePage PageLayout = iota
 	PageLayoutTwoColumnLeft
@@ -143,8 +147,10 @@ func (pl *PageLayout) String() string {
 	}
 }
 
+// NonFullScreenPageMode identifies the page mode used after leaving full-screen mode.
 type NonFullScreenPageMode PageMode
 
+// Supported page modes after leaving full-screen mode.
 const (
 	NFSPageModeUseNone NonFullScreenPageMode = iota
 	NFSPageModeUseOutlines
@@ -152,8 +158,10 @@ const (
 	NFSPageModeUseOC
 )
 
+// PageBoundary identifies a PDF page boundary box.
 type PageBoundary int
 
+// Supported PDF page boundary boxes.
 const (
 	MediaBox PageBoundary = iota
 	CropBox
@@ -206,8 +214,10 @@ func (pb *PageBoundary) String() string {
 	}
 }
 
+// PrintScaling identifies the page-scaling option used for printing.
 type PrintScaling int
 
+// Supported print-scaling options.
 const (
 	PrintScalingNone PrintScaling = iota
 	PrintScalingAppDefault
@@ -245,8 +255,10 @@ func (ps *PrintScaling) String() string {
 	}
 }
 
+// Direction identifies the predominant reading order for pages.
 type Direction int
 
+// Supported page reading directions.
 const (
 	L2R Direction = iota
 	R2L
@@ -284,8 +296,10 @@ func (d *Direction) String() string {
 	}
 }
 
+// PaperHandling identifies the duplex mode used when printing.
 type PaperHandling int
 
+// Supported paper-handling modes.
 const (
 	Simplex PaperHandling = iota
 	DuplexFlipShortEdge
@@ -345,9 +359,9 @@ type ViewerPreferences struct {
 	PrintScaling          *PrintScaling  // since 1.6
 	Duplex                *PaperHandling // since 1.7
 	PickTrayByPDFSize     *bool          // since 1.7
-	PrintPageRange        types.Array    // since 1.7
+	PrintPageRange        []int          // since 1.7
 	NumCopies             *types.Integer // since 1.7
-	Enforce               types.Array    // since 2.0
+	Enforce               []string       // since 2.0
 }
 
 func (vp *ViewerPreferences) validatePrinterPreferences(version Version) error {
@@ -541,6 +555,7 @@ func ViewerPreferencesWithDefaults(vp *ViewerPreferences, version Version) (*Vie
 	return vp1, nil
 }
 
+// ViewerPrefJSON represents viewer preferences in their JSON form.
 type ViewerPrefJSON struct {
 	HideToolbar           *bool    `json:"hideToolbar,omitempty"`
 	HideMenubar           *bool    `json:"hideMenubar,omitempty"`
@@ -580,24 +595,11 @@ func (vp *ViewerPreferences) MarshalJSON() ([]byte, error) {
 		PrintScaling:          vp.PrintScaling.String(),
 		Duplex:                vp.Duplex.String(),
 		PickTrayByPDFSize:     vp.PickTrayByPDFSize,
+		PrintPageRange:        vp.PrintPageRange,
 		NumCopies:             (*int)(vp.NumCopies),
 	}
 
-	if len(vp.PrintPageRange) > 0 {
-		var ii []int
-		for _, v := range vp.PrintPageRange {
-			ii = append(ii, v.(types.Integer).Value())
-		}
-		vpJSON.PrintPageRange = ii
-	}
-
-	if len(vp.Enforce) > 0 {
-		var ss []string
-		for _, v := range vp.Enforce {
-			ss = append(ss, v.(types.Name).Value())
-		}
-		vpJSON.Enforce = ss
-	}
+	vpJSON.Enforce = vp.Enforce
 
 	return json.Marshal(&vpJSON)
 }
@@ -614,7 +616,7 @@ func (vp *ViewerPreferences) unmarshalPrintPageRange(vpJSON ViewerPrefJSON) erro
 				return errors.New("invalid \"PrintPageRange\" - expecting pairs of ascending page numbers")
 			}
 		}
-		vp.PrintPageRange = types.NewIntegerArray(arr...)
+		vp.PrintPageRange = append([]int(nil), arr...)
 	}
 
 	return nil
@@ -653,7 +655,7 @@ func (vp *ViewerPreferences) unmarshalPrinterPreferences(vpJSON ViewerPrefJSON) 
 		if vpJSON.Enforce[0] != "PrintScaling" {
 			return errors.New("\"Enforce\" must be array with one element: \"PrintScaling\"")
 		}
-		vp.Enforce = types.NewNameArray("PrintScaling")
+		vp.Enforce = []string{"PrintScaling"}
 	}
 
 	return nil
@@ -799,7 +801,7 @@ func (vp ViewerPreferences) listPrinterPreferences() []string {
 	if len(vp.PrintPageRange) > 0 {
 		var ss1 []string
 		for i := 0; i < len(vp.PrintPageRange); i += 2 {
-			ss1 = append(ss1, fmt.Sprintf("%d-%d", vp.PrintPageRange[i].(types.Integer), vp.PrintPageRange[i+1].(types.Integer)))
+			ss1 = append(ss1, fmt.Sprintf("%d-%d", vp.PrintPageRange[i], vp.PrintPageRange[i+1]))
 		}
 		ss = append(ss, fmt.Sprintf("%s = %s", "PrintPageRange", strings.Join(ss1, ",")))
 	}
@@ -809,11 +811,7 @@ func (vp ViewerPreferences) listPrinterPreferences() []string {
 	}
 
 	if len(vp.Enforce) > 0 {
-		var ss1 []string
-		for _, v := range vp.Enforce {
-			ss1 = append(ss1, v.String())
-		}
-		ss = append(ss, fmt.Sprintf("%s = %s", "Enforce", strings.Join(ss1, ",")))
+		ss = append(ss, fmt.Sprintf("%s = %s", "Enforce", strings.Join(vp.Enforce, ",")))
 	}
 
 	return ss
@@ -893,7 +891,7 @@ func (vp ViewerPreferences) String() string {
 	if len(vp.PrintPageRange) > 0 {
 		var ss1 []string
 		for i := 0; i < len(vp.PrintPageRange); i += 2 {
-			ss1 = append(ss1, fmt.Sprintf("%d-%d", vp.PrintPageRange[i].(types.Integer), vp.PrintPageRange[i+1].(types.Integer)))
+			ss1 = append(ss1, fmt.Sprintf("%d-%d", vp.PrintPageRange[i], vp.PrintPageRange[i+1]))
 		}
 		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "PrintPageRange", strings.Join(ss1, ",")))
 	}
@@ -903,11 +901,7 @@ func (vp ViewerPreferences) String() string {
 	}
 
 	if len(vp.Enforce) > 0 {
-		var ss1 []string
-		for _, v := range vp.Enforce {
-			ss1 = append(ss1, v.String())
-		}
-		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "Enforce", strings.Join(ss1, ",")))
+		ss = append(ss, fmt.Sprintf("%22s%s = %s", "", "Enforce", strings.Join(vp.Enforce, ",")))
 	}
 
 	return strings.TrimSpace(strings.Join(ss, "\n"))

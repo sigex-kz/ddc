@@ -17,14 +17,79 @@ limitations under the License.
 package validate
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
-func validatePropertiesDict(xRefTable *model.XRefTable, o types.Object) error {
+type propertiesTraversalContextKey struct{}
+
+type propertiesTraversal struct {
+	ancestors map[int]bool
+}
+
+func propertiesTraversalFromContext(c context.Context) (context.Context, *propertiesTraversal) {
+	if c != nil {
+		if t, ok := c.Value(propertiesTraversalContextKey{}).(*propertiesTraversal); ok {
+			return c, t
+		}
+	}
+	t := &propertiesTraversal{ancestors: map[int]bool{}}
+	if c == nil {
+		return nil, t
+	}
+	return context.WithValue(c, propertiesTraversalContextKey{}, t), t
+}
+
+func propertiesObjectIdentity(o types.Object) int {
+	ir, ok := o.(types.IndirectRef)
+	if !ok {
+		return 0
+	}
+	return ir.ObjectNumber.Value()
+}
+
+func validatePropertiesDict(c context.Context, xRefTable *model.XRefTable, o types.Object) error {
+	c, traversal := propertiesTraversalFromContext(c)
+	return traversal.validate(c, xRefTable, o)
+}
+
+func (t *propertiesTraversal) enter(o types.Object) (int, bool) {
+	objNr := propertiesObjectIdentity(o)
+	if objNr <= 0 {
+		return 0, true
+	}
+	if t.ancestors[objNr] {
+		return objNr, false
+	}
+	t.ancestors[objNr] = true
+	return objNr, true
+}
+
+func (t *propertiesTraversal) validate(c context.Context, xRefTable *model.XRefTable, o types.Object) (err error) {
+	objNr := validationObjectNumber(0, o)
+	defer func() {
+		err = model.WithValidationErrorObject(err, objNr)
+	}()
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+
+	propertyObjNr, entered := t.enter(o)
+	if !entered {
+		return nil
+	}
+	if propertyObjNr > 0 {
+		defer delete(t.ancestors, propertyObjNr)
+	}
+
 	// see 14.6.2
 	// a dictionary containing private information meaningful to the conforming writer creating marked content.
 	// anything possible +
@@ -40,13 +105,7 @@ func validatePropertiesDict(xRefTable *model.XRefTable, o types.Object) error {
 	// Optional E see since 1.4 14.9.5
 	// Optional Lang string RFC 3066 see 14.9.2
 
-	logProp := func(qual, k string, v types.Object) {
-		if log.ValidateEnabled() {
-			log.Validate.Printf("validatePropertiesDict: %s key=%s val=%v\n", qual, k, v)
-		}
-	}
-
-	d, err := xRefTable.DereferenceDict(o)
+	d, streamDict, err := dereferencePropertiesDict(xRefTable, o)
 	if err != nil || d == nil {
 		if err != nil {
 			return fmt.Errorf("%s: dereference: %w", objectContext("propertiesDict", o), err)
@@ -57,8 +116,40 @@ func validatePropertiesDict(xRefTable *model.XRefTable, o types.Object) error {
 	if err = validateMetadata(xRefTable, d, OPTIONAL, model.V14); err != nil {
 		return fmt.Errorf("%s: %w", dictEntryContext("propertiesDict", "Metadata", d["Metadata"]), err)
 	}
+	if err = validatePropertiesDictEntries(c, xRefTable, d, objNr); err != nil {
+		return err
+	}
+	if streamDict {
+		err := errors.New("property list stream dictionary accepted in relaxed mode")
+		model.ShowDigestedSpecViolationError(model.WithValidationErrorObject(err, objNr))
+	}
+	return nil
+}
 
-	for key, val := range d {
+func dereferencePropertiesDict(xRefTable *model.XRefTable, o types.Object) (types.Dict, bool, error) {
+	resolvedObject, err := xRefTable.Dereference(o)
+	if err != nil || resolvedObject == nil {
+		return nil, false, err
+	}
+	if d, ok := resolvedObject.(types.Dict); ok {
+		return d, false, nil
+	}
+	if d, ok := resolvedObject.(types.StreamDict); ok && xRefTable.ValidationMode == model.ValidationRelaxed {
+		return d.Dict, true, nil
+	}
+	_, err = xRefTable.DereferenceDict(o)
+	return nil, false, err
+}
+
+func validatePropertiesDictEntries(c context.Context, xRefTable *model.XRefTable, d types.Dict, objNr int) (err error) {
+	logProp := func(qual, k string, v types.Object) {
+		if log.ValidateEnabled() {
+			log.Validate.Printf("validatePropertiesDict: %s key=%s val=%v\n", qual, k, v)
+		}
+	}
+
+	for _, key := range slices.Sorted(maps.Keys(d)) {
+		val := d[key]
 
 		switch key {
 
@@ -67,13 +158,15 @@ func validatePropertiesDict(xRefTable *model.XRefTable, o types.Object) error {
 
 		case "Contents":
 			logProp("known", key, val)
-			if err = validateStringOrStreamEntry(xRefTable, d, "propertiesDict", "Contents", OPTIONAL, model.V10); err != nil {
+			if err = validateStringOrStreamEntry(
+				xRefTable, d, objNr, "propertiesDict", "Contents", OPTIONAL, model.V10,
+			); err != nil {
 				return fmt.Errorf("%s: %w", dictEntryContext("propertiesDict", "Contents", val), err)
 			}
 
 		case "Resources":
 			logProp("known", key, val)
-			if _, err = validateResourceDict(xRefTable, val); err != nil {
+			if _, err = validateResourceDict(c, xRefTable, val); err != nil {
 				return fmt.Errorf("%s: %w", dictEntryContext("propertiesDict", "Resources", val), err)
 			}
 
@@ -94,7 +187,8 @@ func validatePropertiesDict(xRefTable *model.XRefTable, o types.Object) error {
 		default:
 			logProp("unknown", key, val)
 			if _, err = xRefTable.Dereference(val); err != nil {
-				return fmt.Errorf("%s: dereference: %w", dictEntryContext("propertiesDict", key, val), err)
+				err = fmt.Errorf("%s: dereference: %w", dictEntryContext("propertiesDict", key, val), err)
+				return model.WithValidationErrorObject(err, validationObjectNumber(objNr, val))
 			}
 		}
 
@@ -103,7 +197,12 @@ func validatePropertiesDict(xRefTable *model.XRefTable, o types.Object) error {
 	return nil
 }
 
-func validatePropertiesResourceDict(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+func validatePropertiesResourceDict(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) (err error) {
+	objNr := validationObjectNumber(0, o)
+	defer func() {
+		err = model.WithValidationErrorObject(err, objNr)
+	}()
+
 	if err := xRefTable.ValidateVersion("PropertiesResourceDict", sinceVersion); err != nil {
 		return fmt.Errorf("propertiesResourceDict: %w", err)
 	}
@@ -115,10 +214,15 @@ func validatePropertiesResourceDict(xRefTable *model.XRefTable, o types.Object, 
 		}
 		return nil
 	}
+	c, _ = propertiesTraversalFromContext(c)
 
 	// Iterate over properties resource dict
-	for name, o := range d {
-		if err = validatePropertiesDict(xRefTable, o); err != nil {
+	for _, name := range slices.Sorted(maps.Keys(d)) {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		o := d[name]
+		if err = validatePropertiesDict(c, xRefTable, o); err != nil {
 			return fmt.Errorf("%s: %w", objectContext(fmt.Sprintf("propertiesResourceDict.%s", name), o), err)
 		}
 	}

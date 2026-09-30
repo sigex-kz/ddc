@@ -17,9 +17,11 @@ limitations under the License.
 package validate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
@@ -33,18 +35,18 @@ func validateDestsNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinc
 		return err
 	}
 
-	_, err = validateDestination(xRefTable, o, false)
+	_, err = validateDestination(xRefTable, o, 0, false)
 	return err
 }
 
-func validateAPNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+func validateAPNameTreeValue(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
 	// Version check
 	err := xRefTable.ValidateVersion("APNameTreeValue", sinceVersion)
 	if err != nil {
 		return err
 	}
 
-	return validateXObjectStreamDict(xRefTable, o)
+	return validateXObjectStreamDict(c, xRefTable, o)
 }
 
 func validateJavaScriptNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
@@ -83,7 +85,7 @@ func validatePagesNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinc
 		return errors.New("Pages name tree value: missing page dict")
 	}
 
-	_, err = validateNameEntry(xRefTable, d, "pageDict", "Type", REQUIRED, model.V10, func(s string) bool { return s == "Page" })
+	_, err = validateNameEntry(xRefTable, d, 0, "pageDict", "Type", REQUIRED, model.V10, func(s string) bool { return s == "Page" })
 
 	return err
 }
@@ -107,7 +109,7 @@ func validateTemplatesNameTreeValue(xRefTable *model.XRefTable, o types.Object, 
 		return errors.New("Templates name tree value: missing template dict")
 	}
 
-	_, err = validateNameEntry(xRefTable, d, "templateDict", "Type", REQUIRED, model.V10, func(s string) bool { return s == "Template" })
+	_, err = validateNameEntry(xRefTable, d, 0, "templateDict", "Type", REQUIRED, model.V10, func(s string) bool { return s == "Template" })
 
 	return err
 }
@@ -116,13 +118,13 @@ func validateURLAliasDict(xRefTable *model.XRefTable, d types.Dict) error {
 	dictName := "urlAliasDict"
 
 	// U, required, ASCII string
-	_, err := validateStringEntry(xRefTable, d, dictName, "U", REQUIRED, model.V10, nil)
+	_, err := validateStringEntry(xRefTable, d, 0, dictName, "U", REQUIRED, model.V10, nil)
 	if err != nil {
 		return err
 	}
 
 	// C, optional, array of strings
-	_, err = validateStringArrayEntry(xRefTable, d, dictName, "C", OPTIONAL, model.V10, nil)
+	_, err = validateStringArrayEntry(xRefTable, d, 0, dictName, "C", OPTIONAL, model.V10, nil)
 
 	return err
 }
@@ -133,58 +135,58 @@ func validateCommandSettingsDict(xRefTable *model.XRefTable, d types.Dict) error
 	dictName := "cmdSettingsDict"
 
 	// G, optional, dict
-	_, err := validateDictEntry(xRefTable, d, dictName, "G", OPTIONAL, model.V10, nil)
+	_, err := validateDictEntry(xRefTable, d, 0, dictName, "G", OPTIONAL, model.V10, nil)
 	if err != nil {
 		return err
 	}
 
 	// C, optional, dict
-	_, err = validateDictEntry(xRefTable, d, dictName, "C", OPTIONAL, model.V10, nil)
+	_, err = validateDictEntry(xRefTable, d, 0, dictName, "C", OPTIONAL, model.V10, nil)
 
 	return err
 }
 
-func validateCaptureCommandDict(xRefTable *model.XRefTable, d types.Dict) error {
+func validateCaptureCommandDict(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int) error {
 	dictName := "captureCommandDict"
 
 	// URL, required, string
-	_, err := validateStringEntry(xRefTable, d, dictName, "URL", REQUIRED, model.V10, nil)
+	_, err := validateStringEntry(xRefTable, d, 0, dictName, "URL", REQUIRED, model.V10, nil)
 	if err != nil {
 		return fmt.Errorf("%s.URL: %w", dictName, err)
 	}
 
 	// L, optional, integer
-	_, err = validateIntegerEntry(xRefTable, d, dictName, "L", OPTIONAL, model.V10, nil)
+	_, err = validateIntegerEntry(xRefTable, d, 0, dictName, "L", OPTIONAL, model.V10, nil)
 	if err != nil {
 		return fmt.Errorf("%s.L: %w", dictName, err)
 	}
 
 	// F, optional, integer
-	_, err = validateIntegerEntry(xRefTable, d, dictName, "F", OPTIONAL, model.V10, nil)
+	_, err = validateIntegerEntry(xRefTable, d, 0, dictName, "F", OPTIONAL, model.V10, nil)
 	if err != nil {
 		return fmt.Errorf("%s.F: %w", dictName, err)
 	}
 
 	// P, optional, string or stream
-	err = validateStringOrStreamEntry(xRefTable, d, dictName, "P", OPTIONAL, model.V10)
+	err = validateStringOrStreamEntry(xRefTable, d, ownerObjNr, dictName, "P", OPTIONAL, model.V10)
 	if err != nil {
 		return fmt.Errorf("%s.P: %w", dictName, err)
 	}
 
 	// CT, optional, ASCII string
-	_, err = validateStringEntry(xRefTable, d, dictName, "CT", OPTIONAL, model.V10, nil)
+	_, err = validateStringEntry(xRefTable, d, 0, dictName, "CT", OPTIONAL, model.V10, nil)
 	if err != nil {
 		return fmt.Errorf("%s.CT: %w", dictName, err)
 	}
 
 	// H, optional, string
-	_, err = validateStringEntry(xRefTable, d, dictName, "H", OPTIONAL, model.V10, nil)
+	_, err = validateStringEntry(xRefTable, d, 0, dictName, "H", OPTIONAL, model.V10, nil)
 	if err != nil {
 		return fmt.Errorf("%s.H: %w", dictName, err)
 	}
 
 	// S, optional, command settings dict
-	d1, err := validateDictEntry(xRefTable, d, dictName, "S", OPTIONAL, model.V10, nil)
+	d1, err := validateDictEntry(xRefTable, d, 0, dictName, "S", OPTIONAL, model.V10, nil)
 	if err != nil {
 		return fmt.Errorf("%s.S: %w", dictName, err)
 	}
@@ -199,7 +201,7 @@ func validateCaptureCommandDict(xRefTable *model.XRefTable, d types.Dict) error 
 }
 
 func validateSourceInfoDictEntryAU(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
-	o, err := validateEntry(xRefTable, d, dictName, entryName, required, sinceVersion)
+	o, err := validateEntry(xRefTable, d, 0, dictName, entryName, required, sinceVersion)
 	if err != nil || o == nil {
 		return err
 	}
@@ -223,51 +225,58 @@ func validateSourceInfoDictEntryAU(xRefTable *model.XRefTable, d types.Dict, dic
 	return nil
 }
 
-func validateSourceInfoDict(xRefTable *model.XRefTable, d types.Dict) error {
+func validateSourceInfoDict(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int) (err error) {
+	defer func() {
+		err = model.WithValidationErrorObject(err, ownerObjNr)
+	}()
+
 	dictName := "sourceInfoDict"
 
 	// AU, required, ASCII string or dict
-	err := validateSourceInfoDictEntryAU(xRefTable, d, dictName, "AU", REQUIRED, model.V10)
+	err = validateSourceInfoDictEntryAU(xRefTable, d, dictName, "AU", REQUIRED, model.V10)
 	if err != nil {
 		return err
 	}
 
 	// E, optional, date
-	_, err = validateDateEntry(xRefTable, d, dictName, "E", OPTIONAL, model.V10)
+	_, err = validateDateEntry(xRefTable, d, 0, dictName, "E", OPTIONAL, model.V10)
 	if err != nil {
 		return err
 	}
 
 	// S, optional, integer
-	_, err = validateIntegerEntry(xRefTable, d, dictName, "S", OPTIONAL, model.V10, func(i int) bool { return 0 <= i && i <= 2 })
+	_, err = validateIntegerEntry(xRefTable, d, 0, dictName, "S", OPTIONAL, model.V10, func(i int) bool { return 0 <= i && i <= 2 })
 	if err != nil {
 		return err
 	}
 
 	// C, optional, indRef of command dict
-	ir, err := validateIndRefEntry(xRefTable, d, dictName, "C", OPTIONAL, model.V10)
+	ir, err := validateIndRefEntry(xRefTable, d, ownerObjNr, dictName, "C", OPTIONAL, model.V10)
 	if err != nil {
 		return err
 	}
 
 	if ir != nil {
+		commandObjNr := ir.ObjectNumber.Value()
 
 		d1, err := xRefTable.DereferenceDict(*ir)
 		if err != nil {
-			return err
+			return model.WithValidationErrorObject(err, commandObjNr)
 		}
 
-		return validateCaptureCommandDict(xRefTable, d1)
+		err = validateCaptureCommandDict(xRefTable, d1, commandObjNr)
+		return model.WithValidationErrorObject(err, commandObjNr)
 
 	}
 
 	return nil
 }
 
-func validateEntrySI(xRefTable *model.XRefTable, d types.Dict, dictName, entryName string, required bool, sinceVersion model.Version) error {
+func validateEntrySI(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, dictName, entryName string, required bool, sinceVersion model.Version) error {
 	// see 14.10.5, table 355, source information dictionary
 
-	o, err := validateEntry(xRefTable, d, dictName, entryName, required, sinceVersion)
+	siObjNr := validationEntryObjectNumber(ownerObjNr, d, entryName)
+	o, err := validateEntry(xRefTable, d, ownerObjNr, dictName, entryName, required, sinceVersion)
 	if err != nil || o == nil {
 		return err
 	}
@@ -275,7 +284,7 @@ func validateEntrySI(xRefTable *model.XRefTable, d types.Dict, dictName, entryNa
 	switch o := o.(type) {
 
 	case types.Dict:
-		err = validateSourceInfoDict(xRefTable, o)
+		err = validateSourceInfoDict(xRefTable, o, siObjNr)
 		if err != nil {
 			return err
 		}
@@ -288,12 +297,14 @@ func validateEntrySI(xRefTable *model.XRefTable, d types.Dict, dictName, entryNa
 				continue
 			}
 
+			objNr := validationObjectNumber(siObjNr, v)
 			d1, err := xRefTable.DereferenceDict(v)
 			if err != nil {
-				return fmt.Errorf("dict=%s entry=%s[%d]: dereference dict: %w", dictName, entryName, i, err)
+				err = fmt.Errorf("dict=%s entry=%s[%d]: dereference dict: %w", dictName, entryName, i, err)
+				return model.WithValidationErrorObject(err, objNr)
 			}
 
-			err = validateSourceInfoDict(xRefTable, d1)
+			err = validateSourceInfoDict(xRefTable, d1, objNr)
 			if err != nil {
 				return fmt.Errorf("dict=%s entry=%s[%d]: %w", dictName, entryName, i, err)
 			}
@@ -305,49 +316,53 @@ func validateEntrySI(xRefTable *model.XRefTable, d types.Dict, dictName, entryNa
 	return nil
 }
 
-func validateWebCaptureContentSetDict(XRefTable *model.XRefTable, d types.Dict) error {
+func validateWebCaptureContentSetDict(XRefTable *model.XRefTable, d types.Dict, ownerObjNr int) (err error) {
+	defer func() {
+		err = model.WithValidationErrorObject(err, ownerObjNr)
+	}()
+
 	// see 14.10.4
 
 	dictName := "webCaptureContentSetDict"
 
 	// Type, optional, name
-	_, err := validateNameEntry(XRefTable, d, dictName, "Type", OPTIONAL, model.V10, func(s string) bool { return s == "SpiderContentSet" })
+	_, err = validateNameEntry(XRefTable, d, 0, dictName, "Type", OPTIONAL, model.V10, func(s string) bool { return s == "SpiderContentSet" })
 	if err != nil {
 		return err
 	}
 
 	// S, required, name
-	s, err := validateNameEntry(XRefTable, d, dictName, "S", REQUIRED, model.V10, func(s string) bool { return s == "SPS" || s == "SIS" })
+	s, err := validateNameEntry(XRefTable, d, 0, dictName, "S", REQUIRED, model.V10, func(s string) bool { return s == "SPS" || s == "SIS" })
 	if err != nil {
 		return err
 	}
 
 	// ID, required, byte string
-	_, err = validateStringEntry(XRefTable, d, dictName, "ID", REQUIRED, model.V10, nil)
+	_, err = validateStringEntry(XRefTable, d, 0, dictName, "ID", REQUIRED, model.V10, nil)
 	if err != nil {
 		return err
 	}
 
 	// O, required, array of indirect references.
-	_, err = validateIndRefArrayEntry(XRefTable, d, dictName, "O", REQUIRED, model.V10, nil)
+	_, err = validateIndRefArrayEntry(XRefTable, d, ownerObjNr, dictName, "O", REQUIRED, model.V10, nil)
 	if err != nil {
 		return err
 	}
 
 	// SI, required, source info dict or array of source info dicts
-	err = validateEntrySI(XRefTable, d, dictName, "SI", REQUIRED, model.V10)
+	err = validateEntrySI(XRefTable, d, ownerObjNr, dictName, "SI", REQUIRED, model.V10)
 	if err != nil {
 		return err
 	}
 
 	// CT, optional, string
-	_, err = validateStringEntry(XRefTable, d, dictName, "CT", OPTIONAL, model.V10, nil)
+	_, err = validateStringEntry(XRefTable, d, 0, dictName, "CT", OPTIONAL, model.V10, nil)
 	if err != nil {
 		return err
 	}
 
 	// TS, optional, date
-	_, err = validateDateEntry(XRefTable, d, dictName, "TS", OPTIONAL, model.V10)
+	_, err = validateDateEntry(XRefTable, d, 0, dictName, "TS", OPTIONAL, model.V10)
 	if err != nil {
 		return err
 	}
@@ -356,13 +371,13 @@ func validateWebCaptureContentSetDict(XRefTable *model.XRefTable, d types.Dict) 
 	if *s == "SPS" {
 
 		// T, optional, string
-		_, err = validateStringEntry(XRefTable, d, dictName, "T", OPTIONAL, model.V10, nil)
+		_, err = validateStringEntry(XRefTable, d, 0, dictName, "T", OPTIONAL, model.V10, nil)
 		if err != nil {
 			return err
 		}
 
 		// TID, optional, byte string
-		_, err = validateStringEntry(XRefTable, d, dictName, "TID", OPTIONAL, model.V10, nil)
+		_, err = validateStringEntry(XRefTable, d, 0, dictName, "TID", OPTIONAL, model.V10, nil)
 		if err != nil {
 			return err
 		}
@@ -372,7 +387,7 @@ func validateWebCaptureContentSetDict(XRefTable *model.XRefTable, d types.Dict) 
 	if *s == "SIS" {
 
 		// R, required, integer or array of integers
-		err = validateIntegerOrArrayOfIntegerEntry(XRefTable, d, dictName, "R", REQUIRED, model.V10)
+		err = validateIntegerOrArrayOfIntegerEntry(XRefTable, d, 0, dictName, "R", REQUIRED, model.V10)
 
 	}
 
@@ -397,7 +412,7 @@ func validateIDSNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceV
 		return errors.New("IDS name tree value: missing content set dict")
 	}
 
-	return validateWebCaptureContentSetDict(xRefTable, d)
+	return validateWebCaptureContentSetDict(xRefTable, d, validationObjectNumber(0, o))
 }
 
 func validateURLSNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
@@ -418,7 +433,7 @@ func validateURLSNameTreeValue(xRefTable *model.XRefTable, o types.Object, since
 		return errors.New("URLS name tree value: missing content set dict")
 	}
 
-	return validateWebCaptureContentSetDict(xRefTable, d)
+	return validateWebCaptureContentSetDict(xRefTable, d, validationObjectNumber(0, o))
 }
 
 func validateEmbeddedFilesNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
@@ -444,32 +459,73 @@ func validateEmbeddedFilesNameTreeValue(xRefTable *model.XRefTable, o types.Obje
 	return err
 }
 
-func validateSlideShowDict(XRefTable *model.XRefTable, d types.Dict) error {
+func validateSlideShowResources(xRefTable *model.XRefTable, d types.Dict) error {
+	const (
+		dictName  = "slideShowDict"
+		entryName = "Resources"
+	)
+	a, err := validateArrayEntry(xRefTable, d, 0, dictName, entryName, REQUIRED, model.V14, nil)
+	if err != nil {
+		return err
+	}
+	objNr := validationEntryObjectNumber(0, d, entryName)
+	if err = validateArrayPairs(a, objNr, dictName, entryName, 1); err != nil {
+		return err
+	}
+	for i, o := range a {
+		entryObjNr := validationObjectNumber(objNr, o)
+		if i%2 == 0 {
+			o, err = xRefTable.Dereference(o)
+			if err == nil {
+				_, err = types.StringOrHexLiteral(o)
+			}
+			if err != nil {
+				err = fmt.Errorf("%s.%s[%d]: expected string: %w", dictName, entryName, i, err)
+				return model.WithValidationErrorObject(err, entryObjNr)
+			}
+			continue
+		}
+		if _, ok := o.(types.IndirectRef); !ok {
+			err = fmt.Errorf("%s.%s[%d]: expected indirect reference", dictName, entryName, i)
+			return model.WithValidationErrorObject(err, entryObjNr)
+		}
+		o, err = xRefTable.Dereference(o)
+		if err != nil || o == nil {
+			if err == nil {
+				err = errors.New("missing referenced resource")
+			}
+			err = fmt.Errorf("%s.%s[%d]: %w", dictName, entryName, i, err)
+			return model.WithValidationErrorObject(err, entryObjNr)
+		}
+	}
+	return nil
+}
+
+func validateSlideShowDict(xRefTable *model.XRefTable, d types.Dict) error {
 	// see 13.5, table 297
 
 	dictName := "slideShowDict"
 
 	// Type, required, name, since V1.4
-	_, err := validateNameEntry(XRefTable, d, dictName, "Type", REQUIRED, model.V14, func(s string) bool { return s == "SlideShow" })
+	_, err := validateNameEntry(xRefTable, d, 0, dictName, "Type", REQUIRED, model.V14, func(s string) bool { return s == "SlideShow" })
 	if err != nil {
 		return err
 	}
 
 	// Subtype, required, name, since V1.4
-	_, err = validateNameEntry(XRefTable, d, dictName, "Subtype", REQUIRED, model.V14, func(s string) bool { return s == "Embedded" })
+	_, err = validateNameEntry(xRefTable, d, 0, dictName, "Subtype", REQUIRED, model.V14, func(s string) bool { return s == "Embedded" })
 	if err != nil {
 		return err
 	}
 
-	// Resources, required, name tree, since V1.4
-	// Note: This is really an array of (string,indRef) pairs.
-	_, err = validateArrayEntry(XRefTable, d, dictName, "Resources", REQUIRED, model.V14, nil)
+	// Resources, required array of string and indirect-reference pairs, since V1.4
+	err = validateSlideShowResources(xRefTable, d)
 	if err != nil {
 		return err
 	}
 
 	// StartResource, required, byte string, since V1.4
-	_, err = validateStringEntry(XRefTable, d, dictName, "StartResource", REQUIRED, model.V14, nil)
+	_, err = validateStringEntry(xRefTable, d, 0, dictName, "StartResource", REQUIRED, model.V14, nil)
 
 	return err
 }
@@ -497,7 +553,7 @@ func validateAlternatePresentationsNameTreeValue(xRefTable *model.XRefTable, o t
 	return err
 }
 
-func validateRenditionsNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+func validateRenditionsNameTreeValue(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
 	// see 13.2.3
 
 	// Value is a rendition object.
@@ -514,15 +570,20 @@ func validateRenditionsNameTreeValue(xRefTable *model.XRefTable, o types.Object,
 	}
 
 	if d != nil {
-		err = validateRenditionDict(xRefTable, d, sinceVersion)
+		err = validateRenditionDict(c, xRefTable, d, validationObjectNumber(0, o), sinceVersion)
 	}
 
 	return err
 }
 
-func validateIDTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+func validateIDTreeValueContext(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) (err error) {
+	objNr := validationObjectNumber(0, o)
+	defer func() {
+		err = model.WithValidationErrorObject(err, objNr)
+	}()
+
 	// Version check
-	err := xRefTable.ValidateVersion("IDTreeValue", sinceVersion)
+	err = xRefTable.ValidateVersion("IDTreeValue", sinceVersion)
 	if err != nil {
 		return err
 	}
@@ -535,20 +596,28 @@ func validateIDTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersio
 		return errors.New("IDTree value: missing structure element dict")
 	}
 
-	dictType := d.Type()
-	if dictType == nil || *dictType == "StructElem" {
-		err = validateStructElementDict(xRefTable, d, true)
+	dictType, _, err := xRefTable.DereferenceNameEntry(d, "Type")
+	if err != nil {
+		return fmt.Errorf("IDTree value Type: %w", err)
+	}
+	if dictType == nil || dictType.Value() == "StructElem" {
+		err = validateStructElementDictContext(c, xRefTable, d, true)
 		if err != nil {
 			return err
 		}
 	} else {
-		return fmt.Errorf("IDTree value: unexpected dict Type %s, expected StructElem", *dictType)
+		return fmt.Errorf("IDTree value: unexpected dict Type %s, expected StructElem", dictType.Value())
 	}
 
 	return nil
 }
 
-func validateNameTreeValue(name string, xRefTable *model.XRefTable, o types.Object) (err error) {
+func validateNameTreeValue(c context.Context, name string, xRefTable *model.XRefTable, o types.Object, ownerObjNr int) (err error) {
+	objNr := validationObjectNumber(ownerObjNr, o)
+	defer func() {
+		err = model.WithValidationErrorObject(err, objNr)
+	}()
+
 	// The values associated with the keys may be objects of any type.
 	// Stream objects shall be specified by indirect object references.
 	// Dictionary, array, and string objects should be specified by indirect object references.
@@ -559,8 +628,10 @@ func validateNameTreeValue(name string, xRefTable *model.XRefTable, o types.Obje
 		sinceVersion        model.Version
 		sinceVersionRelaxed model.Version
 	}{
-		"Dests":                  {validateDestsNameTreeValue, model.V12, model.V12},
-		"AP":                     {validateAPNameTreeValue, model.V13, model.V13},
+		"Dests": {validateDestsNameTreeValue, model.V12, model.V12},
+		"AP": {func(x *model.XRefTable, o types.Object, version model.Version) error {
+			return validateAPNameTreeValue(c, x, o, version)
+		}, model.V13, model.V13},
 		"JavaScript":             {validateJavaScriptNameTreeValue, model.V13, model.V13},
 		"Pages":                  {validatePagesNameTreeValue, model.V13, model.V13},
 		"Templates":              {validateTemplatesNameTreeValue, model.V13, model.V13},
@@ -568,8 +639,9 @@ func validateNameTreeValue(name string, xRefTable *model.XRefTable, o types.Obje
 		"URLS":                   {validateURLSNameTreeValue, model.V13, model.V13},
 		"EmbeddedFiles":          {validateEmbeddedFilesNameTreeValue, model.V14, model.V11},
 		"AlternatePresentations": {validateAlternatePresentationsNameTreeValue, model.V14, model.V14},
-		"Renditions":             {validateRenditionsNameTreeValue, model.V15, model.V15},
-		"IDTree":                 {validateIDTreeValue, model.V13, model.V13},
+		"Renditions": {func(x *model.XRefTable, o types.Object, version model.Version) error {
+			return validateRenditionsNameTreeValue(c, x, o, version)
+		}, model.V15, model.V15},
 	} {
 		if name == k {
 			sinceVersion := v.sinceVersion
@@ -583,28 +655,40 @@ func validateNameTreeValue(name string, xRefTable *model.XRefTable, o types.Obje
 	return fmt.Errorf("name tree %s: unknown tree name", name)
 }
 
-func validateNameTreeDictNamesEntry(xRefTable *model.XRefTable, d types.Dict, name string, node *model.Node) (string, string, error) {
+func validateNameTreeValueContext(c context.Context, name string, x *model.XRefTable, o types.Object, owner int) error {
+	if name == "IDTree" {
+		return validateIDTreeValueContext(c, x, o, model.V13)
+	}
+	return validateNameTreeValue(c, name, x, o, owner)
+}
+
+func validateNameTreeDictNamesEntry(c context.Context, xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, name string, node *model.Node) (string, string, error) {
 	//fmt.Printf("validateNameTreeDictNamesEntry begin %s\n", d)
 
 	// Names: array of the form [key1 value1 key2 value2 ... key n value n]
 	o, found := d.Find("Names")
 	if !found {
-		return "", "", fmt.Errorf("name tree %s: %w", name, errMissingNameTreeKidsOrNames)
+		err := fmt.Errorf("name tree %s: %w", name, errMissingNameTreeKidsOrNames)
+		return "", "", model.WithValidationErrorObject(err, ownerObjNr)
 	}
+	namesObjNr := validationObjectNumber(ownerObjNr, o)
 
 	a, err := xRefTable.DereferenceArray(o)
 	if err != nil {
-		return "", "", fmt.Errorf("name tree %s Names: dereference array: %w", name, err)
+		err = fmt.Errorf("name tree %s Names: dereference array: %w", name, err)
+		return "", "", model.WithValidationErrorObject(err, namesObjNr)
 	}
 	if a == nil {
-		return "", "", fmt.Errorf("name tree %s: missing Names array", name)
+		err = fmt.Errorf("name tree %s: missing Names array", name)
+		return "", "", model.WithValidationErrorObject(err, namesObjNr)
 	}
 
 	// arr length needs to be even because of contained key value pairs.
 	entries := len(a)
 	if entries%2 == 1 {
 		if xRefTable.ValidationMode != model.ValidationRelaxed || name != "JavaScript" {
-			return "", "", fmt.Errorf("name tree %s Names: odd entry count %d", name, len(a))
+			err = fmt.Errorf("name tree %s Names: odd entry count %d", name, len(a))
+			return "", "", model.WithValidationErrorObject(err, namesObjNr)
 		}
 		entries--
 	}
@@ -612,19 +696,25 @@ func validateNameTreeDictNamesEntry(xRefTable *model.XRefTable, d types.Dict, na
 	var key, firstKey, lastKey string
 
 	for i := 0; i < entries; i++ {
+		if err := contextutil.Check(c); err != nil {
+			return "", "", err
+		}
 		o := a[i]
 
 		if i%2 == 0 {
+			keyObjNr := validationObjectNumber(namesObjNr, o)
 
 			// TODO Do we really need to process indRefs here?
 			o, err = xRefTable.Dereference(o)
 			if err != nil {
-				return "", "", fmt.Errorf("name tree %s Names[%d]: dereference key: %w", name, i, err)
+				err = fmt.Errorf("name tree %s Names[%d]: dereference key: %w", name, i, err)
+				return "", "", model.WithValidationErrorObject(err, keyObjNr)
 			}
 
 			k, err := types.StringOrHexLiteral(o)
 			if err != nil {
-				return "", "", fmt.Errorf("name tree %s Names[%d]: expected string key: %w", name, i, err)
+				err = fmt.Errorf("name tree %s Names[%d]: expected string key: %w", name, i, err)
+				return "", "", model.WithValidationErrorObject(err, keyObjNr)
 			}
 
 			key = *k
@@ -638,7 +728,7 @@ func validateNameTreeDictNamesEntry(xRefTable *model.XRefTable, d types.Dict, na
 			continue
 		}
 
-		err = validateNameTreeValue(name, xRefTable, o)
+		err = validateNameTreeValueContext(c, name, xRefTable, o, namesObjNr)
 		if err != nil {
 			return "", "", fmt.Errorf("name tree %s key %q: %w", name, key, err)
 		}
@@ -650,8 +740,11 @@ func validateNameTreeDictNamesEntry(xRefTable *model.XRefTable, d types.Dict, na
 	return firstKey, lastKey, nil
 }
 
-func validateNameTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, firstKey, lastKey string) error {
-	a, err := validateStringArrayEntry(xRefTable, d, "nameTreeDict", "Limits", REQUIRED, model.V10, func(a types.Array) bool { return len(a) == 2 })
+func validateNameTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, firstKey, lastKey string) error {
+	a, err := validateStringArrayEntry(
+		xRefTable, d, ownerObjNr, "nameTreeDict", "Limits", REQUIRED, model.V10,
+		func(a types.Array) bool { return len(a) == 2 },
+	)
 	if err != nil {
 		return err
 	}
@@ -677,17 +770,13 @@ func validateNameTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, f
 	lkv := *s
 
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
-
-		if fkv != firstKey && xRefTable.ValidationMode == model.ValidationRelaxed {
+		if fkv != firstKey {
 			fkv = firstKey
-			a[0] = types.StringLiteral(fkv)
 		}
 
-		if lkv != lastKey && xRefTable.ValidationMode == model.ValidationRelaxed {
+		if lkv != lastKey {
 			lkv = lastKey
-			a[1] = types.StringLiteral(lkv)
 		}
-
 	}
 
 	if firstKey != fkv || lastKey != lkv {
@@ -697,8 +786,8 @@ func validateNameTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, f
 	return nil
 }
 
-func validateNameTree(xRefTable *model.XRefTable, name string, d types.Dict, root bool) (string, string, *model.Node, error) {
-	return validateNameTreeDepth(xRefTable, name, d, root, 0)
+func validateNameTree(c context.Context, xRefTable *model.XRefTable, name string, d types.Dict, ownerObjNr int, root bool, rootObject ...types.Object) (string, string, *model.Node, error) {
+	return validateNameTreeDepth(c, xRefTable, name, d, ownerObjNr, root, 0, rootObject...)
 }
 
 func nameTreeKidContext(name string, o types.Object, i int) string {
@@ -708,37 +797,39 @@ func nameTreeKidContext(name string, o types.Object, i int) string {
 	return fmt.Sprintf("name tree %s Kids[%d]", name, i)
 }
 
-func validateNameTreeKids(
-	xRefTable *model.XRefTable,
-	name string,
-	a types.Array,
-	node *model.Node,
-	depth int,
-	specViolations *[]error,
-) (string, string, error) {
+func validateNameTreeKids(c context.Context, xRefTable *model.XRefTable, name string, a types.Array, ownerObjNr int, node *model.Node, depth int, specViolations *[]error, visits ...*treeVisit) (string, string, error) {
+	visit := treeTraversal(visits, true)
 	var kmin, kmax string
 
 	for i, o := range a {
+		if err := contextutil.Check(c); err != nil {
+			return "", "", err
+		}
+		kidObjNr := validationObjectNumber(ownerObjNr, o)
 
 		d, err := xRefTable.DereferenceDict(o)
 		if err != nil {
-			return "", "", fmt.Errorf("%s: dereference dict: %w", nameTreeKidContext(name, o, i), err)
+			err = fmt.Errorf("%s: dereference dict: %w", nameTreeKidContext(name, o, i), err)
+			return "", "", model.WithValidationErrorObject(err, kidObjNr)
 		}
 		if d == nil {
-			return "", "", fmt.Errorf("%s: missing dict", nameTreeKidContext(name, o, i))
+			err = fmt.Errorf("%s: missing dict", nameTreeKidContext(name, o, i))
+			return "", "", model.WithValidationErrorObject(err, kidObjNr)
 		}
 
-		kminKid, kmaxKid, kidNode, err := validateNameTreeDepthWithViolations(
+		kminKid, kmaxKid, kidNode, err := validateNameTreeChild(c,
 			xRefTable,
 			name,
 			d,
-			false,
+			kidObjNr,
+			o,
 			depth+1,
 			specViolations,
+			visit,
 		)
 		if err != nil {
-			err = fmt.Errorf("%s: %w", nameTreeKidContext(name, o, i), err)
-			if xRefTable.ValidationMode == model.ValidationStrict {
+			err = model.WrapRecursionError(nameTreeKidContext(name, o, i), err)
+			if xRefTable.ValidationMode == model.ValidationStrict || contextutil.Check(c) != nil || fatalTreeError(err) {
 				return "", "", err
 			}
 			if errors.Is(err, errMissingNameTreeKidsOrNames) {
@@ -757,31 +848,31 @@ func validateNameTreeKids(
 	return kmin, kmax, nil
 }
 
-func validateNameTreeDepth(xRefTable *model.XRefTable, name string, d types.Dict, root bool, depth int) (string, string, *model.Node, error) {
+func validateNameTreeDepth(c context.Context, xRefTable *model.XRefTable, name string, d types.Dict, ownerObjNr int, root bool, depth int, rootObject ...types.Object) (string, string, *model.Node, error) {
 	var specViolations []error
-	kmin, kmax, node, err := validateNameTreeDepthWithViolations(
+	kmin, kmax, node, err := validateNameTreeDepthWithViolations(c,
 		xRefTable,
 		name,
 		d,
+		ownerObjNr,
 		root,
 		depth,
 		&specViolations,
+		newTreeVisit(true, rootObject...),
 	)
 	if err == nil {
-		showDigestedSpecViolations(xRefTable, specViolations)
+		showDigestedSpecViolations(specViolations)
 	}
 	return kmin, kmax, node, err
 }
 
-func validateNameTreeDepthWithViolations(
-	xRefTable *model.XRefTable,
-	name string,
-	d types.Dict,
-	root bool,
-	depth int,
-	specViolations *[]error,
-) (string, string, *model.Node, error) {
-	if err := xRefTable.CheckRecursionDepth("name tree", depth); err != nil {
+func validateNameTreeDepthWithViolations(c context.Context, xRefTable *model.XRefTable, name string, d types.Dict, ownerObjNr int, root bool, depth int, specViolations *[]error, visits ...*treeVisit) (kmin, kmax string, node *model.Node, err error) {
+	visit := treeTraversal(visits, true)
+	defer func() {
+		err = model.WithValidationErrorObject(err, ownerObjNr)
+	}()
+
+	if err := checkValidationTree(c, xRefTable, fmt.Sprintf("name tree %s", name), depth); err != nil {
 		return "", "", nil, err
 	}
 
@@ -793,13 +884,12 @@ func validateNameTreeDepthWithViolations(
 
 	//fmt.Printf("validateNameTree %s\n", name)
 
-	node := &model.Node{D: d}
-	var kmin, kmax string
-	var err error
+	node = &model.Node{D: d}
 
 	// Kids: array of indirect references to the immediate children of this node.
 	// if Kids present then recurse
 	if o, found := d.Find("Kids"); found {
+		kidsObjNr := validationObjectNumber(ownerObjNr, o)
 
 		// Intermediate node
 
@@ -818,14 +908,14 @@ func validateNameTreeDepthWithViolations(
 			return "", "", nil, nil
 		}
 
-		kmin, kmax, err = validateNameTreeKids(xRefTable, name, a, node, depth, specViolations)
+		kmin, kmax, err = validateNameTreeKids(c, xRefTable, name, a, kidsObjNr, node, depth, specViolations, visit)
 		if err != nil {
 			return "", "", nil, err
 		}
 	} else {
 
 		// Leaf node
-		kmin, kmax, err = validateNameTreeDictNamesEntry(xRefTable, d, name, node)
+		kmin, kmax, err = validateNameTreeDictNamesEntry(c, xRefTable, d, ownerObjNr, name, node)
 		if err != nil {
 			if root &&
 				xRefTable.ValidationMode == model.ValidationRelaxed &&
@@ -840,7 +930,7 @@ func validateNameTreeDepthWithViolations(
 	if !root {
 
 		// Verify calculated key range.
-		err = validateNameTreeDictLimitsEntry(xRefTable, d, kmin, kmax)
+		err = validateNameTreeDictLimitsEntry(xRefTable, d, ownerObjNr, kmin, kmax)
 		if err != nil {
 			return "", "", nil, fmt.Errorf("name tree %s Limits: %w", name, err)
 		}
@@ -853,4 +943,13 @@ func validateNameTreeDepthWithViolations(
 	//fmt.Println("validateNameTree end")
 
 	return kmin, kmax, node, nil
+}
+
+func validateNameTreeChild(c context.Context, xRefTable *model.XRefTable, name string, d types.Dict, ownerObjNr int, o types.Object, depth int, specViolations *[]error, visit *treeVisit) (string, string, *model.Node, error) {
+	n, err := visit.enter(o)
+	if err != nil {
+		return "", "", nil, err
+	}
+	defer visit.leave(n)
+	return validateNameTreeDepthWithViolations(c, xRefTable, name, d, ownerObjNr, false, depth, specViolations, visit)
 }

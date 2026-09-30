@@ -17,17 +17,19 @@ limitations under the License.
 package pdfcpu
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
 // Write page entry to disk.
-func writePageEntry(ctx *model.Context, d types.Dict, dictName, entryName string, statsAttr int) error {
-	o, err := writeEntry(ctx, d, dictName, entryName)
+func writePageEntry(c context.Context, ctx *model.Context, d types.Dict, dictName, entryName string, statsAttr int) error {
+	o, err := writeEntry(c, ctx, d, dictName, entryName)
 	if err != nil {
 		return err
 	}
@@ -39,7 +41,10 @@ func writePageEntry(ctx *model.Context, d types.Dict, dictName, entryName string
 	return nil
 }
 
-func writePageDict(ctx *model.Context, indRef *types.IndirectRef, pageDict types.Dict, pageNr int) error {
+func writePageDict(c context.Context, ctx *model.Context, indRef *types.IndirectRef, pageDict types.Dict, pageNr int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	objNr := indRef.ObjectNumber.Value()
 	genNr := indRef.GenerationNumber.Value()
 
@@ -56,7 +61,7 @@ func writePageDict(ctx *model.Context, indRef *types.IndirectRef, pageDict types
 
 	dictName := "pageDict"
 
-	if err := writeDictObject(ctx, objNr, genNr, pageDict); err != nil {
+	if err := writeDictObject(c, ctx, objNr, genNr, pageDict); err != nil {
 		return err
 	}
 
@@ -103,7 +108,10 @@ func writePageDict(ctx *model.Context, indRef *types.IndirectRef, pageDict types
 		{"UserUnit", model.PageUserUnit},
 		{"VP", model.PageVP},
 	} {
-		if err := writePageEntry(ctx, pageDict, dictName, e.entryName, e.statsAttr); err != nil {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		if err := writePageEntry(c, ctx, pageDict, dictName, e.entryName, e.statsAttr); err != nil {
 			return err
 		}
 	}
@@ -117,18 +125,18 @@ func writePageDict(ctx *model.Context, indRef *types.IndirectRef, pageDict types
 	return nil
 }
 
-func pageNodeDict(ctx *model.Context, o types.Object) (types.Dict, *types.IndirectRef, error) {
+func pageNodeDict(ctx *model.Context, o types.Object) (types.Dict, *types.IndirectRef, *types.Name, error) {
 	if o == nil {
 		if log.WriteEnabled() {
 			log.Write.Println("pageNodeDict: is nil")
 		}
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// Dereference next page node dict.
 	indRef, ok := o.(types.IndirectRef)
 	if !ok {
-		return nil, nil, errors.New("missing indirect reference")
+		return nil, nil, nil, errors.New("missing indirect reference")
 	}
 	if log.WriteEnabled() {
 		log.Write.Printf("pageNodeDict: PageNode: %s\n", indRef)
@@ -136,27 +144,61 @@ func pageNodeDict(ctx *model.Context, o types.Object) (types.Dict, *types.Indire
 
 	d, err := ctx.DereferenceDict(indRef)
 	if err != nil {
-		return nil, nil, errors.New("cannot dereference page node dict")
+		return nil, nil, nil, errors.New("cannot dereference page node dict")
 	}
 	if d == nil {
-		return nil, nil, errors.New("page node dict is null")
+		return nil, nil, nil, errors.New("page node dict is null")
 	}
 
-	dictType := d.Type()
+	dictType, _, err := ctx.DereferenceNameEntry(d, "Type")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("page node dict Type: %w", err)
+	}
 	if dictType == nil {
-		return nil, nil, errors.New("missing page node dict type")
+		return nil, nil, nil, errors.New("missing page node dict type")
 	}
 
-	return d, &indRef, nil
+	return d, &indRef, dictType, nil
 }
 
-func writeKids(ctx *model.Context, a types.Array, pageNr *int, depth int, visit *model.PageTreeVisit) (types.Array, int, error) {
+func writeSelectedPage(c context.Context, ctx *model.Context, ir *types.IndirectRef, d types.Dict, pageNr int) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
+	selected := len(ctx.Write.SelectedPages) > 0
+	writePage := true
+	if selected {
+		writePage = ctx.Write.SelectedPages[pageNr]
+		if ctx.Cmd == model.REMOVEPAGES {
+			writePage = !writePage
+		}
+	}
+	if !writePage {
+		if log.WriteEnabled() {
+			log.Write.Printf("writeKids: skipping page:%d\n", pageNr)
+		}
+		return false, nil
+	}
+	if log.WriteEnabled() {
+		message := "writing page anyway"
+		if selected {
+			message = "writing page"
+		}
+		log.Write.Printf("writeKids: %s:%d\n", message, pageNr)
+	}
+	return true, writePageDict(c, ctx, ir, d, pageNr)
+}
+
+func writeKids(c context.Context, ctx *model.Context, a types.Array, pageNr *int, depth int, visit *model.PageTreeVisit) (types.Array, int, error) {
 	kids := types.Array{}
 	count := 0
 
 	for _, o := range a {
+		if err := contextutil.Check(c); err != nil {
+			return nil, 0, err
+		}
 
-		d, ir, err := pageNodeDict(ctx, o)
+		d, ir, dictType, err := pageNodeDict(ctx, o)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -164,52 +206,30 @@ func writeKids(ctx *model.Context, a types.Array, pageNr *int, depth int, visit 
 			continue
 		}
 
-		switch *d.Type() {
+		switch dictType.Value() {
 
 		case "Pages":
 			// Recurse over pagetree
-			skip, c, err := writePagesDictDepth(ctx, ir, pageNr, depth+1, visit)
+			skip, writtenPages, err := writePagesDictDepth(c, ctx, ir, pageNr, depth+1, visit)
 			if err != nil {
 				return nil, 0, err
 			}
 			if !skip {
 				kids = append(kids, o)
-				count += c
+				count += writtenPages
 			}
 
 		case "Page":
 			*pageNr++
-			if len(ctx.Write.SelectedPages) > 0 {
-				// if log.WriteEnabled() {
-				// 	log.Write.Printf("selectedPages: %v\n", ctx.Write.SelectedPages)
-				// }
-				writePage := ctx.Write.SelectedPages[*pageNr]
-				if ctx.Cmd == model.REMOVEPAGES {
-					writePage = !writePage
-				}
-				if writePage {
-					if log.WriteEnabled() {
-						log.Write.Printf("writeKids: writing page:%d\n", *pageNr)
-					}
-					err = writePageDict(ctx, ir, d, *pageNr)
-					kids = append(kids, o)
-					count++
-				} else {
-					if log.WriteEnabled() {
-						log.Write.Printf("writeKids: skipping page:%d\n", *pageNr)
-					}
-				}
-			} else {
-				if log.WriteEnabled() {
-					log.Write.Printf("writeKids: writing page anyway:%d\n", *pageNr)
-				}
-				err = writePageDict(ctx, ir, d, *pageNr)
+			var written bool
+			written, err = writeSelectedPage(c, ctx, ir, d, *pageNr)
+			if written {
 				kids = append(kids, o)
 				count++
 			}
 
 		default:
-			err = fmt.Errorf("unexpected dict type: %s", *d.Type())
+			err = fmt.Errorf("unexpected dict type: %s", dictType.Value())
 
 		}
 
@@ -222,7 +242,7 @@ func writeKids(ctx *model.Context, a types.Array, pageNr *int, depth int, visit 
 	return kids, count, nil
 }
 
-func writePageEntries(ctx *model.Context, d types.Dict, dictName string) error {
+func writePageEntries(c context.Context, ctx *model.Context, d types.Dict, dictName string) error {
 	// TODO Check inheritance rules.
 	for _, e := range []struct {
 		entryName string
@@ -233,7 +253,10 @@ func writePageEntries(ctx *model.Context, d types.Dict, dictName string) error {
 		{"CropBox", model.PageCropBox},
 		{"Rotate", model.PageRotate},
 	} {
-		if err := writePageEntry(ctx, d, dictName, e.entryName, e.statsAttr); err != nil {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		if err := writePageEntry(c, ctx, d, dictName, e.entryName, e.statsAttr); err != nil {
 			return err
 		}
 	}
@@ -241,7 +264,10 @@ func writePageEntries(ctx *model.Context, d types.Dict, dictName string) error {
 	return nil
 }
 
-func writePagesDictDepth(ctx *model.Context, indRef *types.IndirectRef, pageNr *int, depth int, visit *model.PageTreeVisit) (skip bool, writtenPages int, err error) {
+func writePagesDictDepth(c context.Context, ctx *model.Context, indRef *types.IndirectRef, pageNr *int, depth int, visit *model.PageTreeVisit) (skip bool, writtenPages int, err error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, 0, err
+	}
 	if log.WriteEnabled() {
 		log.Write.Printf("writePagesDict: begin pageNr=%d\n", *pageNr)
 	}
@@ -269,8 +295,11 @@ func writePagesDictDepth(ctx *model.Context, indRef *types.IndirectRef, pageNr *
 
 	// Iterate over page tree.
 	kidsArray := d.ArrayEntry("Kids")
-	kidsNew, countNew, err := writeKids(ctx, kidsArray, pageNr, depth, visit)
+	kidsNew, countNew, err := writeKids(c, ctx, kidsArray, pageNr, depth, visit)
 	if err != nil {
+		return false, 0, err
+	}
+	if err := contextutil.Check(c); err != nil {
 		return false, 0, err
 	}
 
@@ -280,11 +309,11 @@ func writePagesDictDepth(ctx *model.Context, indRef *types.IndirectRef, pageNr *
 		log.Write.Printf("writePagesDict: writing pageDict for obj=%d page=%d\n%s", objNr, *pageNr, d)
 	}
 
-	if err = writeDictObject(ctx, objNr, genNr, d); err != nil {
+	if err = writeDictObject(c, ctx, objNr, genNr, d); err != nil {
 		return false, 0, err
 	}
 
-	if err := writePageEntries(ctx, d, dictName); err != nil {
+	if err := writePageEntries(c, ctx, d, dictName); err != nil {
 		return false, 0, err
 	}
 
@@ -299,6 +328,6 @@ func writePagesDictDepth(ctx *model.Context, indRef *types.IndirectRef, pageNr *
 	return false, countNew, nil
 }
 
-func writePagesDict(ctx *model.Context, indRef *types.IndirectRef, pageNr *int) (skip bool, writtenPages int, err error) {
-	return writePagesDictDepth(ctx, indRef, pageNr, 0, model.NewPageTreeVisit())
+func writePagesDict(c context.Context, ctx *model.Context, indRef *types.IndirectRef, pageNr *int) (skip bool, writtenPages int, err error) {
+	return writePagesDictDepth(c, ctx, indRef, pageNr, 0, model.NewPageTreeVisit())
 }

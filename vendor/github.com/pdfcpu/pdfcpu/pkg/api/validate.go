@@ -17,14 +17,15 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
@@ -36,43 +37,62 @@ func validationModeHint(mode int) string {
 	return " (try --mode=relaxed)"
 }
 
-func validationError(ctx *model.Context, conf *model.Configuration, err error) error {
-	return fmt.Errorf("validation error (obj#:%d)%s: %w", ctx.CurObj, validationModeHint(conf.ValidationMode), err)
+func validationError(conf *model.Configuration, err error) error {
+	prefix := "validation error"
+	var validationErr *model.ValidationError
+	if errors.As(err, &validationErr) {
+		prefix += fmt.Sprintf(" (obj#:%d)", validationErr.ObjectNumber())
+	}
+	return fmt.Errorf("%s%s: %w", prefix, validationModeHint(conf.ValidationMode), err)
 }
 
-// Validate validates a PDF stream read from rs.
-func Validate(rs io.ReadSeeker, conf *model.Configuration) (err error) {
+func validateWithOptions(c context.Context, rs io.ReadSeeker, conf *model.Configuration, options ProgressOptions, reportReading bool, report *model.ValidationReport) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rs == nil {
 		return ErrMissingPDFReadSeeker
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.VALIDATE
+	conf = operationConfiguration(conf, model.VALIDATE)
 
 	from1 := time.Now()
 
-	ctx, err := ReadContext(rs, conf)
+	if reportReading {
+		if err := reportProgress(options, ProgressStageReading); err != nil {
+			return err
+		}
+	}
+
+	ctx, err := ReadContext(c, rs, conf)
 	if err != nil {
 		return fmt.Errorf("read context: %w", err)
+	}
+	if report != nil {
+		defer func() {
+			*report = ctx.ValidationReport()
+		}()
 	}
 
 	dur1 := time.Since(from1).Seconds()
 	from2 := time.Now()
 
-	if err = ValidateContext(ctx); err != nil {
-		err = validationError(ctx, conf, err)
+	if err := reportProgress(options, ProgressStageValidating); err != nil {
+		return err
+	}
+
+	if err = ValidateContext(c, ctx); err != nil {
+		err = validationError(conf, err)
 	}
 
 	if err == nil && conf.Optimize {
-		if log.CLIEnabled() {
-			log.CLI.Println("optimizing...")
+		if err := reportProgress(options, ProgressStageOptimizing); err != nil {
+			return err
 		}
-		if err = pdfcpu.OptimizeXRefTable(ctx); err != nil {
-			err = fmt.Errorf("optimize context: %w", err)
+		if err = OptimizeContext(c, ctx); err != nil {
+			return err
 		}
 	}
 
@@ -93,8 +113,24 @@ func Validate(rs io.ReadSeeker, conf *model.Configuration) (err error) {
 	return err
 }
 
-// ValidateFile validates inFile.
-func ValidateFile(inFile string, conf *model.Configuration) (err error) {
+// Validate validates a PDF stream, supports cancellation and reports optional semantic progress.
+// A nil options pointer disables progress reporting.
+func Validate(c context.Context, rs io.ReadSeeker, conf *model.Configuration, options *ProgressOptions) error {
+	return validateWithOptions(c, rs, conf, progressOptionsValue(options), true, nil)
+}
+
+// ValidateWithReport validates a PDF stream and returns its accepted validation divergences.
+func ValidateWithReport(c context.Context, rs io.ReadSeeker, conf *model.Configuration, options *ProgressOptions) (report model.ValidationReport, err error) {
+	err = validateWithOptions(c, rs, conf, progressOptionsValue(options), true, &report)
+	return report, err
+}
+
+func validateFile(c context.Context, inFile string, conf *model.Configuration, options *ProgressOptions, report *model.ValidationReport) (err error) {
+	defer fault.Catch(&err)
+
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if inFile == "" {
 		return ErrMissingPDFInput
 	}
@@ -103,8 +139,10 @@ func ValidateFile(inFile string, conf *model.Configuration) (err error) {
 		conf = model.NewDefaultConfiguration()
 	}
 
-	if log.CLIEnabled() {
-		log.CLI.Printf("validating(mode=%s) %s ...\n", conf.ValidationModeString(), inFile)
+	inputOptions := progressOptionsValue(options)
+	inputOptions.Input = inFile
+	if err := reportProgress(inputOptions, ProgressStageReading); err != nil {
+		return err
 	}
 
 	f, err := os.Open(inFile)
@@ -122,29 +160,46 @@ func ValidateFile(inFile string, conf *model.Configuration) (err error) {
 		}
 	}()
 
-	if err = Validate(f, conf); err != nil {
+	if err = validateWithOptions(c, f, conf, inputOptions, false, report); err != nil {
 		return fmt.Errorf("validate %s: %w", inFile, err)
-	}
-
-	if log.CLIEnabled() {
-		log.CLI.Println("validation ok")
 	}
 
 	return nil
 }
 
-// ValidateFiles validates inFiles.
-func ValidateFiles(inFiles []string, conf *model.Configuration) error {
+// ValidateFile validates inFile, supports cancellation and reports optional semantic progress.
+// A nil options pointer disables progress reporting. Supplied options are not modified.
+func ValidateFile(c context.Context, inFile string, conf *model.Configuration, options *ProgressOptions) error {
+	return validateFile(c, inFile, conf, options, nil)
+}
+
+// ValidateFileWithReport validates inFile and returns its accepted validation divergences.
+func ValidateFileWithReport(c context.Context, inFile string, conf *model.Configuration, options *ProgressOptions) (report model.ValidationReport, err error) {
+	err = validateFile(c, inFile, conf, options, &report)
+	return report, err
+}
+
+// ValidateFiles validates inFiles, supports cancellation and reports optional semantic progress.
+// A nil options pointer disables progress reporting. Supplied options are not modified.
+func ValidateFiles(c context.Context, inFiles []string, conf *model.Configuration, options *ProgressOptions) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if conf == nil {
 		conf = model.NewDefaultConfiguration()
 	}
 
 	var errs []error
 	for i, fn := range inFiles {
-		if i > 0 && log.CLIEnabled() {
-			log.CLI.Println()
-		}
-		if err := ValidateFile(fn, conf); err != nil {
+		inputOptions := progressOptionsValue(options)
+		inputOptions.Input = fn
+		inputOptions.Item = i + 1
+		inputOptions.Total = len(inFiles)
+		if err := ValidateFile(c, fn, conf, &inputOptions); err != nil {
+			var progressErr *ProgressError
+			if errors.As(err, &progressErr) {
+				return err
+			}
 			if len(inFiles) == 1 {
 				return err
 			}

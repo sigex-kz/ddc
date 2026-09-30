@@ -17,12 +17,14 @@
 package primitives
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/font"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	pdffont "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/font"
@@ -30,6 +32,7 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
+// FormFont defines a font used to render form fields.
 type FormFont struct {
 	pdf      *PDF
 	Name     string
@@ -39,14 +42,14 @@ type FormFont struct {
 	Color    string `json:"col"`
 	col      *color.SimpleColor
 	FillFont bool
+	encoding *simpleFontEncoding
 }
 
 func formatFontSize(size float64) string {
 	return strconv.FormatFloat(size, 'f', -1, 64)
 }
 
-// ISO-639 country codes
-// See https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
+// ISO639Codes contains supported ISO 639-1 language codes.
 var ISO639Codes = []string{"ab", "aa", "af", "ak", "sq", "am", "ar", "an", "hy", "as", "av", "ae", "ay", "az", "bm", "ba", "eu", "be", "bn", "bi", "bs", "br", "bg",
 	"my", "ca", "ch", "ce", "ny", "zh", "cu", "cv", "kw", "co", "cr", "hr", "cs", "da", "dv", "nl", "dz", "en", "eo", "et", "ee", "fo", "fj", "fi", "fr", "fy", "ff",
 	"gd", "gl", "lg", "ka", "de", "el", "kl", "gn", "gu", "ht", "ha", "he", "hz", "hi", "ho", "hu", "is", "io", "ig", "id", "ia", "ie", "iu", "ik", "ga", "it", "ja",
@@ -55,8 +58,8 @@ var ISO639Codes = []string{"ab", "aa", "af", "ak", "sq", "am", "ar", "an", "hy",
 	"ro", "rm", "rn", "ru", "se", "sm", "sg", "sa", "sc", "sr", "sn", "sd", "si", "sk", "sl", "so", "st", "es", "su", "sw", "ss", "sv", "tl", "ty", "tg", "ta", "tt",
 	"te", "th", "bo", "ti", "to", "ts", "tn", "tr", "tk", "tw", "ug", "uk", "ur", "uz", "ve", "vi", "vo", "wa", "cy", "wo", "xh", "yi", "yo", "za", "zu"}
 
-func fontLineMetrics(fontName string, fontSize float64) (float64, float64, error) {
-	bb, err := font.BoundingBox(fontName)
+func fontLineMetrics(c context.Context, repo *font.Repository, fontName string, fontSize float64) (float64, float64, error) {
+	bb, err := repo.BoundingBox(c, fontName)
 	if err != nil {
 		return 0, 0, fmt.Errorf("font %s: bounding box: %w", fontName, err)
 	}
@@ -65,8 +68,8 @@ func fontLineMetrics(fontName string, fontSize float64) (float64, float64, error
 	return lineHeight, descent, nil
 }
 
-func fontSizeForLineHeight(fontName string, lineHeight float64) (float64, error) {
-	bb, err := font.BoundingBox(fontName)
+func fontSizeForLineHeight(c context.Context, repo *font.Repository, fontName string, lineHeight float64) (float64, error) {
+	bb, err := repo.BoundingBox(c, fontName)
 	if err != nil {
 		return 0, fmt.Errorf("font %s: bounding box: %w", fontName, err)
 	}
@@ -97,8 +100,8 @@ func (f *FormFont) validateISO639() error {
 	return nil
 }
 
-func (f *FormFont) validateScriptSupport() error {
-	fd, ok, err := font.UserFont(f.Name)
+func (f *FormFont) validateScriptSupport(c context.Context, repo *font.Repository) error {
+	fd, ok, err := repo.UserFont(c, f.Name)
 	if err != nil {
 		return fmt.Errorf("userfont %s: load metrics: %w", f.Name, err)
 	}
@@ -121,14 +124,15 @@ func (f *FormFont) validate() error {
 	}
 
 	if f.Name != "" && f.Name[0] != '$' {
-		supported, err := font.SupportedFont(f.Name)
+		repo := f.pdf.XRefTable.FontRepository()
+		supported, err := repo.SupportedFont(f.pdf.ctx, f.Name)
 		if err != nil {
 			return fmt.Errorf("font %s: load metrics: %w", f.Name, err)
 		}
 		if !supported {
 			return fmt.Errorf("font %s is unsupported, please refer to \"pdfcpu fonts list\"", f.Name)
 		}
-		userFont, err := font.IsUserFont(f.Name)
+		userFont, err := repo.IsUserFont(f.pdf.ctx, f.Name)
 		if err != nil {
 			return fmt.Errorf("font %s: load metrics: %w", f.Name, err)
 		}
@@ -141,7 +145,7 @@ func (f *FormFont) validate() error {
 			}
 			if f.Script != "" {
 				f.Script = strings.ToUpper(f.Script)
-				if err := f.validateScriptSupport(); err != nil {
+				if err := f.validateScriptSupport(f.pdf.ctx, repo); err != nil {
 					return err
 				}
 			}
@@ -190,9 +194,14 @@ func (f FormFont) RTL() bool {
 	return types.MemberOf(f.Script, []string{"Arab", "Hebr"}) || types.MemberOf(f.Lang, []string{"ar", "fa", "he"})
 }
 
-// FormFontDetails form font details.
-func FormFontDetails(xRefTable *model.XRefTable, indRef types.IndirectRef) (string, string, string, error) {
-
+// FormFontDetails returns form font details and supports cancellation.
+func FormFontDetails(c context.Context, xRefTable *model.XRefTable, indRef types.IndirectRef) (string, string, string, error) {
+	if err := contextutil.Check(c); err != nil {
+		return "", "", "", err
+	}
+	if xRefTable == nil {
+		return "", "", "", model.ErrMissingXRefTable
+	}
 	objNr := int(indRef.ObjectNumber)
 	fontDict, err := xRefTable.DereferenceDict(indRef)
 	if err != nil || fontDict == nil {
@@ -205,7 +214,7 @@ func FormFontDetails(xRefTable *model.XRefTable, indRef types.IndirectRef) (stri
 	}
 
 	var fLang string
-	userFont, err := font.IsUserFont(fName)
+	userFont, err := xRefTable.FontRepository().IsUserFont(c, fName)
 	if err != nil {
 		return "", "", "", fmt.Errorf("font %s: load metrics: %w", fName, err)
 	}
@@ -216,10 +225,11 @@ func FormFontDetails(xRefTable *model.XRefTable, indRef types.IndirectRef) (stri
 		}
 	}
 
-	fScript := ""
-	if enc := fontDict.NameEntry("Encoding"); enc != nil {
-		fScript = pdffont.ScriptForEncoding(*enc)
+	encodingName, _, err := formFontEncoding(xRefTable, fontDict)
+	if err != nil {
+		return "", "", "", fmt.Errorf("font %s Encoding: %w", fName, err)
 	}
+	fScript := pdffont.ScriptForEncoding(encodingName)
 
 	return fName, fLang, fScript, nil
 }
@@ -275,7 +285,11 @@ func FontIndRef(fName string, ctx *model.Context, fonts map[string]types.Indirec
 		if err != nil {
 			return nil, err
 		}
-		if enc := d.NameEntry("Encoding"); *enc == "Identity-H" {
+		enc, _, err := ctx.DereferenceNameEntry(d, "Encoding")
+		if err != nil {
+			return nil, fmt.Errorf("font %s Encoding: %w", fName, err)
+		}
+		if enc != nil && enc.Value() == "Identity-H" {
 			return &indRef, nil
 		}
 	}
@@ -287,7 +301,11 @@ func FontIndRef(fName string, ctx *model.Context, fonts map[string]types.Indirec
 			if err != nil {
 				return nil, err
 			}
-			if enc := d.NameEntry("Encoding"); *enc == "Identity-H" {
+			enc, _, err := ctx.DereferenceNameEntry(d, "Encoding")
+			if err != nil {
+				return nil, fmt.Errorf("font %s Encoding: %w", fName, err)
+			}
+			if enc != nil && enc.Value() == "Identity-H" {
 				fonts[fName] = *indRef
 				return indRef, nil
 			}
@@ -297,7 +315,7 @@ func FontIndRef(fName string, ctx *model.Context, fonts map[string]types.Indirec
 	return nil, nil
 }
 
-func ensureUTF8FormFont(ctx *model.Context, fonts map[string]types.IndirectRef) (string, string, string, string, *types.IndirectRef, error) {
+func ensureUTF8FormFont(c context.Context, ctx *model.Context, fonts map[string]types.IndirectRef) (string, string, string, string, *types.IndirectRef, error) {
 
 	// TODO Make name of UTF-8 userfont part of pdfcpu configs.
 
@@ -315,7 +333,7 @@ func ensureUTF8FormFont(ctx *model.Context, fonts map[string]types.IndirectRef) 
 		}
 	}
 
-	indRef, err := pdffont.EnsureFontDict(ctx.XRefTable, fontName, "", "", false, nil)
+	indRef, err := pdffont.EnsureFontDict(c, ctx.XRefTable, fontName, "", "", false, nil)
 	if err != nil {
 		return "", "", "", "", nil, err
 	}
@@ -325,6 +343,7 @@ func ensureUTF8FormFont(ctx *model.Context, fonts map[string]types.IndirectRef) 
 }
 
 func extractFormFontDetails(
+	c context.Context,
 	ctx *model.Context,
 	fontID string,
 	fonts map[string]types.IndirectRef) (string, string, string, string, *types.IndirectRef, error) {
@@ -341,7 +360,7 @@ func extractFormFontDetails(
 
 		fontIndRef = formFontIndRef(xRefTable, fontID)
 		if fontIndRef != nil {
-			fName, fLang, fScript, err = FormFontDetails(xRefTable, *fontIndRef)
+			fName, fLang, fScript, err = FormFontDetails(c, xRefTable, *fontIndRef)
 			if err != nil {
 				return "", "", "", "", nil, err
 			}
@@ -354,7 +373,7 @@ func extractFormFontDetails(
 	}
 
 	if fontIndRef == nil {
-		return ensureUTF8FormFont(ctx, fonts)
+		return ensureUTF8FormFont(c, ctx, fonts)
 	}
 
 	return fontID, fName, fLang, fScript, fontIndRef, err
@@ -402,8 +421,12 @@ func fontFromDA(s string) (string, FormFont, error) {
 	return fontID, f, nil
 }
 
-func calcFontDetailsFromDA(ctx *model.Context, d types.Dict, da *string, needUTF8 bool, fonts map[string]types.IndirectRef) (string, *FormFont, bool, *types.IndirectRef, error) {
-	s := locateDA(ctx, d, da)
+func calcFontDetailsFromDA(c context.Context, ctx *model.Context, d types.Dict, da *string, needUTF8 bool,
+	fonts map[string]types.IndirectRef) (string, *FormFont, bool, *types.IndirectRef, error) {
+	s, err := locateDA(ctx, d, da)
+	if err != nil {
+		return "", nil, false, nil, err
+	}
 	if s == nil {
 		return "", nil, false, nil, errors.New("missing \"DA\"")
 	}
@@ -413,7 +436,7 @@ func calcFontDetailsFromDA(ctx *model.Context, d types.Dict, da *string, needUTF
 		return "", nil, false, nil, err
 	}
 
-	id, name, lang, script, fontIndRef, err := extractFormFontDetails(ctx, fontID, fonts)
+	id, name, lang, script, fontIndRef, err := extractFormFontDetails(c, ctx, fontID, fonts)
 	if err != nil {
 		return "", nil, false, nil, err
 	}
@@ -424,7 +447,7 @@ func calcFontDetailsFromDA(ctx *model.Context, d types.Dict, da *string, needUTF
 	fillFont := formFontIndRef(ctx.XRefTable, fontID) != nil
 
 	if needUTF8 && font.IsCoreFont(name) {
-		id, name, lang, script, fontIndRef, err = ensureUTF8FormFont(ctx, fonts)
+		id, name, lang, script, fontIndRef, err = ensureUTF8FormFont(c, ctx, fonts)
 		if err != nil {
 			return "", nil, false, nil, err
 		}
@@ -435,6 +458,9 @@ func calcFontDetailsFromDA(ctx *model.Context, d types.Dict, da *string, needUTF
 	f.Lang = lang
 	f.Script = script
 	f.FillFont = fillFont
+	if err := applyFormFontEncoding(ctx.XRefTable, &f, fontIndRef); err != nil {
+		return "", nil, false, nil, fmt.Errorf("font %s Encoding: %w", name, err)
+	}
 
 	rtl := pdffont.RTL(lang)
 

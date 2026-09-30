@@ -18,15 +18,29 @@ package model
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"time"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
+
+type attachmentContextReader struct {
+	c context.Context
+	r io.Reader
+}
+
+func (r attachmentContextReader) Read(p []byte) (int, error) {
+	if err := contextutil.Check(r.c); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
 
 // Attachment is a Reader representing a PDF attachment.
 type Attachment struct {
@@ -95,11 +109,17 @@ func fileSpecStreamDict(xRefTable *XRefTable, d types.Dict) (*types.StreamDict, 
 	return sd, nil
 }
 
-// NewFileSpecDictForAttachment returns a fileSpecDict for a.
-func (xRefTable *XRefTable) NewFileSpecDictForAttachment(a Attachment) (types.Dict, error) {
+// NewFileSpecDictForAttachment returns a fileSpecDict for a and supports cancellation.
+func (xRefTable *XRefTable) NewFileSpecDictForAttachment(c context.Context, a Attachment) (types.Dict, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	modTime := time.Now()
 	if a.ModTime != nil {
 		modTime = *a.ModTime
+	}
+	if a.Reader != nil {
+		a.Reader = attachmentContextReader{c: c, r: a.Reader}
 	}
 	sd, err := xRefTable.NewEmbeddedStreamDict(a, modTime)
 	if err != nil {
@@ -112,7 +132,7 @@ func (xRefTable *XRefTable) NewFileSpecDictForAttachment(a Attachment) (types.Di
 	if err != nil {
 		return nil, fmt.Errorf("attachment %q: create file spec: %w", a.ID, err)
 	}
-	return d, nil
+	return d, contextutil.Check(c)
 }
 
 var (
@@ -128,11 +148,13 @@ func getModDate(xRefTable *XRefTable, obj types.Object) (*time.Time, error) {
 	if o == nil {
 		return nil, errInvalidModDateType
 	}
-	sl, ok := o.(types.StringLiteral)
-	if !ok {
+	switch o.(type) {
+	case types.StringLiteral, types.HexLiteral:
+		// no further processing
+	default:
 		return nil, errInvalidModDateType
 	}
-	s, err := types.StringLiteralToString(sl)
+	s, err := Text(o)
 	if err != nil {
 		return nil, fmt.Errorf("decode text: %w", err)
 	}
@@ -143,7 +165,10 @@ func getModDate(xRefTable *XRefTable, obj types.Object) (*time.Time, error) {
 	return &md, nil
 }
 
-func fileSpecStreamDictInfo(xRefTable *XRefTable, id string, o types.Object, decode bool) (*types.StreamDict, string, string, *time.Time, error) {
+func fileSpecStreamDictInfo(c context.Context, xRefTable *XRefTable, id string, o types.Object, decode bool) (*types.StreamDict, string, string, *time.Time, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, "", "", nil, err
+	}
 	d, err := xRefTable.DereferenceDict(o)
 	if err != nil {
 		return nil, "", "", nil, fmt.Errorf("file spec %q: dereference dict: %w", id, err)
@@ -191,11 +216,14 @@ func fileSpecStreamDictInfo(xRefTable *XRefTable, id string, o types.Object, dec
 		}
 	}
 
-	return sd, desc, fileName, modDate, nil
+	return sd, desc, fileName, modDate, contextutil.Check(c)
 }
 
-// ListAttachments returns a slice of attachment stubs (attachment w/o data).
-func (ctx *Context) ListAttachments() ([]Attachment, error) {
+// ListAttachments returns a slice of attachment stubs without data and supports cancellation.
+func (ctx *Context) ListAttachments(c context.Context) ([]Attachment, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	if ctx == nil {
 		return nil, ErrMissingPDFContext
 	}
@@ -216,8 +244,11 @@ func (ctx *Context) ListAttachments() ([]Attachment, error) {
 	aa := []Attachment{}
 
 	createAttachmentStub := func(xRefTable *XRefTable, id string, o *types.Object) error {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		decode := false
-		_, desc, fileName, modTime, err := fileSpecStreamDictInfo(xRefTable, id, *o, decode)
+		_, desc, fileName, modTime, err := fileSpecStreamDictInfo(c, xRefTable, id, *o, decode)
 		if err != nil {
 			return err
 		}
@@ -226,15 +257,18 @@ func (ctx *Context) ListAttachments() ([]Attachment, error) {
 	}
 
 	// Extract stub info.
-	if err := ctx.Names["EmbeddedFiles"].Process(xRefTable, createAttachmentStub); err != nil {
+	if err := ctx.Names["EmbeddedFiles"].Process(c, xRefTable, createAttachmentStub); err != nil {
 		return nil, fmt.Errorf("EmbeddedFiles name tree: list attachments: %w", err)
 	}
 
-	return aa, nil
+	return aa, contextutil.Check(c)
 }
 
-// AddAttachment adds a.
-func (ctx *Context) AddAttachment(a Attachment, useCollection bool) error {
+// AddAttachment adds a and supports cancellation.
+func (ctx *Context) AddAttachment(c context.Context, a Attachment, useCollection bool) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	xRefTable := ctx.XRefTable
 	if err := xRefTable.LocateNameTree("EmbeddedFiles", true); err != nil {
 		return fmt.Errorf("EmbeddedFiles name tree: locate: %w", err)
@@ -247,7 +281,7 @@ func (ctx *Context) AddAttachment(a Attachment, useCollection bool) error {
 		}
 	}
 
-	d, err := xRefTable.NewFileSpecDictForAttachment(a)
+	d, err := xRefTable.NewFileSpecDictForAttachment(c, a)
 	if err != nil {
 		return err
 	}
@@ -259,24 +293,30 @@ func (ctx *Context) AddAttachment(a Attachment, useCollection bool) error {
 
 	m := NameMap{a.ID: []types.Dict{d}}
 
-	if err := xRefTable.Names["EmbeddedFiles"].Add(xRefTable, a.ID, *ir, m, []string{"F", "UF"}); err != nil {
+	if err := xRefTable.Names["EmbeddedFiles"].Add(c, xRefTable, a.ID, *ir, m, []string{"F", "UF"}); err != nil {
 		return fmt.Errorf("EmbeddedFiles name tree: add attachment %q: %w", a.ID, err)
 	}
-	return nil
+	return contextutil.Check(c)
 }
 
 var errContentMatch = errors.New("name tree content match")
 
-// SearchEmbeddedFilesNameTreeNodeByContent tries to identify a name tree by content.
-func (ctx *Context) SearchEmbeddedFilesNameTreeNodeByContent(s string) (*string, types.Object, error) {
+// SearchEmbeddedFilesNameTreeNodeByContent tries to identify a name tree by content and supports cancellation.
+func (ctx *Context) SearchEmbeddedFilesNameTreeNodeByContent(c context.Context, s string) (*string, types.Object, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, err
+	}
 	var (
 		k *string
 		v types.Object
 	)
 
 	identifyAttachmentStub := func(xRefTable *XRefTable, id string, o *types.Object) error {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		decode := false
-		_, desc, fileName, _, err := fileSpecStreamDictInfo(xRefTable, id, *o, decode)
+		_, desc, fileName, _, err := fileSpecStreamDictInfo(c, xRefTable, id, *o, decode)
 		if err != nil {
 			return err
 		}
@@ -288,7 +328,7 @@ func (ctx *Context) SearchEmbeddedFilesNameTreeNodeByContent(s string) (*string,
 		return nil
 	}
 
-	if err := ctx.Names["EmbeddedFiles"].Process(ctx.XRefTable, identifyAttachmentStub); err != nil {
+	if err := ctx.Names["EmbeddedFiles"].Process(c, ctx.XRefTable, identifyAttachmentStub); err != nil {
 		if !errors.Is(err, errContentMatch) {
 			return nil, nil, fmt.Errorf("EmbeddedFiles name tree: search attachments: %w", err)
 		}
@@ -296,28 +336,31 @@ func (ctx *Context) SearchEmbeddedFilesNameTreeNodeByContent(s string) (*string,
 		return k, v, nil
 	}
 
-	return nil, nil, nil
+	return nil, nil, contextutil.Check(c)
 }
 
-func (ctx *Context) removeAttachment(id string) (bool, error) {
+func (ctx *Context) removeAttachment(c context.Context, id string) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 	if log.CLIEnabled() {
 		log.CLI.Printf("removing %s\n", id)
 	}
 	xRefTable := ctx.XRefTable
 	// EmbeddedFiles name tree containing at least one key value pair.
-	empty, ok, err := xRefTable.Names["EmbeddedFiles"].Remove(xRefTable, id)
+	empty, ok, err := xRefTable.Names["EmbeddedFiles"].Remove(c, xRefTable, id)
 	if err != nil {
 		return false, fmt.Errorf("EmbeddedFiles name tree: remove attachment %q: %w", id, err)
 	}
 	if empty {
 		// Delete name tree root object.
-		if err := xRefTable.RemoveEmbeddedFilesNameTree(); err != nil {
+		if err := xRefTable.RemoveEmbeddedFilesNameTree(c); err != nil {
 			return false, fmt.Errorf("EmbeddedFiles name tree: remove root: %w", err)
 		}
 	}
 	if !ok {
 		// Try to identify name tree node by content.
-		k, _, err := ctx.SearchEmbeddedFilesNameTreeNodeByContent(id)
+		k, _, err := ctx.SearchEmbeddedFilesNameTreeNodeByContent(c, id)
 		if err != nil {
 			return false, err
 		}
@@ -327,22 +370,25 @@ func (ctx *Context) removeAttachment(id string) (bool, error) {
 			}
 			return false, nil
 		}
-		empty, _, err = xRefTable.Names["EmbeddedFiles"].Remove(xRefTable, *k)
+		empty, _, err = xRefTable.Names["EmbeddedFiles"].Remove(c, xRefTable, *k)
 		if err != nil {
 			return false, fmt.Errorf("EmbeddedFiles name tree: remove attachment %q: %w", *k, err)
 		}
 		if empty {
 			// Delete name tree root object.
-			if err := xRefTable.RemoveEmbeddedFilesNameTree(); err != nil {
+			if err := xRefTable.RemoveEmbeddedFilesNameTree(c); err != nil {
 				return false, fmt.Errorf("EmbeddedFiles name tree: remove root: %w", err)
 			}
 		}
 	}
-	return true, nil
+	return true, contextutil.Check(c)
 }
 
-// RemoveAttachments removes attachments with given id and returns true if anything removed.
-func (ctx *Context) RemoveAttachments(ids []string) (bool, error) {
+// RemoveAttachments removes attachments with the given ids and supports cancellation.
+func (ctx *Context) RemoveAttachments(c context.Context, ids []string) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 	// Note: Any remove operation may be deleting the only key value pair of this name tree.
 	xRefTable := ctx.XRefTable
 	if !xRefTable.Valid {
@@ -359,14 +405,17 @@ func (ctx *Context) RemoveAttachments(ids []string) (bool, error) {
 		if log.CLIEnabled() {
 			log.CLI.Println("removing all attachments")
 		}
-		if err := xRefTable.RemoveEmbeddedFilesNameTree(); err != nil {
+		if err := xRefTable.RemoveEmbeddedFilesNameTree(c); err != nil {
 			return false, fmt.Errorf("EmbeddedFiles name tree: remove root: %w", err)
 		}
 		return true, nil
 	}
 
 	for _, id := range ids {
-		found, err := ctx.removeAttachment(id)
+		if err := contextutil.Check(c); err != nil {
+			return false, err
+		}
+		found, err := ctx.removeAttachment(c, id)
 		if err != nil {
 			return false, err
 		}
@@ -378,13 +427,66 @@ func (ctx *Context) RemoveAttachments(ids []string) (bool, error) {
 	return true, nil
 }
 
-// RemoveAttachment removes a and returns true on success.
-func (ctx *Context) RemoveAttachment(a Attachment) (bool, error) {
-	return ctx.RemoveAttachments([]string{a.ID})
+// RemoveAttachment removes a and supports cancellation.
+func (ctx *Context) RemoveAttachment(c context.Context, a Attachment) (bool, error) {
+	return ctx.RemoveAttachments(c, []string{a.ID})
 }
 
-// ExtractAttachments extracts attachments with id.
-func (ctx *Context) ExtractAttachments(ids []string) ([]Attachment, error) {
+func attachmentExtractor(c context.Context, aa *[]Attachment) func(*XRefTable, string, *types.Object) error {
+	return func(xRefTable *XRefTable, id string, o *types.Object) error {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		decode := true
+		sd, desc, fileName, modTime, err := fileSpecStreamDictInfo(c, xRefTable, id, *o, decode)
+		if err != nil {
+			return err
+		}
+		a := Attachment{Reader: bytes.NewReader(sd.Content), ID: id, FileName: fileName, Desc: desc, ModTime: modTime}
+		*aa = append(*aa, a)
+		return nil
+	}
+}
+
+func extractSelectedAttachments(c context.Context, ctx *Context, ids []string, createAttachment func(*XRefTable, string, *types.Object) error) error {
+	for _, id := range ids {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		attachmentID := id
+		v, ok, err := ctx.Names["EmbeddedFiles"].Value(c, id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			k, o, err := ctx.SearchEmbeddedFilesNameTreeNodeByContent(c, id)
+			if err != nil {
+				return err
+			}
+			if k == nil {
+				if log.CLIEnabled() {
+					log.CLI.Printf("attachment %s not found", id)
+				}
+				if log.InfoEnabled() {
+					log.Info.Printf("pdfcpu: extractAttachments: %s not found", id)
+				}
+				continue
+			}
+			attachmentID = *k
+			v = o
+		}
+		if err := createAttachment(ctx.XRefTable, attachmentID, &v); err != nil {
+			return err
+		}
+	}
+	return contextutil.Check(c)
+}
+
+// ExtractAttachments extracts attachments with the given ids and supports cancellation.
+func (ctx *Context) ExtractAttachments(c context.Context, ids []string) ([]Attachment, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	xRefTable := ctx.XRefTable
 	if !xRefTable.Valid {
 		if err := xRefTable.LocateNameTree("EmbeddedFiles", false); err != nil {
@@ -396,59 +498,30 @@ func (ctx *Context) ExtractAttachments(ids []string) ([]Attachment, error) {
 	}
 
 	aa := []Attachment{}
-
-	createAttachment := func(xRefTable *XRefTable, id string, o *types.Object) error {
-		decode := true
-		sd, desc, fileName, modTime, err := fileSpecStreamDictInfo(xRefTable, id, *o, decode)
-		if err != nil {
-			return err
-		}
-		a := Attachment{Reader: bytes.NewReader(sd.Content), ID: id, FileName: fileName, Desc: desc, ModTime: modTime}
-		aa = append(aa, a)
-		return nil
-	}
+	createAttachment := attachmentExtractor(c, &aa)
 
 	// Search with UF,F,Desc
 	if len(ids) > 0 {
-		for _, id := range ids {
-			attachmentID := id
-			v, ok := ctx.Names["EmbeddedFiles"].Value(id)
-			if !ok {
-				// Try to identify name tree node by content.
-				k, o, err := ctx.SearchEmbeddedFilesNameTreeNodeByContent(id)
-				if err != nil {
-					return nil, err
-				}
-				if k == nil {
-					if log.CLIEnabled() {
-						log.CLI.Printf("attachment %s not found", id)
-					}
-					if log.InfoEnabled() {
-						log.Info.Printf("pdfcpu: extractAttachments: %s not found", id)
-					}
-					continue
-				}
-				attachmentID = *k
-				v = o
-			}
-			if err := createAttachment(ctx.XRefTable, attachmentID, &v); err != nil {
-				return nil, err
-			}
+		if err := extractSelectedAttachments(c, ctx, ids, createAttachment); err != nil {
+			return nil, err
 		}
 		return aa, nil
 	}
 
 	// Extract all files.
-	if err := ctx.Names["EmbeddedFiles"].Process(ctx.XRefTable, createAttachment); err != nil {
+	if err := ctx.Names["EmbeddedFiles"].Process(c, ctx.XRefTable, createAttachment); err != nil {
 		return nil, fmt.Errorf("EmbeddedFiles name tree: extract attachments: %w", err)
 	}
 
-	return aa, nil
+	return aa, contextutil.Check(c)
 }
 
-// ExtractAttachment extracts a fully populated attachment.
-func (ctx *Context) ExtractAttachment(a Attachment) (*Attachment, error) {
-	aa, err := ctx.ExtractAttachments([]string{a.ID})
+// ExtractAttachment extracts a fully populated attachment and supports cancellation.
+func (ctx *Context) ExtractAttachment(c context.Context, a Attachment) (*Attachment, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
+	aa, err := ctx.ExtractAttachments(c, []string{a.ID})
 	if err != nil || len(aa) == 0 {
 		return nil, err
 	}
@@ -458,9 +531,9 @@ func (ctx *Context) ExtractAttachment(a Attachment) (*Attachment, error) {
 	return &aa[0], nil
 }
 
-// AddAttachmentsToInfoDigest adds attachments to info digest.
-func (ctx *Context) AddAttachmentsToInfoDigest(ss *[]string) error {
-	aa, err := ctx.ListAttachments()
+// AddAttachmentsToInfoDigest adds attachments to info digest and supports cancellation.
+func (ctx *Context) AddAttachmentsToInfoDigest(c context.Context, ss *[]string) error {
+	aa, err := ctx.ListAttachments(c)
 	if err != nil {
 		return err
 	}

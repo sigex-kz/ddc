@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -25,55 +26,56 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
-func prepareImagesContext(rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (*model.Context, types.IntSet, error) {
+func prepareImagesContext(c context.Context, rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (*model.Context, types.IntSet, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, err
+	}
 	if rs == nil {
 		return nil, nil, ErrMissingPDFReadSeeker
 	}
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.LISTIMAGES
-	ctx, err := ReadValidateAndOptimize(rs, conf)
+	conf = operationConfiguration(conf, model.LISTIMAGES)
+	ctx, err := ReadValidateAndOptimize(c, rs, conf, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list images: %w", err)
 	}
-	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+	pages, err := PagesForSelection(ctx.PageCount, selectedPages, true)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list images: parse page selection: %w", err)
 	}
-	return ctx, pages, nil
+	return ctx, pages, contextutil.Check(c)
 }
 
-// Images returns all embedded images of rs.
-func Images(rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (ii []map[int]model.Image, err error) {
+// Images returns all embedded images of rs and supports cancellation.
+func Images(c context.Context, rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (ii []map[int]model.Image, err error) {
 	defer fault.Catch(&err)
 
-	ctx, pages, err := prepareImagesContext(rs, selectedPages, conf)
+	ctx, pages, err := prepareImagesContext(c, rs, selectedPages, conf)
 	if err != nil {
 		return nil, err
 	}
-	ii, _, err = pdfcpu.Images(ctx, pages)
+	ii, _, err = pdfcpu.Images(c, ctx, pages)
 	if err != nil {
 		return nil, fmt.Errorf("list images: collect images: %w", err)
 	}
 	return ii, nil
 }
 
-// ListImages returns a formatted list of all embedded images of rs.
-func ListImages(rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (ss []string, err error) {
+// ListImages returns a formatted list of all embedded images of rs and supports cancellation.
+func ListImages(c context.Context, rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (ss []string, err error) {
 	defer fault.Catch(&err)
 
-	ctx, pages, err := prepareImagesContext(rs, selectedPages, conf)
+	ctx, pages, err := prepareImagesContext(c, rs, selectedPages, conf)
 	if err != nil {
 		return nil, err
 	}
-	ss, err = pdfcpu.ListImages(ctx, pages)
+	ss, err = pdfcpu.ListImages(c, ctx, pages)
 	if err != nil {
 		return nil, fmt.Errorf("list images: format image list: %w", err)
 	}
@@ -99,9 +101,12 @@ func validateImageSelection(objNr, pageNr int, id string) error {
 	return nil
 }
 
-// UpdateImages replaces the XObject identified by objNr or (pageNr and resourceId).
-func UpdateImages(rs io.ReadSeeker, rd io.Reader, w io.Writer, objNr, pageNr int, id string, conf *model.Configuration) (err error) {
+// UpdateImages replaces the XObject identified by objNr or (pageNr and resourceId) and supports cancellation.
+func UpdateImages(c context.Context, rs io.ReadSeeker, rd io.Reader, w io.Writer, objNr, pageNr int, id string, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rs == nil {
 		return ErrMissingPDFReadSeeker
 	}
@@ -114,22 +119,19 @@ func UpdateImages(rs io.ReadSeeker, rd io.Reader, w io.Writer, objNr, pageNr int
 	if err := validateImageSelection(objNr, pageNr, id); err != nil {
 		return fmt.Errorf("update images: validate selection: %w", err)
 	}
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.UPDATEIMAGES
-	ctx, err := ReadValidateAndOptimize(rs, conf)
+	conf = operationConfiguration(conf, model.UPDATEIMAGES)
+	ctx, err := ReadValidateAndOptimize(c, rs, conf, nil)
 	if err != nil {
 		return fmt.Errorf("update images: %w", err)
 	}
 	if objNr > 0 {
-		if err := pdfcpu.UpdateImagesByObjNr(ctx, rd, objNr); err != nil {
+		if err := pdfcpu.UpdateImagesByObjNr(c, ctx, rd, objNr); err != nil {
 			return fmt.Errorf("update images: replace image object: %w", err)
 		}
-	} else if err := pdfcpu.UpdateImagesByPageNrAndId(ctx, rd, pageNr, id); err != nil {
+	} else if err := pdfcpu.UpdateImagesByPageNrAndId(c, ctx, rd, pageNr, id); err != nil {
 		return fmt.Errorf("update images: replace page resource: %w", err)
 	}
-	if err := Write(ctx, w, conf); err != nil {
+	if err := Write(c, ctx, w, conf); err != nil {
 		return fmt.Errorf("update images: write output: %w", err)
 	}
 	return nil
@@ -189,8 +191,11 @@ func ValidateUpdateImagesOutput(imageFile, outFile string) error {
 	return nil
 }
 
-// UpdateImagesFile replaces the XObject identified by objNr or (pageNr and resourceId).
-func UpdateImagesFile(inFile, imageFile, outFile string, objNr, pageNr int, id string, conf *model.Configuration) (err error) {
+// UpdateImagesFile replaces the XObject identified by objNr or (pageNr and resourceId) and supports cancellation.
+func UpdateImagesFile(c context.Context, inFile, imageFile, outFile string, objNr, pageNr int, id string, conf *model.Configuration) (err error) {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if inFile == "" {
 		return ErrMissingPDFInput
 	}
@@ -217,9 +222,6 @@ func UpdateImagesFile(inFile, imageFile, outFile string, objNr, pageNr int, id s
 	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		logWritingTo(outFile)
-	} else {
-		logWritingTo(inFile)
 	}
 	staged, err := openStagedOutput(f1, inFile, tmpFile, "update images")
 	if err != nil {
@@ -239,7 +241,10 @@ func UpdateImagesFile(inFile, imageFile, outFile string, objNr, pageNr int, id s
 		}
 		err = staged.commit()
 	}()
-	if err = UpdateImages(f0, f1, f2, objNr, pageNr, id, conf); err != nil {
+	if err = UpdateImages(c, f0, f1, f2, objNr, pageNr, id, conf); err != nil {
+		return err
+	}
+	if err = contextutil.Check(c); err != nil {
 		return err
 	}
 	ok = true

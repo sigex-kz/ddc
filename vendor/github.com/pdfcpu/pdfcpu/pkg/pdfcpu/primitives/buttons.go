@@ -25,6 +25,7 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
+// Buttons defines the choices and label layout of a radio-button group.
 type Buttons struct {
 	pdf         *PDF
 	Values      []string
@@ -92,7 +93,9 @@ func (b *Buttons) calcLeftAlignedHorLabelWidths(td model.TextDescriptor) error {
 	var maxw float64
 	for i := 0; i < len(b.Values); i++ {
 		td.Text = b.Values[i]
-		bb, err := model.WriteMultiLine(b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+		bb, err := model.WriteMultiLine(
+			b.pdf.ctx, b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td,
+		)
 		if err != nil {
 			return fmt.Errorf("button label %d: %w", i+1, err)
 		}
@@ -118,7 +121,9 @@ func (b *Buttons) calcRightAlignedHorLabelWidths(td model.TextDescriptor) error 
 	var maxw float64
 	for i := 0; i < len(b.Values); i++ {
 		td.Text = b.Values[i]
-		bb, err := model.WriteMultiLine(b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+		bb, err := model.WriteMultiLine(
+			b.pdf.ctx, b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td,
+		)
 		if err != nil {
 			return fmt.Errorf("button label %d: %w", i+1, err)
 		}
@@ -152,7 +157,9 @@ func (b *Buttons) calcVerLabelWidths(td model.TextDescriptor) error {
 	var maxw float64
 	for i, v := range b.Values {
 		td.Text = v
-		bb, err := model.WriteMultiLine(b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+		bb, err := model.WriteMultiLine(
+			b.pdf.ctx, b.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td,
+		)
 		if err != nil {
 			return fmt.Errorf("button label %d: %w", i+1, err)
 		}

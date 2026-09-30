@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/pdfcpu/pdfcpu/internal/netutil"
 )
 
 func imageBoxRemoteURL(s string) (*url.URL, bool, error) {
@@ -60,19 +62,10 @@ func rejectPrivateImageBoxHost(host string) error {
 }
 
 func rejectPrivateImageBoxIP(host string, ip net.IP) error {
-	if imageBoxBlockedIP(ip) {
+	if netutil.BlockedIP(ip) {
 		return fmt.Errorf("image URL resolves to disallowed address: %s", host)
 	}
 	return nil
-}
-
-func imageBoxBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() ||
-		ip.IsUnspecified()
 }
 
 func (pdf *PDF) imageBoxHTTPClient() *http.Client {
@@ -102,19 +95,19 @@ func imageBoxRedirect(req *http.Request, via []*http.Request) error {
 }
 
 func imageBoxDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(c context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, err
 		}
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ips, err := net.DefaultResolver.LookupIPAddr(c, host)
 		if err != nil {
 			return nil, err
 		}
 		if err := rejectImageBoxIPs(host, ips); err != nil {
 			return nil, err
 		}
-		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		return dialer.DialContext(c, network, net.JoinHostPort(ips[0].IP.String(), port))
 	}
 }
 

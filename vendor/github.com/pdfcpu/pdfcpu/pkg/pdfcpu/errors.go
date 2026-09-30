@@ -22,55 +22,66 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
-// ErrUnsupportedVersion reports an unsupported PDF version for the requested
-// operation. It is a stable sentinel intended for use with errors.Is.
-var ErrUnsupportedVersion = errors.New("PDF 2.0 unsupported for this operation")
+// VersionRequirementError reports an element requiring a newer PDF version.
+type VersionRequirementError = model.VersionRequirementError
 
-// ErrUnsupportedResource signals that extraction skipped a resource because
-// pdfcpu does not support its type or filter. Use errors.Is to identify it.
-var ErrUnsupportedResource = errors.New("unsupported resource")
+var (
+	// ErrInvalidPageNumber signals an invalid page number.
+	ErrInvalidPageNumber = errors.New("invalid page number")
 
-// ErrNoSignatures signals that a PDF has no signatures to process.
-var ErrNoSignatures = errors.New("no signatures present")
+	// ErrMissingAnnotation signals a missing required annotation.
+	ErrMissingAnnotation = errors.New("missing annotation")
 
-// ErrMissingPDFContext signals a missing required PDF context.
-var ErrMissingPDFContext = model.ErrMissingPDFContext
+	// ErrMissingContext signals a missing required Go context.
+	ErrMissingContext = model.ErrMissingContext
 
-// ErrMissingPDFInfo signals missing required PDF info.
-var ErrMissingPDFInfo = errors.New("missing PDF info")
+	// ErrMissingImageReader signals a missing required image reader.
+	ErrMissingImageReader = model.ErrMissingImageReader
 
-// ErrMissingReadContext signals a missing required PDF read context.
-var ErrMissingReadContext = errors.New("missing PDF read context")
+	// ErrMissingOptimizationContext signals a missing required optimization context.
+	ErrMissingOptimizationContext = errors.New("missing optimization context")
 
-// ErrMissingWriteContext signals a missing required PDF write context.
-var ErrMissingWriteContext = errors.New("missing PDF write context")
+	// ErrMissingPageNumbers signals missing required page numbers.
+	ErrMissingPageNumbers = errors.New("missing page numbers")
 
-// ErrMissingXRefTable signals a missing required PDF cross-reference table.
-var ErrMissingXRefTable = model.ErrMissingXRefTable
+	// ErrMissingPDFContext signals a missing required PDF context.
+	ErrMissingPDFContext = model.ErrMissingPDFContext
 
-// ErrMissingStreamDict signals a missing required PDF stream dictionary.
-var ErrMissingStreamDict = errors.New("missing PDF stream dictionary")
+	// ErrMissingPDFInfo signals missing required PDF info.
+	ErrMissingPDFInfo = errors.New("missing PDF info")
 
-// ErrMissingOptimizationContext signals a missing required optimization context.
-var ErrMissingOptimizationContext = errors.New("missing optimization context")
+	// ErrMissingReadContext signals a missing required PDF read context.
+	ErrMissingReadContext = errors.New("missing PDF read context")
 
-// ErrMissingPageNumbers signals missing required page numbers.
-var ErrMissingPageNumbers = errors.New("missing page numbers")
+	// ErrMissingReader signals a missing required reader.
+	ErrMissingReader = errors.New("missing reader")
 
-// ErrMissingAnnotation signals a missing required annotation.
-var ErrMissingAnnotation = errors.New("missing annotation")
+	// ErrMissingStreamDict signals a missing required PDF stream dictionary.
+	ErrMissingStreamDict = errors.New("missing PDF stream dictionary")
 
-// ErrMissingReader signals a missing required reader.
-var ErrMissingReader = errors.New("missing reader")
+	// ErrMissingWatermarkConfiguration signals a missing required watermark configuration.
+	ErrMissingWatermarkConfiguration = errors.New("missing watermark configuration")
 
-// ErrMissingImageReader signals a missing required image reader.
-var ErrMissingImageReader = model.ErrMissingImageReader
+	// ErrMissingWatermarks signals missing required watermarks.
+	ErrMissingWatermarks = errors.New("missing watermarks")
 
-// ErrMissingWatermarkConfiguration signals a missing required watermark configuration.
-var ErrMissingWatermarkConfiguration = errors.New("missing watermark configuration")
+	// ErrMissingWriteContext signals a missing required PDF write context.
+	ErrMissingWriteContext = errors.New("missing PDF write context")
 
-// ErrMissingWatermarks signals missing required watermarks.
-var ErrMissingWatermarks = errors.New("missing watermarks")
+	// ErrMissingXRefTable signals a missing required PDF cross-reference table.
+	ErrMissingXRefTable = model.ErrMissingXRefTable
 
-// ErrInvalidPageNumber signals an invalid page number.
-var ErrInvalidPageNumber = errors.New("invalid page number")
+	// ErrNoSignatures signals that a PDF has no signatures to process.
+	ErrNoSignatures = errors.New("no signatures present")
+
+	// ErrUnsupportedResource signals that extraction skipped a resource because
+	// pdfcpu does not support its type or filter. Use errors.Is to identify it.
+	ErrUnsupportedResource = errors.New("unsupported resource")
+
+	// ErrUnsupportedVersion reports an unsupported PDF version for the requested
+	// operation. It is a stable sentinel intended for use with errors.Is.
+	ErrUnsupportedVersion = errors.New("PDF 2.0 unsupported for this operation")
+
+	// ErrVersionTooLow signals that an element requires a newer declared PDF version.
+	ErrVersionTooLow = model.ErrVersionTooLow
+)

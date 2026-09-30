@@ -17,14 +17,21 @@ limitations under the License.
 package validate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
-func validatePageLabelDict(xRefTable *model.XRefTable, o types.Object) error {
+func validatePageLabelDict(xRefTable *model.XRefTable, o types.Object) (err error) {
+	objNr := validationObjectNumber(0, o)
+	defer func() {
+		err = model.WithValidationErrorObject(err, objNr)
+	}()
+
 	// see 12.4.2 Page Labels
 
 	d, err := xRefTable.DereferenceDict(o)
@@ -42,7 +49,9 @@ func validatePageLabelDict(xRefTable *model.XRefTable, o types.Object) error {
 	dictName := "pageLabelDict"
 
 	// Type, optional, name
-	_, err = validateNameEntry(xRefTable, d, dictName, "Type", OPTIONAL, model.V10, func(s string) bool { return s == "PageLabel" })
+	_, err = validateNameEntry(
+		xRefTable, d, objNr, dictName, "Type", OPTIONAL, model.V10, func(s string) bool { return s == "PageLabel" },
+	)
 	if err != nil {
 		return err
 	}
@@ -50,27 +59,34 @@ func validatePageLabelDict(xRefTable *model.XRefTable, o types.Object) error {
 	// Optional name entry S
 	// The numbering style that shall be used for the numeric portion of each page label.
 	validate := func(s string) bool { return types.MemberOf(s, []string{"D", "R", "r", "A", "a"}) }
-	_, err = validateNameEntry(xRefTable, d, dictName, "S", OPTIONAL, model.V10, validate)
+	_, err = validateNameEntry(xRefTable, d, objNr, dictName, "S", OPTIONAL, model.V10, validate)
 	if err != nil {
 		return err
 	}
 
 	// Optional string entry P
 	// Label prefix for page labels in this range.
-	_, err = validateStringEntry(xRefTable, d, dictName, "P", OPTIONAL, model.V10, nil)
+	_, err = validateStringEntry(xRefTable, d, objNr, dictName, "P", OPTIONAL, model.V10, nil)
 	if err != nil {
 		return err
 	}
 
 	// Optional integer entry St
 	// The value of the numeric portion for the first page label in the range.
-	_, err = validateIntegerEntry(xRefTable, d, dictName, "St", OPTIONAL, model.V10, func(i int) bool { return i >= 1 })
+	_, err = validateIntegerEntry(
+		xRefTable, d, objNr, dictName, "St", OPTIONAL, model.V10, func(i int) bool { return i >= 1 },
+	)
 
 	return err
 }
 
-func validateNumberTreeKey(xRefTable *model.XRefTable, o types.Object, name string) (int, bool, error) {
-	o, err := xRefTable.Dereference(o)
+func validateNumberTreeKey(xRefTable *model.XRefTable, o types.Object, ownerObjNr int, name string) (key int, valid bool, err error) {
+	objNr := validationObjectNumber(ownerObjNr, o)
+	defer func() {
+		err = model.WithValidationErrorObject(err, objNr)
+	}()
+
+	o, err = xRefTable.Dereference(o)
 	if err != nil {
 		return 0, false, fmt.Errorf("number tree %s key: dereference: %w", name, err)
 	}
@@ -90,25 +106,30 @@ func validateNumberTreeKey(xRefTable *model.XRefTable, o types.Object, name stri
 	return 0, false, nil
 }
 
-func validateNumberTreeDictNumsEntry(xRefTable *model.XRefTable, d types.Dict, name string, useIDs bool) (firstKey, lastKey int, err error) {
+func validateNumberTreeDictNumsEntry(c context.Context, xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, name string, useIDs bool) (firstKey, lastKey int, err error) {
 	// Nums: array of the form [key1 value1 key2 value2 ... key n value n]
 	o, found := d.Find("Nums")
 	if !found {
-		return 0, 0, fmt.Errorf("number tree %s: missing Kids or Nums", name)
+		err = fmt.Errorf("number tree %s: missing Kids or Nums", name)
+		return 0, 0, model.WithValidationErrorObject(err, ownerObjNr)
 	}
+	numsObjNr := validationObjectNumber(ownerObjNr, o)
 
 	a, err := xRefTable.DereferenceArray(o)
 	if err != nil {
-		return 0, 0, fmt.Errorf("number tree %s Nums: dereference array: %w", name, err)
+		err = fmt.Errorf("number tree %s Nums: dereference array: %w", name, err)
+		return 0, 0, model.WithValidationErrorObject(err, numsObjNr)
 	}
 	if a == nil {
-		return 0, 0, fmt.Errorf("number tree %s: missing Nums array", name)
+		err = fmt.Errorf("number tree %s: missing Nums array", name)
+		return 0, 0, model.WithValidationErrorObject(err, numsObjNr)
 	}
 
 	// arr length needs to be even because of contained key value pairs.
 	if len(a)%2 == 1 {
 		if xRefTable.ValidationMode == model.ValidationStrict {
-			return 0, 0, fmt.Errorf("number tree %s Nums: odd entry count %d", name, len(a))
+			err = fmt.Errorf("number tree %s Nums: odd entry count %d", name, len(a))
+			return 0, 0, model.WithValidationErrorObject(err, numsObjNr)
 		}
 		model.ShowDigestedSpecViolation("number tree \"Num\" entry array length needs to be even")
 		model.ShowSkipped("invalid number tree")
@@ -121,11 +142,13 @@ func validateNumberTreeDictNumsEntry(xRefTable *model.XRefTable, d types.Dict, n
 	// value = indRef of structElementDict.
 
 	for i, o := range a {
-
+		if err := contextutil.Check(c); err != nil {
+			return 0, 0, err
+		}
 		if i%2 == 0 {
 			var key int
 			var valid bool
-			key, valid, err = validateNumberTreeKey(xRefTable, o, name)
+			key, valid, err = validateNumberTreeKey(xRefTable, o, numsObjNr, name)
 			if err != nil {
 				return 0, 0, fmt.Errorf("number tree %s Nums[%d]: %w", name, i, err)
 			}
@@ -146,15 +169,13 @@ func validateNumberTreeDictNumsEntry(xRefTable *model.XRefTable, d types.Dict, n
 
 		case "PageLabel":
 			err = validatePageLabelDict(xRefTable, o)
-			if err != nil {
-				return 0, 0, fmt.Errorf("number tree %s key %d: %w", name, lastKey, err)
-			}
 
 		case "StructTree":
-			err = validateStructTreeRootDictEntryK(xRefTable, o, useIDs)
-			if err != nil {
-				return 0, 0, fmt.Errorf("number tree %s key %d: %w", name, lastKey, err)
-			}
+			err = validateStructTreeRootKContext(c, xRefTable, o, useIDs)
+		}
+		if err != nil {
+			err = fmt.Errorf("number tree %s key %d: %w", name, lastKey, err)
+			return 0, 0, model.WithValidationErrorObject(err, validationObjectNumber(numsObjNr, o))
 		}
 
 	}
@@ -162,26 +183,39 @@ func validateNumberTreeDictNumsEntry(xRefTable *model.XRefTable, d types.Dict, n
 	return firstKey, lastKey, nil
 }
 
-func validateNumberTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, firstKey, lastKey int) error {
-	a, err := validateIntegerArrayEntry(xRefTable, d, "numberTreeDict", "Limits", REQUIRED, model.V10, func(a types.Array) bool { return len(a) == 2 })
+func validateNumberTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, ownerObjNr, firstKey, lastKey int) error {
+	a, err := validateIntegerArrayEntry(
+		xRefTable, d, ownerObjNr, "numberTreeDict", "Limits", REQUIRED, model.V10,
+		func(a types.Array) bool { return len(a) == 2 },
+	)
 	if err != nil {
 		return err
 	}
 
+	i, err := xRefTable.DereferenceInteger(a[0])
+	if err != nil {
+		err = fmt.Errorf("number tree Limits[0]: %w", err)
+		return model.WithValidationErrorObject(err, validationObjectNumber(ownerObjNr, a[0]))
+	}
 	fk := 0
-	if a[0] != nil {
-		fk = a[0].(types.Integer).Value()
+	if i != nil {
+		fk = i.Value()
 	}
 
+	i, err = xRefTable.DereferenceInteger(a[1])
+	if err != nil {
+		err = fmt.Errorf("number tree Limits[1]: %w", err)
+		return model.WithValidationErrorObject(err, validationObjectNumber(ownerObjNr, a[1]))
+	}
 	lk := 0
-	if a[1] != nil {
-		lk = a[1].(types.Integer).Value()
+	if i != nil {
+		lk = i.Value()
 	}
 
 	if firstKey < fk || lastKey > lk {
 		msg := fmt.Sprintf("number tree leaf limits: first key %d, minimum %d; last key %d, maximum %d", firstKey, fk, lastKey, lk)
 		if xRefTable.ValidationMode == model.ValidationStrict {
-			return errors.New(msg)
+			return model.WithValidationErrorObject(errors.New(msg), ownerObjNr)
 		}
 		model.ShowDigestedSpecViolation(msg)
 	}
@@ -189,8 +223,8 @@ func validateNumberTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict,
 	return nil
 }
 
-func validateNumberTree(xRefTable *model.XRefTable, name string, d types.Dict, root, useIDs bool) (firstKey, lastKey int, err error) {
-	return validateNumberTreeDepth(xRefTable, name, d, root, useIDs, 0)
+func validateNumberTree(c context.Context, xRefTable *model.XRefTable, name string, d types.Dict, ownerObjNr int, root, useIDs bool, rootObject ...types.Object) (firstKey, lastKey int, err error) {
+	return validateNumberTreeDepth(c, xRefTable, name, d, ownerObjNr, root, useIDs, 0, newTreeVisit(false, rootObject...))
 }
 
 func numberTreeKidContext(name string, o types.Object, i int) string {
@@ -200,8 +234,13 @@ func numberTreeKidContext(name string, o types.Object, i int) string {
 	return fmt.Sprintf("number tree %s Kids[%d]", name, i)
 }
 
-func validateNumberTreeDepth(xRefTable *model.XRefTable, name string, d types.Dict, root, useIDs bool, depth int) (firstKey, lastKey int, err error) {
-	if err := xRefTable.CheckRecursionDepth("number tree", depth); err != nil {
+func validateNumberTreeDepth(c context.Context, xRefTable *model.XRefTable, name string, d types.Dict, ownerObjNr int, root, useIDs bool, depth int, visits ...*treeVisit) (firstKey, lastKey int, err error) {
+	visit := treeTraversal(visits, false)
+	defer func() {
+		err = model.WithValidationErrorObject(err, ownerObjNr)
+	}()
+
+	if err := checkValidationTree(c, xRefTable, fmt.Sprintf("number tree %s", name), depth); err != nil {
 		return 0, 0, err
 	}
 
@@ -210,6 +249,7 @@ func validateNumberTreeDepth(xRefTable *model.XRefTable, name string, d types.Di
 	// Kids: array of indirect references to the immediate children of this node.
 	// if Kids present then recurse
 	if o, found := d.Find("Kids"); found {
+		kidsObjNr := validationObjectNumber(ownerObjNr, o)
 
 		a, err := xRefTable.DereferenceArray(o)
 		if err != nil {
@@ -220,19 +260,25 @@ func validateNumberTreeDepth(xRefTable *model.XRefTable, name string, d types.Di
 		}
 
 		for i, o := range a {
+			if err := contextutil.Check(c); err != nil {
+				return 0, 0, err
+			}
+			kidObjNr := validationObjectNumber(kidsObjNr, o)
 
 			d1, err := xRefTable.DereferenceDict(o)
 			if err != nil {
-				return 0, 0, fmt.Errorf("%s: dereference dict: %w", numberTreeKidContext(name, o, i), err)
+				err = fmt.Errorf("%s: dereference dict: %w", numberTreeKidContext(name, o, i), err)
+				return 0, 0, model.WithValidationErrorObject(err, kidObjNr)
 			}
 			if d1 == nil {
-				return 0, 0, fmt.Errorf("%s: missing dict", numberTreeKidContext(name, o, i))
+				err = fmt.Errorf("%s: missing dict", numberTreeKidContext(name, o, i))
+				return 0, 0, model.WithValidationErrorObject(err, kidObjNr)
 			}
 
 			var fk int
-			fk, lastKey, err = validateNumberTreeDepth(xRefTable, name, d1, false, useIDs, depth+1)
+			fk, lastKey, err = validateNumberTreeChild(c, xRefTable, name, d1, kidObjNr, o, useIDs, depth+1, visit)
 			if err != nil {
-				return 0, 0, fmt.Errorf("%s: %w", numberTreeKidContext(name, o, i), err)
+				return 0, 0, model.WrapRecursionError(numberTreeKidContext(name, o, i), err)
 			}
 			if firstKey == 0 {
 				firstKey = fk
@@ -242,7 +288,7 @@ func validateNumberTreeDepth(xRefTable *model.XRefTable, name string, d types.Di
 	} else {
 
 		// Leaf node
-		firstKey, lastKey, err = validateNumberTreeDictNumsEntry(xRefTable, d, name, useIDs)
+		firstKey, lastKey, err = validateNumberTreeDictNumsEntry(c, xRefTable, d, ownerObjNr, name, useIDs)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -251,7 +297,7 @@ func validateNumberTreeDepth(xRefTable *model.XRefTable, name string, d types.Di
 	if !root {
 
 		// Verify calculated key range.
-		err = validateNumberTreeDictLimitsEntry(xRefTable, d, firstKey, lastKey)
+		err = validateNumberTreeDictLimitsEntry(xRefTable, d, ownerObjNr, firstKey, lastKey)
 		if err != nil {
 			return 0, 0, fmt.Errorf("number tree %s Limits: %w", name, err)
 		}
@@ -259,4 +305,20 @@ func validateNumberTreeDepth(xRefTable *model.XRefTable, name string, d types.Di
 	}
 
 	return firstKey, lastKey, nil
+}
+
+func checkValidationTree(c context.Context, xRefTable *model.XRefTable, name string, depth int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	return xRefTable.CheckRecursionDepth(name, depth)
+}
+
+func validateNumberTreeChild(c context.Context, xRefTable *model.XRefTable, name string, d types.Dict, ownerObjNr int, o types.Object, useIDs bool, depth int, visit *treeVisit) (int, int, error) {
+	n, err := visit.enter(o)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer visit.leave(n)
+	return validateNumberTreeDepth(c, xRefTable, name, d, ownerObjNr, false, useIDs, depth, visit)
 }

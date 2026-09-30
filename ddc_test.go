@@ -2,6 +2,7 @@ package ddc
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -49,7 +50,7 @@ func TestPingPongFullFeatured(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func TestPingPongNonPDFDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +227,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +255,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +283,7 @@ func TestBuildPartialVisualizations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +333,7 @@ func TestBuildNoQRCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +379,7 @@ func TestBuildLongStrings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +428,7 @@ func TestBuildNoID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +476,7 @@ func TestBuildKK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +524,7 @@ func TestBuildKKRU(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +573,7 @@ func TestBuildNoSignersNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +619,7 @@ func TestBuildWithEmbeddedFonts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +703,7 @@ func TestDifferentPageConfigs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +794,7 @@ func TestBuildLotsOfSignatures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pdfcpuapi.Validate(bytes.NewReader(b.Bytes()), nil)
+	err = pdfcpuapi.Validate(context.Background(), bytes.NewReader(b.Bytes()), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,16 +17,50 @@ limitations under the License.
 package pdfcpu
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
-func newOutlinesDict(ctx *model.Context, fName string) (types.Dict, *types.IndirectRef, *types.IndirectRef, error) {
+func runMergePhase(c context.Context, merge func() error) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	return merge()
+}
+
+func outlineCount(ctx *model.Context, d types.Dict, context string) (int, error) {
+	i, _, err := ctx.DereferenceIntegerEntry(d, "Count")
+	if err != nil {
+		return 0, fmt.Errorf("%s Count: %w", context, err)
+	}
+	if i == nil {
+		return 0, nil
+	}
+
+	return i.Value(), nil
+}
+
+func checkOutlineSibling(c context.Context, ir *types.IndirectRef, visited map[int]bool, operation string) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if err := checkBookmarkCycle(ir, visited); err != nil {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return nil
+}
+
+func newOutlinesDict(c context.Context, ctx *model.Context, fName string) (types.Dict, *types.IndirectRef, *types.IndirectRef, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, nil, err
+	}
 	if ctx == nil {
 		return nil, nil, nil, errors.New("ensure outlines: missing context")
 	}
@@ -37,7 +71,9 @@ func newOutlinesDict(ctx *model.Context, fName string) (types.Dict, *types.Indir
 		return nil, nil, nil, fmt.Errorf("ensure outlines: add outlines object: %w", err)
 	}
 
-	first, last, total, visible, err := createOutlineItemDict(ctx, []Bookmark{{PageFrom: 1, Title: fName}}, indRef, nil)
+	first, last, total, visible, err := createOutlineItemDict(
+		c, ctx, []Bookmark{{PageFrom: 1, Title: fName}}, indRef, nil,
+	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("ensure outlines: create outline item: %w", err)
 	}
@@ -51,7 +87,7 @@ func newOutlinesDict(ctx *model.Context, fName string) (types.Dict, *types.Indir
 	return outlinesDict, indRef, first, nil
 }
 
-func foldExistingOutlines(ctx *model.Context, rootDict types.Dict, first *types.IndirectRef, append bool) error {
+func foldExistingOutlines(c context.Context, ctx *model.Context, rootDict types.Dict, first *types.IndirectRef, append bool) error {
 	if obj, ok := rootDict.Find("Outlines"); ok {
 		if append {
 			return nil
@@ -63,13 +99,20 @@ func foldExistingOutlines(ctx *model.Context, rootDict types.Dict, first *types.
 		if d == nil {
 			return errors.New("ensure outlines: missing existing outlines dict")
 		}
-		count := d.IntEntry("Count")
-		c := 0
+		count, err := outlineCount(ctx, d, "ensure outlines")
+		if err != nil {
+			return err
+		}
+		total := 0
 		f, l := d.IndirectRefEntry("First"), d.IndirectRefEntry("Last")
 		if f == nil || l == nil {
 			return errors.New("ensure outlines: existing outlines missing first or last item")
 		}
+		visited := map[int]bool{}
 		for ir := f; ir != nil; ir = d.IndirectRefEntry("Next") {
+			if err := checkOutlineSibling(c, ir, visited, "ensure outlines"); err != nil {
+				return err
+			}
 			d, err = ctx.DereferenceDict(*ir)
 			if err != nil {
 				return fmt.Errorf("ensure outlines: dereference outline item: %w", err)
@@ -78,7 +121,7 @@ func foldExistingOutlines(ctx *model.Context, rootDict types.Dict, first *types.
 				return errors.New("ensure outlines: missing outline item dict")
 			}
 			d["Parent"] = *first
-			c++
+			total++
 		}
 		d, err = ctx.DereferenceDict(*first)
 		if err != nil {
@@ -90,16 +133,19 @@ func foldExistingOutlines(ctx *model.Context, rootDict types.Dict, first *types.
 
 		d["First"] = *f
 		d["Last"] = *l
-		if count != nil && *count != 0 {
-			c = *count
+		if count != 0 {
+			total = count
 		}
-		d["Count"] = types.Integer(-c)
+		d["Count"] = types.Integer(-total)
 	}
 	return nil
 }
 
-// EnsureOutlines ensures outlines.
-func EnsureOutlines(ctx *model.Context, fName string, append bool) error {
+// EnsureOutlines ensures outlines and supports cancellation.
+func EnsureOutlines(c context.Context, ctx *model.Context, fName string, append bool) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if ctx == nil {
 		return errors.New("ensure outlines: missing context")
 	}
@@ -116,11 +162,11 @@ func EnsureOutlines(ctx *model.Context, fName string, append bool) error {
 		return fmt.Errorf("ensure outlines: locate dests name tree: %w", err)
 	}
 
-	_, indRef, first, err := newOutlinesDict(ctx, fName)
+	_, indRef, first, err := newOutlinesDict(c, ctx, fName)
 	if err != nil {
 		return err
 	}
-	if err := foldExistingOutlines(ctx, rootDict, first, append); err != nil {
+	if err := foldExistingOutlines(c, ctx, rootDict, first, append); err != nil {
 		return err
 	}
 
@@ -128,7 +174,10 @@ func EnsureOutlines(ctx *model.Context, fName string, append bool) error {
 	return nil
 }
 
-func mergeOutlinesWrapped(fName string, p int, ctxSrc, ctxDest *model.Context) error {
+func mergeOutlinesWrapped(c context.Context, fName string, p int, ctxSrc, ctxDest *model.Context) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if ctxSrc == nil || ctxDest == nil {
 		return errors.New("merge outlines: missing context")
 	}
@@ -141,7 +190,7 @@ func mergeOutlinesWrapped(fName string, p int, ctxSrc, ctxDest *model.Context) e
 		return nil
 	}
 
-	first, wrapperDict, err := appendOutlineWrapper(ctxDest, outlinesDict, indRef, oldLast, fName, p)
+	first, wrapperDict, err := appendOutlineWrapper(c, ctxDest, outlinesDict, indRef, oldLast, fName, p)
 	if err != nil {
 		return fmt.Errorf("merge outlines: append wrapper: %w", err)
 	}
@@ -149,7 +198,11 @@ func mergeOutlinesWrapped(fName string, p int, ctxSrc, ctxDest *model.Context) e
 		return nil
 	}
 
-	topCount := outlineTopCount(outlinesDict) + 1
+	topCount, err := outlineCount(ctxDest, outlinesDict, "merge destination outlines")
+	if err != nil {
+		return err
+	}
+	topCount++
 
 	rootDictSource, err := ctxSrc.Catalog()
 	if err != nil {
@@ -159,17 +212,17 @@ func mergeOutlinesWrapped(fName string, p int, ctxSrc, ctxDest *model.Context) e
 		return errors.New("merge outlines: missing source catalog")
 	}
 
-	if c, err := attachWrappedSourceOutlines(ctxDest, rootDictSource, wrapperDict, first); err != nil {
+	if count, err := attachWrappedSourceOutlines(c, ctxDest, rootDictSource, wrapperDict, first); err != nil {
 		return err
-	} else if c > 0 {
-		topCount += c
+	} else if count > 0 {
+		topCount += count
 	}
 
 	outlinesDict["Count"] = types.Integer(topCount)
 	return nil
 }
 
-func attachWrappedSourceOutlines(ctxDest *model.Context, rootDictSource, wrapperDict types.Dict, first *types.IndirectRef) (int, error) {
+func attachWrappedSourceOutlines(c context.Context, ctxDest *model.Context, rootDictSource, wrapperDict types.Dict, first *types.IndirectRef) (int, error) {
 	obj, ok := rootDictSource.Find("Outlines")
 	if !ok {
 		return 0, nil
@@ -191,8 +244,12 @@ func attachWrappedSourceOutlines(ctxDest *model.Context, rootDictSource, wrapper
 	wrapperDict["First"] = *f
 	wrapperDict["Last"] = *l
 
-	c := 0
+	total := 0
+	visited := map[int]bool{}
 	for ir := f; ir != nil; ir = d.IndirectRefEntry("Next") {
+		if err := checkOutlineSibling(c, ir, visited, "merge source outlines"); err != nil {
+			return 0, err
+		}
 		d, err = ctxDest.DereferenceDict(*ir)
 		if err != nil {
 			return 0, fmt.Errorf("merge outlines: dereference source outline item: %w", err)
@@ -202,14 +259,18 @@ func attachWrappedSourceOutlines(ctxDest *model.Context, rootDictSource, wrapper
 		}
 
 		d["Parent"] = *first
-		if i := d.IntEntry("Count"); i != nil && *i > 0 {
-			c += *i
+		itemCount, err := outlineCount(ctxDest, d, "merge source outline item")
+		if err != nil {
+			return 0, err
 		}
-		c++
+		if itemCount > 0 {
+			total += itemCount
+		}
+		total++
 	}
 
-	wrapperDict["Count"] = types.Integer(c)
-	return c, nil
+	wrapperDict["Count"] = types.Integer(total)
+	return total, nil
 }
 
 func destOutlines(ctxDest *model.Context) (*types.IndirectRef, types.Dict, *types.IndirectRef, error) {
@@ -235,15 +296,10 @@ func destOutlines(ctxDest *model.Context) (*types.IndirectRef, types.Dict, *type
 	return indRef, outlinesDict, outlinesDict.IndirectRefEntry("Last"), nil
 }
 
-func outlineTopCount(outlinesDict types.Dict) int {
-	count := outlinesDict.IntEntry("Count")
-	if count == nil {
-		return 0
+func appendOutlineWrapper(c context.Context, ctxDest *model.Context, outlinesDict types.Dict, indRef, oldLast *types.IndirectRef, fName string, p int) (*types.IndirectRef, types.Dict, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, err
 	}
-	return *count
-}
-
-func appendOutlineWrapper(ctxDest *model.Context, outlinesDict types.Dict, indRef, oldLast *types.IndirectRef, fName string, p int) (*types.IndirectRef, types.Dict, error) {
 	if ctxDest == nil {
 		return nil, nil, errors.New("outline wrapper: missing context")
 	}
@@ -254,7 +310,9 @@ func appendOutlineWrapper(ctxDest *model.Context, outlinesDict types.Dict, indRe
 		return nil, nil, errors.New("outline wrapper: missing outline references")
 	}
 
-	first, last, _, _, err := createOutlineItemDict(ctxDest, []Bookmark{{PageFrom: p, Title: fName}}, indRef, nil)
+	first, last, _, _, err := createOutlineItemDict(
+		c, ctxDest, []Bookmark{{PageFrom: p, Title: fName}}, indRef, nil,
+	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("outline wrapper: create item: %w", err)
 	}
@@ -352,15 +410,15 @@ func sourceOutlines(ctxSrc, ctxDest *model.Context) (*types.IndirectRef, *types.
 		return nil, nil, 0, nil
 	}
 
-	count := d.IntEntry("Count")
-	if count != nil {
-		return first, last, *count, nil
+	count, err := outlineCount(ctxDest, d, "source outlines")
+	if err != nil {
+		return nil, nil, 0, err
 	}
 
-	return first, last, 0, nil
+	return first, last, count, nil
 }
 
-func reparentOutlineItems(ctx *model.Context, first, parent *types.IndirectRef) (int, error) {
+func reparentOutlineItems(c context.Context, ctx *model.Context, first, parent *types.IndirectRef) (int, error) {
 	if ctx == nil {
 		return 0, errors.New("reparent outline item: missing context")
 	}
@@ -369,7 +427,11 @@ func reparentOutlineItems(ctx *model.Context, first, parent *types.IndirectRef) 
 	}
 
 	count := 0
+	visited := map[int]bool{}
 	for ir := first; ir != nil; {
+		if err := checkOutlineSibling(c, ir, visited, "reparent outline item"); err != nil {
+			return 0, err
+		}
 		d, err := ctx.DereferenceDict(*ir)
 		if err != nil {
 			return 0, fmt.Errorf("reparent outline item: dereference item: %w", err)
@@ -379,8 +441,12 @@ func reparentOutlineItems(ctx *model.Context, first, parent *types.IndirectRef) 
 		}
 		d["Parent"] = *parent
 
-		if i := d.IntEntry("Count"); i != nil && *i > 0 {
-			count += *i
+		itemCount, err := outlineCount(ctx, d, "reparent outline item")
+		if err != nil {
+			return 0, err
+		}
+		if itemCount > 0 {
+			count += itemCount
 		}
 		count++
 		ir = d.IndirectRefEntry("Next")
@@ -388,7 +454,7 @@ func reparentOutlineItems(ctx *model.Context, first, parent *types.IndirectRef) 
 	return count, nil
 }
 
-func mergeOutlinesPreserve(ctxSrc, ctxDest *model.Context) error {
+func mergeOutlinesPreserve(c context.Context, ctxSrc, ctxDest *model.Context) error {
 	first, last, sourceCount, err := sourceOutlines(ctxSrc, ctxDest)
 	if err != nil {
 		return fmt.Errorf("merge outlines preserve: source outlines: %w", err)
@@ -402,7 +468,7 @@ func mergeOutlinesPreserve(ctxSrc, ctxDest *model.Context) error {
 		return fmt.Errorf("merge outlines preserve: ensure destination root: %w", err)
 	}
 
-	count, err := reparentOutlineItems(ctxDest, first, indRef)
+	count, err := reparentOutlineItems(c, ctxDest, first, indRef)
 	if err != nil {
 		return fmt.Errorf("merge outlines preserve: reparent source items: %w", err)
 	}
@@ -432,9 +498,11 @@ func mergeOutlinesPreserve(ctxSrc, ctxDest *model.Context) error {
 	}
 
 	outlinesDict["Last"] = *last
-	if c := outlinesDict.IntEntry("Count"); c != nil {
-		count += *c
+	destCount, err := outlineCount(ctxDest, outlinesDict, "destination outlines")
+	if err != nil {
+		return err
 	}
+	count += destCount
 	outlinesDict["Count"] = types.Integer(count)
 
 	return nil
@@ -504,15 +572,21 @@ func handleDR(ctxSrc *model.Context, dSrc, dDest types.Dict) error {
 	return nil
 }
 
-func handleDA(ctxSrc *model.Context, dSrc, dDest types.Dict, arrFieldsSrc types.Array) error {
+func handleDA(ctxSrc, ctxDest *model.Context, dSrc, dDest types.Dict, arrFieldsSrc types.Array) error {
 	// (for each with field type  /FT /Tx w/o DA, set DA to default DA)
 	// TODO Walk field tree and inspect terminal fields.
 
-	sSrc := dSrc.StringEntry("DA")
+	sSrc, _, err := ctxSrc.DereferenceStringEntry(dSrc, "DA")
+	if err != nil {
+		return fmt.Errorf("source entry DA: %w", err)
+	}
 	if sSrc == nil || len(*sSrc) == 0 {
 		return nil
 	}
-	sDest := dDest.StringEntry("DA")
+	sDest, _, err := ctxDest.DereferenceStringEntry(dDest, "DA")
+	if err != nil {
+		return fmt.Errorf("destination entry DA: %w", err)
+	}
 	if sDest == nil {
 		dDest["DA"] = types.StringLiteral(*sSrc)
 		return nil
@@ -523,8 +597,11 @@ func handleDA(ctxSrc *model.Context, dSrc, dDest types.Dict, arrFieldsSrc types.
 		if err != nil {
 			return fmt.Errorf("form DA: dereference source field: %w", err)
 		}
-		n := d.NameEntry("FT")
-		if n != nil && *n == "Tx" {
+		n, _, err := ctxSrc.DereferenceNameEntry(d, "FT")
+		if err != nil {
+			return fmt.Errorf("form DA: source field entry FT: %w", err)
+		}
+		if n != nil && n.Value() == "Tx" {
 			_, found := d.Find("DA")
 			if !found {
 				d["DA"] = types.StringLiteral(*sSrc)
@@ -534,17 +611,23 @@ func handleDA(ctxSrc *model.Context, dSrc, dDest types.Dict, arrFieldsSrc types.
 	return nil
 }
 
-func handleQ(ctxSrc *model.Context, dSrc, dDest types.Dict, arrFieldsSrc types.Array) error {
+func handleQ(ctxSrc, ctxDest *model.Context, dSrc, dDest types.Dict, arrFieldsSrc types.Array) error {
 	// (for each with field type /FT /Tx w/o Q, set Q to default Q)
 	// TODO Walk field tree and inspect terminal fields.
 
-	iSrc := dSrc.IntEntry("Q")
+	iSrc, _, err := ctxSrc.DereferenceIntegerEntry(dSrc, "Q")
+	if err != nil {
+		return fmt.Errorf("source entry Q: %w", err)
+	}
 	if iSrc == nil {
 		return nil
 	}
-	iDest := dDest.IntEntry("Q")
+	iDest, _, err := ctxDest.DereferenceIntegerEntry(dDest, "Q")
+	if err != nil {
+		return fmt.Errorf("destination entry Q: %w", err)
+	}
 	if iDest == nil {
-		dDest["Q"] = types.Integer(*iSrc)
+		dDest["Q"] = *iSrc
 		return nil
 	}
 	// Push iSrc down to all top level fields of dSource
@@ -553,11 +636,14 @@ func handleQ(ctxSrc *model.Context, dSrc, dDest types.Dict, arrFieldsSrc types.A
 		if err != nil {
 			return fmt.Errorf("form Q: dereference source field: %w", err)
 		}
-		n := d.NameEntry("FT")
-		if n != nil && *n == "Tx" {
+		n, _, err := ctxSrc.DereferenceNameEntry(d, "FT")
+		if err != nil {
+			return fmt.Errorf("form Q: source field entry FT: %w", err)
+		}
+		if n != nil && n.Value() == "Tx" {
 			_, found := d.Find("Q")
 			if !found {
-				d["Q"] = types.Integer(*iSrc)
+				d["Q"] = *iSrc
 			}
 		}
 	}
@@ -585,12 +671,12 @@ func handleFormAttributes(ctxSrc, ctxDest *model.Context, dSrc, dDest types.Dict
 	}
 
 	// DA: default appearance streams for variable text fields
-	if err := handleDA(ctxSrc, dSrc, dDest, arrFieldsSrc); err != nil {
+	if err := handleDA(ctxSrc, ctxDest, dSrc, dDest, arrFieldsSrc); err != nil {
 		return fmt.Errorf("DA: %w", err)
 	}
 
 	// Q: left, center, right for variable text fields
-	if err := handleQ(ctxSrc, dSrc, dDest, arrFieldsSrc); err != nil {
+	if err := handleQ(ctxSrc, ctxDest, dSrc, dDest, arrFieldsSrc); err != nil {
 		return fmt.Errorf("Q: %w", err)
 	}
 
@@ -650,7 +736,10 @@ func mergeInFields(ctxDest *model.Context, arrFieldsSrc, arrFieldsDest types.Arr
 	return nil
 }
 
-func fieldWidgetObjNrs(ctx *model.Context, fields types.Array, m types.IntSet) error {
+func fieldWidgetObjNrs(c context.Context, ctx *model.Context, fields types.Array, m types.IntSet) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if ctx == nil {
 		return errors.New("field widget object numbers: missing context")
 	}
@@ -659,6 +748,9 @@ func fieldWidgetObjNrs(ctx *model.Context, fields types.Array, m types.IntSet) e
 	}
 
 	for _, obj := range fields {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		ir, ok := obj.(types.IndirectRef)
 		if !ok {
 			continue
@@ -673,7 +765,7 @@ func fieldWidgetObjNrs(ctx *model.Context, fields types.Array, m types.IntSet) e
 			return fmt.Errorf("field widget object numbers: dereference kids: %w", err)
 		}
 		if len(kids) > 0 {
-			if err := fieldWidgetObjNrs(ctx, kids, m); err != nil {
+			if err := fieldWidgetObjNrs(c, ctx, kids, m); err != nil {
 				return fmt.Errorf("field widget object numbers: kids: %w", err)
 			}
 		}
@@ -681,7 +773,7 @@ func fieldWidgetObjNrs(ctx *model.Context, fields types.Array, m types.IntSet) e
 	return nil
 }
 
-func sourceFieldWidgetObjNrs(ctx *model.Context) (types.IntSet, error) {
+func sourceFieldWidgetObjNrs(c context.Context, ctx *model.Context) (types.IntSet, error) {
 	if ctx == nil {
 		return nil, errors.New("source field widget object numbers: missing context")
 	}
@@ -698,17 +790,21 @@ func sourceFieldWidgetObjNrs(ctx *model.Context) (types.IntSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("source field widget object numbers: dereference fields: %w", err)
 	}
-	if err := fieldWidgetObjNrs(ctx, fields, m); err != nil {
+	if err := fieldWidgetObjNrs(c, ctx, fields, m); err != nil {
 		return nil, fmt.Errorf("source field widget object numbers: collect fields: %w", err)
 	}
 	return m, nil
 }
 
-func renameOrphanWidgetField(d types.Dict, namespace string) error {
-	if typ := d.NameEntry("Subtype"); typ == nil || *typ != "Widget" {
+func renameOrphanWidgetField(ctx *model.Context, d types.Dict, namespace string) error {
+	typ, _, err := ctx.DereferenceNameEntry(d, "Subtype")
+	if err != nil {
+		return fmt.Errorf("orphan widget field: Subtype: %w", err)
+	}
+	if typ == nil || typ.Value() != "Widget" {
 		return nil
 	}
-	name, err := d.StringOrHexLiteralEntry("T")
+	name, _, err := ctx.DereferenceStringEntry(d, "T")
 	if err != nil {
 		return fmt.Errorf("orphan widget field: T: %w", err)
 	}
@@ -719,12 +815,15 @@ func renameOrphanWidgetField(d types.Dict, namespace string) error {
 	return nil
 }
 
-func renameSourceOrphanWidgetFields(ctx *model.Context, namespace string) error {
-	fieldWidgets, err := sourceFieldWidgetObjNrs(ctx)
+func renameSourceOrphanWidgetFields(c context.Context, ctx *model.Context, namespace string) error {
+	fieldWidgets, err := sourceFieldWidgetObjNrs(c, ctx)
 	if err != nil {
 		return fmt.Errorf("rename orphan widget fields: source widget fields: %w", err)
 	}
 	for objNr, entry := range ctx.Table {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		if entry.Free || fieldWidgets[objNr] {
 			continue
 		}
@@ -732,7 +831,7 @@ func renameSourceOrphanWidgetFields(ctx *model.Context, namespace string) error 
 		if !ok {
 			continue
 		}
-		if err := renameOrphanWidgetField(d, namespace); err != nil {
+		if err := renameOrphanWidgetField(ctx, d, namespace); err != nil {
 			return fmt.Errorf("rename orphan widget fields: obj#%d: %w", objNr, err)
 		}
 	}
@@ -772,7 +871,7 @@ func mergeDests(ctxSource, ctxDest *model.Context) error {
 	return nil
 }
 
-func mergeNames(ctxSrc, ctxDest *model.Context) error {
+func mergeNames(c context.Context, ctxSrc, ctxDest *model.Context) error {
 	rootDictSrc, rootDictDest, err := rootDicts(ctxSrc, ctxDest)
 	if err != nil {
 		return fmt.Errorf("root dicts: %w", err)
@@ -797,7 +896,7 @@ func mergeNames(ctxSrc, ctxDest *model.Context) error {
 	for id, namesSrc := range ctxSrc.Names {
 		if namesDest, ok := ctxDest.Names[id]; ok {
 			// Merge src tree into dest tree including collision detection.
-			if err := namesDest.AddTree(ctxDest.XRefTable, namesSrc, ctxSrc.NameRefs[id], []string{"D", "Dest"}); err != nil {
+			if err := namesDest.AddTree(c, ctxDest.XRefTable, namesSrc, ctxSrc.NameRefs[id], []string{"D", "Dest"}); err != nil {
 				return fmt.Errorf("name tree %s: %w", id, err)
 			}
 			continue
@@ -909,82 +1008,173 @@ func patchIndRef(ir *types.IndirectRef, lookup map[int]int) {
 	ir.ObjectNumber = types.Integer(j)
 }
 
-func patchObject(o types.Object, lookup map[int]int) types.Object {
-	if log.TraceEnabled() {
-		log.Trace.Printf("patchObject before: %v\n", o)
-	}
+const patchMarkerKey = "\x00pdfcpuPatchObject"
 
-	var ob types.Object
+type patchMarker struct{}
 
-	switch obj := o.(type) {
-
-	case types.IndirectRef:
-		patchIndRef(&obj, lookup)
-		ob = obj
-
-	case types.Dict:
-		patchDict(obj, lookup)
-		ob = obj
-
-	case types.StreamDict:
-		patchDict(obj.Dict, lookup)
-		ob = obj
-
-	case types.ObjectStreamDict:
-		patchDict(obj.Dict, lookup)
-		ob = obj
-
-	case types.XRefStreamDict:
-		patchDict(obj.Dict, lookup)
-		ob = obj
-
-	case types.Array:
-		patchArray(&obj, lookup)
-		ob = obj
-	}
-
-	if log.TraceEnabled() {
-		log.Trace.Printf("patchObject end: %v\n", ob)
-	}
-
-	return ob
+func (m *patchMarker) String() string {
+	return ""
 }
 
-func patchDict(d types.Dict, lookup map[int]int) {
-	if log.TraceEnabled() {
-		log.Trace.Printf("patchDict before: %v\n", d)
-	}
-
-	for k, obj := range d {
-		o := patchObject(obj, lookup)
-		if o != nil {
-			d[k] = o
-		}
-	}
-
-	if log.TraceEnabled() {
-		log.Trace.Printf("patchDict after: %v\n", d)
-	}
+func (m *patchMarker) Clone() types.Object {
+	return m
 }
 
-func patchArray(a *types.Array, lookup map[int]int) {
-	if a == nil {
+func (m *patchMarker) PDFString() string {
+	return ""
+}
+
+type patchTarget struct {
+	root  *types.Object
+	dict  types.Dict
+	key   string
+	array types.Array
+	index int
+}
+
+func (t patchTarget) set(o types.Object) {
+	if t.root != nil {
+		*t.root = o
 		return
 	}
-	if log.TraceEnabled() {
-		log.Trace.Printf("patchArray begin: %v\n", *a)
+	if t.dict != nil {
+		t.dict[t.key] = o
+		return
 	}
+	t.array[t.index] = o
+}
 
-	for i, obj := range *a {
-		o := patchObject(obj, lookup)
-		if o != nil {
-			(*a)[i] = o
+type patchFrame struct {
+	object     types.Object
+	target     patchTarget
+	restore    *patchRestore
+	arrayID    patchArrayID
+	leaveArray bool
+}
+
+type patchRestore struct {
+	dict  types.Dict
+	value *types.Object
+	found bool
+}
+
+type patchArrayID struct {
+	first    *types.Object
+	length   int
+	capacity int
+}
+
+type objectPatcher struct {
+	lookup       map[int]int
+	marker       *patchMarker
+	activeArrays map[patchArrayID]bool
+	stack        []patchFrame
+}
+
+func (r *patchRestore) apply() {
+	if r.dict != nil {
+		if r.found {
+			r.dict[patchMarkerKey] = *r.value
+			return
 		}
+		delete(r.dict, patchMarkerKey)
+	}
+}
+
+func (p *objectPatcher) pushDict(d types.Dict) {
+	if len(d) == 0 {
+		return
+	}
+	if marker, ok := d[patchMarkerKey].(*patchMarker); ok && marker == p.marker {
+		return
 	}
 
-	if log.TraceEnabled() {
-		log.Trace.Printf("patchArray end: %v\n", a)
+	saved, found := d[patchMarkerKey]
+	d[patchMarkerKey] = p.marker
+	savedValue := saved
+	p.stack = append(p.stack, patchFrame{restore: &patchRestore{dict: d, value: &savedValue, found: found}})
+	for key, o := range d {
+		if key == patchMarkerKey {
+			continue
+		}
+		p.stack = append(p.stack, patchFrame{object: o, target: patchTarget{dict: d, key: key}})
 	}
+	if found {
+		p.stack = append(p.stack, patchFrame{object: saved, target: patchTarget{root: &savedValue}})
+	}
+}
+
+func (p *objectPatcher) pushArray(a types.Array) {
+	if len(a) == 0 {
+		return
+	}
+	id := patchArrayID{first: &a[0], length: len(a), capacity: cap(a)}
+	if p.activeArrays[id] {
+		return
+	}
+
+	p.activeArrays[id] = true
+	p.stack = append(p.stack, patchFrame{arrayID: id, leaveArray: true})
+	for i := len(a) - 1; i >= 0; i-- {
+		p.stack = append(p.stack, patchFrame{object: a[i], target: patchTarget{array: a, index: i}})
+	}
+}
+
+func (p *objectPatcher) patch(f patchFrame) {
+	switch o := f.object.(type) {
+	case types.IndirectRef:
+		patchIndRef(&o, p.lookup)
+		f.target.set(o)
+	case types.Dict:
+		f.target.set(o)
+		p.pushDict(o)
+	case types.StreamDict:
+		f.target.set(o)
+		p.pushDict(o.Dict)
+	case types.ObjectStreamDict:
+		f.target.set(o)
+		p.pushDict(o.Dict)
+	case types.XRefStreamDict:
+		f.target.set(o)
+		p.pushDict(o.Dict)
+	case types.Array:
+		f.target.set(o)
+		p.pushArray(o)
+	}
+}
+
+func (p *objectPatcher) run(o types.Object) types.Object {
+	var result types.Object
+	p.stack = append(p.stack, patchFrame{object: o, target: patchTarget{root: &result}})
+	for len(p.stack) > 0 {
+		i := len(p.stack) - 1
+		f := p.stack[i]
+		p.stack = p.stack[:i]
+		if f.leaveArray {
+			delete(p.activeArrays, f.arrayID)
+			continue
+		}
+		if f.restore != nil {
+			f.restore.apply()
+			continue
+		}
+		p.patch(f)
+	}
+	return result
+}
+
+func patchObject(o types.Object, lookup map[int]int) types.Object {
+	if log.TraceEnabled() {
+		log.Trace.Printf("patchObject before: %T\n", o)
+	}
+
+	p := objectPatcher{lookup: lookup, marker: &patchMarker{}, activeArrays: map[patchArrayID]bool{}}
+	result := p.run(o)
+
+	if log.TraceEnabled() {
+		log.Trace.Printf("patchObject end: %T\n", result)
+	}
+	return result
 }
 
 func objNrsIntSet(ctx *model.Context) types.IntSet {
@@ -1030,7 +1220,7 @@ func patchObjects(s types.IntSet, lookup map[int]int) types.IntSet {
 	return t
 }
 
-func patchNameTree(n *model.Node, lookup map[int]int) error {
+func patchNameTree(c context.Context, n *model.Node, lookup map[int]int) error {
 	if n == nil {
 		return nil
 	}
@@ -1043,7 +1233,7 @@ func patchNameTree(n *model.Node, lookup map[int]int) error {
 		return nil
 	}
 
-	return n.Process(nil, patchValues)
+	return n.Process(c, nil, patchValues)
 }
 
 func validatePatchSourceContexts(ctxSrc, ctxDest *model.Context) error {
@@ -1126,7 +1316,7 @@ func remapSourceXRefTable(ctxSrc *model.Context, lookup map[int]int) {
 	ctxSrc.Table = m
 }
 
-func patchSourceCaches(ctxSrc *model.Context, lookup map[int]int) error {
+func patchSourceCaches(c context.Context, ctxSrc *model.Context, lookup map[int]int) error {
 	if ctxSrc.Optimize == nil {
 		return errors.New("patch source object numbers: missing source optimization context")
 	}
@@ -1143,14 +1333,14 @@ func patchSourceCaches(ctxSrc *model.Context, lookup map[int]int) error {
 
 	// Patch cached name trees.
 	for id, v := range ctxSrc.Names {
-		if err := patchNameTree(v, lookup); err != nil {
+		if err := patchNameTree(c, v, lookup); err != nil {
 			return fmt.Errorf("patch source object numbers: name tree %s: %w", id, err)
 		}
 	}
 	return nil
 }
 
-func patchSourceObjectNumbers(ctxSrc, ctxDest *model.Context) error {
+func patchSourceObjectNumbers(c context.Context, ctxSrc, ctxDest *model.Context) error {
 	if err := validatePatchSourceContexts(ctxSrc, ctxDest); err != nil {
 		return err
 	}
@@ -1175,7 +1365,7 @@ func patchSourceObjectNumbers(ctxSrc, ctxDest *model.Context) error {
 		return err
 	}
 	remapSourceXRefTable(ctxSrc, lookup)
-	if err := patchSourceCaches(ctxSrc, lookup); err != nil {
+	if err := patchSourceCaches(c, ctxSrc, lookup); err != nil {
 		return err
 	}
 
@@ -1185,7 +1375,7 @@ func patchSourceObjectNumbers(ctxSrc, ctxDest *model.Context) error {
 	return nil
 }
 
-func createDividerPagesDict(ctx *model.Context, parentIndRef types.IndirectRef) (*types.IndirectRef, error) {
+func createDividerPagesDict(c context.Context, ctx *model.Context, parentIndRef types.IndirectRef) (*types.IndirectRef, error) {
 	if ctx == nil || ctx.XRefTable == nil {
 		return nil, errors.New("divider page tree: missing context")
 	}
@@ -1203,7 +1393,7 @@ func createDividerPagesDict(ctx *model.Context, parentIndRef types.IndirectRef) 
 		return nil, fmt.Errorf("divider page tree: add pages object: %w", err)
 	}
 
-	dims, err := ctx.XRefTable.PageDims()
+	dims, err := ctx.XRefTable.PageDims(c)
 	if err != nil {
 		return nil, fmt.Errorf("divider page tree: page dimensions: %w", err)
 	}
@@ -1246,8 +1436,11 @@ func pageTreeRoot(ctx *model.Context) (*types.IndirectRef, types.Dict, error) {
 		return nil, nil, fmt.Errorf("page tree root: dereference root: %w", err)
 	}
 
-	pageCount := d.IntEntry("Count")
-	if pageCount == nil || *pageCount != ctx.PageCount {
+	pageCount, _, err := ctx.DereferenceIntegerEntry(d, "Count")
+	if err != nil {
+		return nil, nil, fmt.Errorf("page tree root Count: %w", err)
+	}
+	if pageCount == nil || pageCount.Value() != ctx.PageCount {
 		return nil, nil, fmt.Errorf("corrupt page node at obj #%d", indRef.ObjectNumber)
 	}
 
@@ -1316,7 +1509,7 @@ func pageTreeKids(d types.Dict, indRef types.IndirectRef) (types.Array, error) {
 	return kids, nil
 }
 
-func appendSourcePageTreeToDestPageTree(ctxSrc, ctxDest *model.Context, dividerPage bool) error {
+func appendSourcePageTreeToDestPageTree(c context.Context, ctxSrc, ctxDest *model.Context, dividerPage bool) error {
 	if log.DebugEnabled() {
 		log.Debug.Println("appendSourcePageTreeToDestPageTree begin")
 	}
@@ -1338,7 +1531,7 @@ func appendSourcePageTreeToDestPageTree(ctxSrc, ctxDest *model.Context, dividerP
 
 	addedPageCount := 0
 	if dividerPage {
-		dividerIndRef, err := createDividerPagesDict(ctxDest, *destRootIndRef)
+		dividerIndRef, err := createDividerPagesDict(c, ctxDest, *destRootIndRef)
 		if err != nil {
 			return fmt.Errorf("divider page: %w", err)
 		}
@@ -1366,7 +1559,7 @@ func appendSourcePageTreeToDestPageTree(ctxSrc, ctxDest *model.Context, dividerP
 	return nil
 }
 
-func zipSourcePageTreeIntoDestPageTree(ctxSrc, ctxDest *model.Context) error {
+func zipSourcePageTreeIntoDestPageTree(c context.Context, ctxSrc, ctxDest *model.Context) error {
 	if log.DebugEnabled() {
 		log.Debug.Println("zipSourcePageTreeIntoDestPageTree begin")
 	}
@@ -1386,13 +1579,13 @@ func zipSourcePageTreeIntoDestPageTree(ctxSrc, ctxDest *model.Context) error {
 
 	// Process dest page tree recursively and weave in src pages
 	p := 0
-	if ctxDest.PageCount, err = ctxDest.InsertPages(rootPageIndRef, &p, ctxSrc); err != nil {
+	if ctxDest.PageCount, err = ctxDest.InsertPages(c, rootPageIndRef, &p, ctxSrc); err != nil {
 		return fmt.Errorf("zip page tree: insert source pages: %w", err)
 	}
 
 	if appendFromPageNr > 0 {
 		// append remaining src pages
-		if ctxDest.PageCount, err = ctxDest.AppendPages(rootPageIndRef, appendFromPageNr, ctxSrc); err != nil {
+		if ctxDest.PageCount, err = ctxDest.AppendPages(c, rootPageIndRef, appendFromPageNr, ctxSrc); err != nil {
 			return fmt.Errorf("zip page tree: append remaining source pages: %w", err)
 		}
 	}
@@ -1404,7 +1597,10 @@ func zipSourcePageTreeIntoDestPageTree(ctxSrc, ctxDest *model.Context) error {
 	return nil
 }
 
-func appendSourceObjectsToDest(ctxSrc, ctxDest *model.Context) error {
+func appendSourceObjectsToDest(c context.Context, ctxSrc, ctxDest *model.Context) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if ctxSrc == nil || ctxDest == nil {
 		return errors.New("append source objects: missing context")
 	}
@@ -1423,6 +1619,9 @@ func appendSourceObjectsToDest(ctxSrc, ctxDest *model.Context) error {
 	}
 
 	for objNr, entry := range ctxSrc.Table {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		// Do not copy free list head.
 		if objNr == 0 {
 			continue
@@ -1474,7 +1673,10 @@ func mergeDuplicateObjNumberIntSets(ctxSrc, ctxDest *model.Context) {
 	}
 }
 
-func mergeConfiguredOutlines(fName string, origDestPageCount int, ctxSrc, ctxDest *model.Context, zip bool) error {
+func mergeConfiguredOutlines(c context.Context, fName string, origDestPageCount int, ctxSrc, ctxDest *model.Context, zip bool) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if ctxDest == nil || ctxDest.Configuration == nil {
 		return errors.New("merge configured outlines: missing destination configuration")
 	}
@@ -1483,20 +1685,20 @@ func mergeConfiguredOutlines(fName string, origDestPageCount int, ctxSrc, ctxDes
 	}
 
 	if ctxDest.Configuration.MergeBookmarkMode == model.MergeBookmarkModePreserve {
-		return mergeOutlinesPreserve(ctxSrc, ctxDest)
+		return mergeOutlinesPreserve(c, ctxSrc, ctxDest)
 	}
 
-	return mergeOutlinesWrapped(fName, origDestPageCount+1, ctxSrc, ctxDest)
+	return mergeOutlinesWrapped(c, fName, origDestPageCount+1, ctxSrc, ctxDest)
 }
 
-func mergeSourcePageTree(ctxSrc, ctxDest *model.Context, zip, dividerPage bool) error {
+func mergeSourcePageTree(c context.Context, ctxSrc, ctxDest *model.Context, zip, dividerPage bool) error {
 	if zip {
-		if err := zipSourcePageTreeIntoDestPageTree(ctxSrc, ctxDest); err != nil {
+		if err := zipSourcePageTreeIntoDestPageTree(c, ctxSrc, ctxDest); err != nil {
 			return fmt.Errorf("zip source pages: %w", err)
 		}
 		return nil
 	}
-	if err := appendSourcePageTreeToDestPageTree(ctxSrc, ctxDest, dividerPage); err != nil {
+	if err := appendSourcePageTreeToDestPageTree(c, ctxSrc, ctxDest, dividerPage); err != nil {
 		return fmt.Errorf("append source pages: %w", err)
 	}
 	return nil
@@ -1523,23 +1725,40 @@ func freeMergedSourceObjects(ctxSrc, ctxDest *model.Context) error {
 	return nil
 }
 
-// MergeXRefTables merges Context ctxSrc into ctxDest by appending its page tree.
+func finishMergeXRefTables(c context.Context, ctxSrc, ctxDest *model.Context) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	mergeDuplicateObjNumberIntSets(ctxSrc, ctxDest)
+
+	if log.InfoEnabled() {
+		log.Info.Printf("Dest XRefTable after merge:\n%s\n", ctxDest)
+	}
+	return contextutil.Check(c)
+}
+
+// MergeXRefTables merges Context ctxSrc into ctxDest by appending its page tree and supports cancellation.
 // zip         ... zip 2 files together (eg. 1A,1B,2A,2B,3A,3B...)
 // dividerPage ... insert blank page between merged files (not applicable for zipping)
-func MergeXRefTables(fName string, ctxSrc, ctxDest *model.Context, zip, dividerPage bool) (err error) {
+func MergeXRefTables(c context.Context, fName string, ctxSrc, ctxDest *model.Context, zip, dividerPage bool) (err error) {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if ctxSrc == nil || ctxDest == nil {
 		return errors.New("merge: missing context")
 	}
 
 	origDestPageCount := ctxDest.PageCount
 
-	if err = patchSourceObjectNumbers(ctxSrc, ctxDest); err != nil {
+	if err = runMergePhase(c, func() error { return patchSourceObjectNumbers(c, ctxSrc, ctxDest) }); err != nil {
 		return fmt.Errorf("merge: patch source object numbers: %w", err)
 	}
-	if err = renameSourceOrphanWidgetFields(ctxSrc, fmt.Sprintf("%d", origDestPageCount)); err != nil {
+	if err = runMergePhase(c, func() error {
+		return renameSourceOrphanWidgetFields(c, ctxSrc, fmt.Sprintf("%d", origDestPageCount))
+	}); err != nil {
 		return fmt.Errorf("merge forms: rename orphan widgets: %w", err)
 	}
-	if err = appendSourceObjectsToDest(ctxSrc, ctxDest); err != nil {
+	if err = appendSourceObjectsToDest(c, ctxSrc, ctxDest); err != nil {
 		return fmt.Errorf("merge: append source objects: %w", err)
 	}
 
@@ -1547,35 +1766,34 @@ func MergeXRefTables(fName string, ctxSrc, ctxDest *model.Context, zip, dividerP
 		origDestPageCount++
 	}
 
-	if err = mergeSourcePageTree(ctxSrc, ctxDest, zip, dividerPage); err != nil {
+	if err = runMergePhase(c, func() error {
+		return mergeSourcePageTree(c, ctxSrc, ctxDest, zip, dividerPage)
+	}); err != nil {
 		return fmt.Errorf("merge page tree: %w", err)
 	}
 
-	if err = mergeForms(ctxSrc, ctxDest); err != nil {
+	if err = runMergePhase(c, func() error { return mergeForms(ctxSrc, ctxDest) }); err != nil {
 		return fmt.Errorf("merge forms: %w", err)
 	}
 
-	if err = mergeDests(ctxSrc, ctxDest); err != nil {
+	if err = runMergePhase(c, func() error { return mergeDests(ctxSrc, ctxDest) }); err != nil {
 		return fmt.Errorf("merge dests: %w", err)
 	}
 
-	if err = mergeNames(ctxSrc, ctxDest); err != nil {
+	if err = runMergePhase(c, func() error { return mergeNames(c, ctxSrc, ctxDest) }); err != nil {
 		return fmt.Errorf("merge names: %w", err)
 	}
 
-	if err = mergeConfiguredOutlines(fName, origDestPageCount, ctxSrc, ctxDest, zip); err != nil {
+	if err = runMergePhase(c, func() error {
+		return mergeConfiguredOutlines(c, fName, origDestPageCount, ctxSrc, ctxDest, zip)
+	}); err != nil {
 		return fmt.Errorf("merge outlines: %w", err)
 	}
 
-	if err = freeMergedSourceObjects(ctxSrc, ctxDest); err != nil {
+	if err = runMergePhase(c, func() error { return freeMergedSourceObjects(ctxSrc, ctxDest) }); err != nil {
 		return fmt.Errorf("merge: %w", err)
 	}
 
 	// Merge all IntSets containing redundant object numbers.
-	mergeDuplicateObjNumberIntSets(ctxSrc, ctxDest)
-
-	if log.InfoEnabled() {
-		log.Info.Printf("Dest XRefTable after merge:\n%s\n", ctxDest)
-	}
-	return nil
+	return finishMergeXRefTables(c, ctxSrc, ctxDest)
 }

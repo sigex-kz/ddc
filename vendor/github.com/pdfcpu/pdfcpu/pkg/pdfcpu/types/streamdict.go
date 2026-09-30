@@ -103,8 +103,10 @@ func (sd StreamDict) Image() bool {
 	return true
 }
 
+// DecodeLazyObjectStreamObjectFunc decodes one serialized object from an object stream.
 type DecodeLazyObjectStreamObjectFunc func(c context.Context, s string) (Object, error)
 
+// LazyObjectStreamObject defers decoding an object-stream entry until it is accessed.
 type LazyObjectStreamObject struct {
 	osd         *ObjectStreamDict
 	startOffset int
@@ -320,6 +322,8 @@ func fixParms(f PDFFilter, parms map[string]int, sd *StreamDict) error {
 	if f.Name == filter.CCITTFax {
 		// x/image/ccitt needs the optional decode parameter "Rows"
 		// if not available we supply image "Height".
+		// Xref-aware image callers resolve Rows and Height before Decode.
+		// This direct fallback supports programmatically constructed stream dictionaries.
 		_, ok := parms["Rows"]
 		if !ok {
 			ip := sd.IntEntry("Height")

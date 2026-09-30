@@ -17,6 +17,7 @@ limitations under the License.
 package form
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/primitives"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
@@ -298,10 +300,6 @@ func extractRadioButtonGroupOptions(xRefTable *model.XRefTable, d types.Dict) ([
 		}
 
 		for k := range d1 {
-			k, err := types.DecodeName(k)
-			if err != nil {
-				return nil, false, err
-			}
 			if k != "Off" && !types.MemberOf(k, opts) {
 				opts = append(opts, k)
 			}
@@ -312,10 +310,7 @@ func extractRadioButtonGroupOptions(xRefTable *model.XRefTable, d types.Dict) ([
 }
 
 func resolveOption(s string, opts []string, explicit bool) (string, error) {
-	n, err := types.DecodeName(s)
-	if err != nil {
-		return "", err
-	}
+	n := s
 	if len(opts) > 0 && explicit {
 		j, err := strconv.Atoi(n)
 		if err != nil {
@@ -339,16 +334,20 @@ func extractRadioButtonGroup(xRefTable *model.XRefTable, page int, d types.Dict,
 
 	rbg.Options = opts
 
-	if s := d.NameEntry("DV"); s != nil {
-		n, err := resolveOption(*s, opts, explicit)
+	if s, _, err := xRefTable.DereferenceNameEntry(d, "DV"); err != nil {
+		return nil, fmt.Errorf("radio button group %s: %w", id, err)
+	} else if s != nil {
+		n, err := resolveOption(s.Value(), opts, explicit)
 		if err != nil {
 			return nil, err
 		}
 		rbg.Default = n
 	}
 
-	if s := d.NameEntry("V"); s != nil {
-		n, err := resolveOption(*s, opts, explicit)
+	if s, _, err := xRefTable.DereferenceNameEntry(d, "V"); err != nil {
+		return nil, fmt.Errorf("radio button group %s: %w", id, err)
+	} else if s != nil {
+		n, err := resolveOption(s.Value(), opts, explicit)
 		if err != nil {
 			return nil, err
 		}
@@ -363,16 +362,17 @@ func extractRadioButtonGroup(xRefTable *model.XRefTable, page int, d types.Dict,
 func extractCheckBox(xRefTable *model.XRefTable, page int, d types.Dict, id, name, altName string, locked bool) (*CheckBox, error) {
 	cb := &CheckBox{Pages: []int{page}, ID: id, Name: name, AltName: altName, Locked: locked}
 
-	if n, found, err := dictNameEntry(xRefTable, d, "DV"); err != nil {
+	if n, _, err := xRefTable.DereferenceNameEntry(d, "DV"); err != nil {
 		return nil, fmt.Errorf("checkbox %s: %w", id, err)
-	} else if found {
-		cb.Default = n != "Off"
+	} else if n != nil {
+		cb.Default = n.Value() != "Off"
 	}
 
-	if n, found, err := dictNameEntry(xRefTable, d, "V"); err != nil {
+	if n, _, err := xRefTable.DereferenceNameEntry(d, "V"); err != nil {
 		return nil, fmt.Errorf("checkbox %s: %w", id, err)
-	} else if found {
-		cb.Value = len(n) > 0 && n != "Off"
+	} else if n != nil {
+		v := n.Value()
+		cb.Value = len(v) > 0 && v != "Off"
 	}
 
 	return cb, nil
@@ -381,20 +381,20 @@ func extractCheckBox(xRefTable *model.XRefTable, page int, d types.Dict, id, nam
 func extractComboBox(xRefTable *model.XRefTable, page int, d types.Dict, id, name, altName string, locked bool) (*ComboBox, error) {
 	cb := &ComboBox{Pages: []int{page}, ID: id, Name: name, AltName: altName, Locked: locked}
 
-	if sl := d.StringLiteralEntry("DV"); sl != nil {
-		s, err := types.StringLiteralToString(*sl)
-		if err != nil {
-			return nil, err
-		}
-		cb.Default = strings.TrimSpace(s)
+	dv, _, err := xRefTable.DereferenceStringEntry(d, "DV")
+	if err != nil {
+		return nil, fmt.Errorf("entry DV: %w", err)
+	}
+	if dv != nil {
+		cb.Default = strings.TrimSpace(*dv)
 	}
 
-	if sl := d.StringLiteralEntry("V"); sl != nil {
-		s, err := types.StringLiteralToString(*sl)
-		if err != nil {
-			return nil, err
-		}
-		cb.Value = strings.TrimSpace(s)
+	v, _, err := xRefTable.DereferenceStringEntry(d, "V")
+	if err != nil {
+		return nil, fmt.Errorf("entry V: %w", err)
+	}
+	if v != nil {
+		cb.Value = strings.TrimSpace(*v)
 	}
 
 	opts, err := parseOptions(xRefTable, d, OPTIONAL)
@@ -407,27 +407,27 @@ func extractComboBox(xRefTable *model.XRefTable, page int, d types.Dict, id, nam
 	return cb, nil
 }
 
-func dateFormatFromJSAction(d types.Dict) (*primitives.DateFormat, error) {
+func dateFormatFromJSAction(xRefTable *model.XRefTable, d types.Dict) (*primitives.DateFormat, error) {
 	d1 := d.DictEntry("AA")
 	if len(d1) > 0 {
 		d2 := d1.DictEntry("F")
 		if len(d2) > 0 {
-			sl := d2.StringLiteralEntry("JS")
-			if sl != nil {
-				s, err := types.StringLiteralToString(*sl)
-				if err != nil {
-					return nil, err
-				}
-				i := strings.Index(s, "AFDate_FormatEx(\"")
+			s, _, err := xRefTable.DereferenceStringEntry(d2, "JS")
+			if err != nil {
+				return nil, fmt.Errorf("date format action entry JS: %w", err)
+			}
+			if s != nil {
+				value := *s
+				i := strings.Index(value, "AFDate_FormatEx(\"")
 				if i >= 0 {
 					from := i + len("AFDate_FormatEx(\"")
-					to := strings.IndexByte(s[from:], '"')
+					to := strings.IndexByte(value[from:], '"')
 					if to < 0 {
 						return nil, errors.New("date format action: missing closing quote")
 					}
-					s = s[from : from+to]
+					value = value[from : from+to]
 				}
-				if df, err := primitives.DateFormatForFmtExt(s); err == nil {
+				if df, err := primitives.DateFormatForFmtExt(value); err == nil {
 					return df, nil
 				}
 			}
@@ -459,7 +459,7 @@ func dateStringEntry(xRefTable *model.XRefTable, d types.Dict, key string) (stri
 }
 
 func extractDateFormat(xRefTable *model.XRefTable, d types.Dict) (*primitives.DateFormat, error) {
-	df, err := dateFormatFromJSAction(d)
+	df, err := dateFormatFromJSAction(xRefTable, d)
 	if err != nil {
 		return nil, err
 	}
@@ -490,16 +490,16 @@ func extractDateFormat(xRefTable *model.XRefTable, d types.Dict) (*primitives.Da
 	return nil, nil
 }
 
-func extractDateField(xRefTable *model.XRefTable, page int, d types.Dict, id, name, altName string, df *primitives.DateFormat, locked bool) (*DateField, error) {
+func extractDateField(c context.Context, xRefTable *model.XRefTable, page int, d types.Dict, id, name, altName string, df *primitives.DateFormat, locked bool) (*DateField, error) {
 	dfield := &DateField{Pages: []int{page}, ID: id, Name: name, AltName: altName, Format: df.Ext, Locked: locked}
 
-	v, err := getV(xRefTable, d)
+	v, err := getV(c, xRefTable, d)
 	if err != nil {
 		return nil, err
 	}
 	dfield.Value = v
 
-	dv, err := getDV(xRefTable, d)
+	dv, err := getDV(c, xRefTable, d)
 	if err != nil {
 		return nil, err
 	}
@@ -508,24 +508,27 @@ func extractDateField(xRefTable *model.XRefTable, page int, d types.Dict, id, na
 	return dfield, nil
 }
 
-func extractTextField(xRefTable *model.XRefTable, page int, d types.Dict, id, name, altName string, ff *int, locked bool) (*TextField, error) {
-	multiLine := ff != nil && uint(primitives.FieldFlags(*ff))&uint(primitives.FieldMultiline) > 0
+func extractTextField(c context.Context, xRefTable *model.XRefTable, page int, d types.Dict, id, name, altName string, ff *types.Integer, locked bool) (*TextField, error) {
+	multiLine := ff != nil && uint(primitives.FieldFlags(ff.Value()))&uint(primitives.FieldMultiline) > 0
 
 	maxLen := 0
-	i := d.IntEntry("MaxLen")
+	i, _, err := xRefTable.DereferenceIntegerEntry(d, "MaxLen")
+	if err != nil {
+		return nil, err
+	}
 	if i != nil {
-		maxLen = *i
+		maxLen = i.Value()
 	}
 
 	tf := &TextField{Pages: []int{page}, ID: id, Name: name, AltName: altName, Multiline: multiLine, MaxLen: maxLen, Locked: locked}
 
-	v, err := getV(xRefTable, d)
+	v, err := getV(c, xRefTable, d)
 	if err != nil {
 		return nil, err
 	}
 	tf.Value = v
 
-	dv, err := getDV(xRefTable, d)
+	dv, err := getDV(c, xRefTable, d)
 	if err != nil {
 		return nil, err
 	}
@@ -538,19 +541,19 @@ func extractListBox(xRefTable *model.XRefTable, page int, d types.Dict, id, name
 	lb := &ListBox{Pages: []int{page}, ID: id, Name: name, AltName: altName, Locked: locked, Multi: multi}
 
 	if !multi {
-		if sl := d.StringLiteralEntry("DV"); sl != nil {
-			s, err := types.StringLiteralToString(*sl)
-			if err != nil {
-				return nil, err
-			}
-			lb.Defaults = []string{strings.TrimSpace(s)}
+		dv, _, err := xRefTable.DereferenceStringEntry(d, "DV")
+		if err != nil {
+			return nil, fmt.Errorf("entry DV: %w", err)
 		}
-		if sl := d.StringLiteralEntry("V"); sl != nil {
-			s, err := types.StringLiteralToString(*sl)
-			if err != nil {
-				return nil, err
-			}
-			lb.Values = []string{strings.TrimSpace(s)}
+		if dv != nil {
+			lb.Defaults = []string{strings.TrimSpace(*dv)}
+		}
+		v, _, err := xRefTable.DereferenceStringEntry(d, "V")
+		if err != nil {
+			return nil, fmt.Errorf("entry V: %w", err)
+		}
+		if v != nil {
+			lb.Values = []string{strings.TrimSpace(*v)}
 		}
 	} else {
 		ss, err := parseStringLiteralArray(xRefTable, d, "DV")
@@ -590,17 +593,20 @@ func header(xRefTable *model.XRefTable, source string) Header {
 	return h
 }
 
-func fieldsForAnnots(xRefTable *model.XRefTable, annots, fields types.Array) (map[string]fieldInfo, error) {
+func fieldsForAnnots(c context.Context, xRefTable *model.XRefTable, annots, fields types.Array) (map[string]fieldInfo, error) {
 	m := map[string]fieldInfo{}
 	var prevId string
 
 	for i, v := range annots {
+		if err := contextutil.Check(c); err != nil {
+			return nil, err
+		}
 		indRef, err := indirectRef(v, "page Annots", i)
 		if err != nil {
 			return nil, err
 		}
 
-		ok, fi, err := isField(xRefTable, indRef, fields)
+		ok, fi, err := isField(c, xRefTable, indRef, fields)
 		if err != nil {
 			return nil, err
 		}
@@ -621,14 +627,11 @@ func fieldsForAnnots(xRefTable *model.XRefTable, annots, fields types.Array) (ma
 	return m, nil
 }
 
-func exportBtn(
-	xRefTable *model.XRefTable,
-	i int,
-	form *Form,
-	d types.Dict,
-	id, name, altName string,
-	locked bool,
-	ok *bool) error {
+func exportBtn(xRefTable *model.XRefTable, i int, form *Form, d types.Dict, id, name, altName string, locked bool, ok *bool, ff *types.Integer) error {
+	if ff != nil && primitives.FieldFlags(ff.Value())&primitives.FieldPushbutton > 0 {
+		return nil
+	}
+
 	if len(d.ArrayEntry("Kids")) > 1 {
 
 		for _, rb := range form.RadioButtonGroups {
@@ -673,9 +676,12 @@ func exportCh(
 	id, name, altName string,
 	locked bool,
 	ok *bool) error {
-	ff := d.IntEntry("Ff")
+	ff, _, err := xRefTable.DereferenceIntegerEntry(d, "Ff")
+	if err != nil {
+		return err
+	}
 
-	if ff != nil && primitives.FieldFlags(*ff)&primitives.FieldCombo > 0 {
+	if ff != nil && primitives.FieldFlags(ff.Value())&primitives.FieldCombo > 0 {
 
 		for _, cb := range form.ComboBoxes {
 			if cb.Name == name && cb.ID == id {
@@ -700,7 +706,7 @@ func exportCh(
 		}
 	}
 
-	multi := ff != nil && primitives.FieldFlags(*ff)&primitives.FieldMultiselect > 0
+	multi := ff != nil && primitives.FieldFlags(ff.Value())&primitives.FieldMultiselect > 0
 	lb, err := extractListBox(xRefTable, i, d, id, name, altName, locked, multi)
 	if err != nil {
 		return err
@@ -711,15 +717,7 @@ func exportCh(
 	return nil
 }
 
-func exportTx(
-	xRefTable *model.XRefTable,
-	i int,
-	form *Form,
-	d types.Dict,
-	id, name, altName string,
-	ff *int,
-	locked bool,
-	ok *bool) error {
+func exportTx(c context.Context, xRefTable *model.XRefTable, i int, form *Form, d types.Dict, id, name, altName string, ff *types.Integer, locked bool, ok *bool) error {
 	df, err := extractDateFormat(xRefTable, d)
 	if err != nil {
 		return err
@@ -734,7 +732,7 @@ func exportTx(
 			}
 		}
 
-		df, err := extractDateField(xRefTable, i, d, id, name, altName, df, locked)
+		df, err := extractDateField(c, xRefTable, i, d, id, name, altName, df, locked)
 		if err != nil {
 			return err
 		}
@@ -751,7 +749,7 @@ func exportTx(
 		}
 	}
 
-	tf, err := extractTextField(xRefTable, i, d, id, name, altName, ff, locked)
+	tf, err := extractTextField(c, xRefTable, i, d, id, name, altName, ff, locked)
 	if err != nil {
 		return err
 	}
@@ -761,24 +759,26 @@ func exportTx(
 	return nil
 }
 
-func exportPageField(ft string, xRefTable *model.XRefTable, i int, form *Form, d types.Dict, id, name, altName string, locked bool, ok *bool, ff *int) error {
+func exportPageField(c context.Context, ft string, xRefTable *model.XRefTable, i int, form *Form, d types.Dict, id, name, altName string, locked bool, ok *bool, ff *types.Integer) error {
 	var err error
 
 	switch ft {
 	case "Btn":
-		err = exportBtn(xRefTable, i, form, d, id, name, altName, locked, ok)
+		err = exportBtn(xRefTable, i, form, d, id, name, altName, locked, ok, ff)
 	case "Ch":
 		err = exportCh(xRefTable, i, form, d, id, name, altName, locked, ok)
 	case "Tx":
-		err = exportTx(xRefTable, i, form, d, id, name, altName, ff, locked, ok)
+		err = exportTx(c, xRefTable, i, form, d, id, name, altName, ff, locked, ok)
 	}
 
 	return err
 }
 
-func exportPageFields(xRefTable *model.XRefTable, i int, form *Form, m map[string]fieldInfo, ok *bool) error {
+func exportPageFields(c context.Context, xRefTable *model.XRefTable, i int, form *Form, m map[string]fieldInfo, ok *bool) error {
 	for id, fi := range m {
-
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		name := fi.name
 
 		d, err := xRefTable.DereferenceDict(*fi.indRef)
@@ -789,32 +789,37 @@ func exportPageFields(xRefTable *model.XRefTable, i int, form *Form, m map[strin
 			continue
 		}
 
-		var locked bool
-		ff := d.IntEntry("Ff")
-		if ff != nil {
-			locked = uint(primitives.FieldFlags(*ff))&uint(primitives.FieldReadOnly) > 0
+		ff, locked, err := formFieldFlags(xRefTable, d)
+		if err != nil {
+			return fmt.Errorf("field %s: %w", id, err)
 		}
 
 		ft := fi.ft
 		if ft == nil {
-			ft = d.NameEntry("FT")
+			ft, _, err = xRefTable.DereferenceNameEntry(d, "FT")
+			if err != nil {
+				return fmt.Errorf("field %s: entry FT: %w", id, err)
+			}
 			if ft == nil {
 				return errors.New("corrupt form field: missing entry FT")
 			}
 		}
 
 		altName := ""
-		if o, found := d.Find("TU"); found {
-			s, err := types.StringOrHexLiteral(o)
-			if err != nil {
-				return fmt.Errorf("field %s: entry TU: %w", id, err)
-			}
-			if s != nil {
-				altName = *s
+		s, found, err := xRefTable.DereferenceStringEntry(d, "TU")
+		if found && s == nil {
+			if err == nil {
+				err = errors.New("expected StringLiteral or HexLiteral")
 			}
 		}
+		if err != nil {
+			return fmt.Errorf("field %s: entry TU: %w", id, err)
+		}
+		if found {
+			altName = *s
+		}
 
-		if err := exportPageField(*ft, xRefTable, i, form, d, id, name, altName, locked, ok, ff); err != nil {
+		if err := exportPageField(c, ft.Value(), xRefTable, i, form, d, id, name, altName, locked, ok, ff); err != nil {
 			return fmt.Errorf("field %s: %w", id, err)
 		}
 	}
@@ -822,8 +827,11 @@ func exportPageFields(xRefTable *model.XRefTable, i int, form *Form, m map[strin
 	return nil
 }
 
-// ExportForm extracts form data originating from source from xRefTable.
-func ExportForm(xRefTable *model.XRefTable, source string) (*FormGroup, bool, error) {
+// ExportForm extracts form data originating from source from xRefTable and supports cancellation.
+func ExportForm(c context.Context, xRefTable *model.XRefTable, source string) (*FormGroup, bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, false, err
+	}
 	fields, err := Fields(xRefTable)
 	if err != nil {
 		return nil, false, fmt.Errorf("AcroForm Fields: %w", err)
@@ -837,8 +845,11 @@ func ExportForm(xRefTable *model.XRefTable, source string) (*FormGroup, bool, er
 	var ok bool
 
 	for i := 1; i <= xRefTable.PageCount; i++ {
+		if err := contextutil.Check(c); err != nil {
+			return nil, false, err
+		}
 
-		d, _, _, err := xRefTable.PageDict(i, false)
+		d, _, _, err := xRefTable.PageDict(c, i, false)
 		if err != nil {
 			return nil, false, fmt.Errorf("page %d: page dictionary: %w", i, err)
 		}
@@ -853,30 +864,40 @@ func ExportForm(xRefTable *model.XRefTable, source string) (*FormGroup, bool, er
 			return nil, false, fmt.Errorf("page %d: Annots: %w", i, err)
 		}
 
-		m, err := fieldsForAnnots(xRefTable, arr, fields)
+		m, err := fieldsForAnnots(c, xRefTable, arr, fields)
 		if err != nil {
 			return nil, false, fmt.Errorf("page %d: resolve fields: %w", i, err)
 		}
 
-		if err := exportPageFields(xRefTable, i, &form, m, &ok); err != nil {
+		if err := exportPageFields(c, xRefTable, i, &form, m, &ok); err != nil {
 			return nil, false, fmt.Errorf("page %d: export fields: %w", i, err)
 		}
 	}
 
 	formGroup.Forms = []Form{form}
 
-	return &formGroup, ok, nil
+	return &formGroup, ok, contextutil.Check(c)
 }
 
-type exportFormFunc func(*model.XRefTable, string) (*FormGroup, bool, error)
+type exportFormFunc func(context.Context, *model.XRefTable, string) (*FormGroup, bool, error)
 
 type marshalFormJSONFunc func(any, string, string) ([]byte, error)
 
-func exportFormJSON(xRefTable *model.XRefTable, source string, w io.Writer, export exportFormFunc, marshal marshalFormJSONFunc) (bool, error) {
+func exportFormJSON(
+	c context.Context,
+	xRefTable *model.XRefTable,
+	source string,
+	w io.Writer,
+	export exportFormFunc,
+	marshal marshalFormJSONFunc,
+) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 	if w == nil {
 		return false, ErrMissingJSONWriter
 	}
-	formGroup, ok, err := export(xRefTable, source)
+	formGroup, ok, err := export(c, xRefTable, source)
 	if err != nil {
 		return false, fmt.Errorf("collect data: %w", err)
 	}
@@ -888,6 +909,9 @@ func exportFormJSON(xRefTable *model.XRefTable, source string, w io.Writer, expo
 	if err != nil {
 		return false, fmt.Errorf("encode JSON: %w", err)
 	}
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 
 	n, err := w.Write(bb)
 	if err != nil {
@@ -896,12 +920,12 @@ func exportFormJSON(xRefTable *model.XRefTable, source string, w io.Writer, expo
 	if n != len(bb) {
 		return false, fmt.Errorf("write JSON: %w", io.ErrShortWrite)
 	}
-	return true, nil
+	return true, contextutil.Check(c)
 }
 
 // ExportFormJSON extracts form data originating from source from xRefTable and writes a JSON representation to w.
 // It returns true when form fields were exported and written. It returns false with a nil error when no exportable
-// form fields were found.
-func ExportFormJSON(xRefTable *model.XRefTable, source string, w io.Writer) (bool, error) {
-	return exportFormJSON(xRefTable, source, w, ExportForm, json.MarshalIndent)
+// form fields were found. It supports cancellation.
+func ExportFormJSON(c context.Context, xRefTable *model.XRefTable, source string, w io.Writer) (bool, error) {
+	return exportFormJSON(c, xRefTable, source, w, ExportForm, json.MarshalIndent)
 }

@@ -17,10 +17,12 @@ limitations under the License.
 package pdfcpu
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
@@ -99,11 +101,7 @@ func ParsePageConfiguration(s string, u types.DisplayUnit) (*PageConfiguration, 
 	return pageConf, nil
 }
 
-func validateAddPagesInputs(
-	ctxSrc, ctxDest *model.Context,
-	pagesDict types.Dict,
-	fieldsSrc, fieldsDest *types.Array,
-	migrated map[int]int) error {
+func validateAddPagesInputs(ctxSrc, ctxDest *model.Context, pagesDict types.Dict, fieldsSrc, fieldsDest *types.Array, migrated map[int]int) error {
 	if err := requireContextWithXRefTable(ctxSrc); err != nil {
 		return fmt.Errorf("add pages: source context: %w", err)
 	}
@@ -125,8 +123,11 @@ func validateAddPagesInputs(
 	return nil
 }
 
-func migratedPageDict(ctxSrc, ctxDest *model.Context, pageNr int, migrated map[int]int) (types.Dict, *types.IndirectRef, *model.InheritedPageAttrs, error) {
-	d, pageIndRef, inhPAttrs, err := ctxSrc.PageDict(pageNr, true)
+func migratedPageDict(c context.Context, ctxSrc, ctxDest *model.Context, pageNr int, migrated map[int]int) (types.Dict, *types.IndirectRef, *model.InheritedPageAttrs, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, nil, err
+	}
+	d, pageIndRef, inhPAttrs, err := ctxSrc.PageDict(c, pageNr, true)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read page dict: %w", err)
 	}
@@ -134,7 +135,7 @@ func migratedPageDict(ctxSrc, ctxDest *model.Context, pageNr int, migrated map[i
 		return nil, nil, nil, fmt.Errorf("unknown page number: %d", pageNr)
 	}
 
-	obj, err := migrateIndRef(pageIndRef, ctxSrc, ctxDest, migrated)
+	obj, err := migrateIndRef(c, pageIndRef, ctxSrc, ctxDest, migrated)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("migrate page object: %w", err)
 	}
@@ -146,14 +147,8 @@ func migratedPageDict(ctxSrc, ctxDest *model.Context, pageNr int, migrated map[i
 	return pageDict, pageIndRef, inhPAttrs, nil
 }
 
-func addPage(
-	ctxSrc, ctxDest *model.Context,
-	pageNr int,
-	pagesIndRef types.IndirectRef,
-	pagesDict types.Dict,
-	fieldsSrc, fieldsDest *types.Array,
-	migrated map[int]int) (*types.IndirectRef, error) {
-	d, pageIndRef, inhPAttrs, err := migratedPageDict(ctxSrc, ctxDest, pageNr, migrated)
+func addPage(c context.Context, ctxSrc, ctxDest *model.Context, pageNr int, pagesIndRef types.IndirectRef, pagesDict types.Dict, migrated map[int]int, selection *formFieldSelection) (*types.IndirectRef, error) {
+	d, pageIndRef, inhPAttrs, err := migratedPageDict(c, ctxSrc, ctxDest, pageNr, migrated)
 	if err != nil {
 		return nil, fmt.Errorf("page %d: %w", pageNr, err)
 	}
@@ -165,14 +160,8 @@ func addPage(
 		d["Rotate"] = types.Integer(inhPAttrs.Rotate)
 	}
 
-	if err := migratePageDict(d, *pageIndRef, ctxSrc, ctxDest, migrated); err != nil {
+	if err := migratePageDict(c, d, *pageIndRef, ctxSrc, ctxDest, migrated, selection); err != nil {
 		return nil, fmt.Errorf("page %d: migrate page dict: %w", pageNr, err)
-	}
-
-	if d["Annots"] != nil && len(*fieldsSrc) > 0 {
-		if err := migrateFields(d, fieldsSrc, fieldsDest, ctxSrc, ctxDest, migrated); err != nil {
-			return nil, fmt.Errorf("page %d: migrate fields: %w", pageNr, err)
-		}
 	}
 
 	if err := model.AppendPageTree(pageIndRef, 1, pagesDict); err != nil {
@@ -181,21 +170,21 @@ func addPage(
 	return pageIndRef, nil
 }
 
-func addPages(
-	ctxSrc, ctxDest *model.Context,
-	pageNrs []int,
-	usePgCache bool,
-	pagesIndRef types.IndirectRef,
-	pagesDict types.Dict,
-	fieldsSrc, fieldsDest *types.Array,
-	migrated map[int]int) error {
+func addPages(c context.Context, ctxSrc, ctxDest *model.Context, pageNrs []int, usePgCache bool, pagesIndRef types.IndirectRef, pagesDict types.Dict, fieldsSrc, fieldsDest *types.Array, migrated map[int]int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if err := validateAddPagesInputs(ctxSrc, ctxDest, pagesDict, fieldsSrc, fieldsDest, migrated); err != nil {
 		return err
 	}
 	// Used by collect, extractPages, split
 	pageCache := map[int]*types.IndirectRef{}
+	selection := newFormFieldSelection()
 
 	for _, i := range pageNrs {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		if usePgCache {
 			if indRef, ok := pageCache[i]; ok {
 				if err := model.AppendPageTree(indRef, 1, pagesDict); err != nil {
@@ -205,7 +194,7 @@ func addPages(
 			}
 		}
 
-		pageIndRef, err := addPage(ctxSrc, ctxDest, i, pagesIndRef, pagesDict, fieldsSrc, fieldsDest, migrated)
+		pageIndRef, err := addPage(c, ctxSrc, ctxDest, i, pagesIndRef, pagesDict, migrated, selection)
 		if err != nil {
 			return err
 		}
@@ -215,6 +204,15 @@ func addPages(
 		}
 	}
 
+	if len(selection.widgets) == 0 || len(*fieldsSrc) == 0 {
+		return nil
+	}
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if err := migrateFields(c, fieldsSrc, fieldsDest, ctxSrc, ctxDest, migrated, selection); err != nil {
+		return fmt.Errorf("migrate fields: %w", err)
+	}
 	return nil
 }
 
@@ -256,7 +254,7 @@ func migrateNamedDestValue(xRefTable *model.XRefTable, v *types.Object, migrated
 	return true, nil
 }
 
-func migrateNamedDests(ctxSrc *model.Context, n *model.Node, migrated map[int]int) error {
+func migrateNamedDests(c context.Context, ctxSrc *model.Context, n *model.Node, migrated map[int]int) error {
 	if err := requireContextWithXRefTable(ctxSrc); err != nil {
 		return fmt.Errorf("source context: %w", err)
 	}
@@ -287,12 +285,12 @@ func migrateNamedDests(ctxSrc *model.Context, n *model.Node, migrated map[int]in
 		return nil
 	}
 
-	if err := n.Process(ctxSrc.XRefTable, patchValues); err != nil {
+	if err := n.Process(c, ctxSrc.XRefTable, patchValues); err != nil {
 		return fmt.Errorf("process named destinations: %w", err)
 	}
 
 	for _, k := range remove {
-		if _, _, err := n.Remove(ctxSrc.XRefTable, k); err != nil {
+		if _, _, err := n.Remove(c, ctxSrc.XRefTable, k); err != nil {
 			return fmt.Errorf("remove named destination %q: %w", k, err)
 		}
 	}
@@ -300,8 +298,37 @@ func migrateNamedDests(ctxSrc *model.Context, n *model.Node, migrated map[int]in
 	return nil
 }
 
-// AddPages adds pages and corresponding resources from ctxSrc to ctxDest.
-func AddPages(ctxSrc, ctxDest *model.Context, pageNrs []int, usePgCache bool) error {
+func finishAddedPages(c context.Context, ctxSrc, ctxDest *model.Context, fieldsDest types.Array, migrated map[int]int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if ctxSrc.Form != nil && len(fieldsDest) > 0 {
+		d := ctxSrc.Form.Clone().(types.Dict)
+		if err := migrateFormDict(c, d, fieldsDest, ctxSrc, ctxDest, migrated); err != nil {
+			return fmt.Errorf("add pages: migrate form: %w", err)
+		}
+		ctxDest.RootDict["AcroForm"] = d
+	}
+
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if n, ok := ctxSrc.Names["Dests"]; ok {
+		// Carry over used named destinations.
+		if err := migrateNamedDests(c, ctxSrc, n, migrated); err != nil {
+			return fmt.Errorf("add pages: migrate named destinations: %w", err)
+		}
+		ctxDest.Names = map[string]*model.Node{"Dests": n}
+	}
+
+	return nil
+}
+
+// AddPages adds pages and corresponding resources from ctxSrc to ctxDest and supports cancellation.
+func AddPages(c context.Context, ctxSrc, ctxDest *model.Context, pageNrs []int, usePgCache bool) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if err := requireContextWithXRefTable(ctxSrc); err != nil {
 		return fmt.Errorf("add pages: source context: %w", err)
 	}
@@ -334,25 +361,11 @@ func AddPages(ctxSrc, ctxDest *model.Context, pageNrs []int, usePgCache bool) er
 
 	migrated := map[int]int{}
 
-	if err := addPages(ctxSrc, ctxDest, pageNrs, usePgCache, *pagesIndRef, pagesDict, &fieldsSrc, &fieldsDest, migrated); err != nil {
+	if err := addPages(
+		c, ctxSrc, ctxDest, pageNrs, usePgCache, *pagesIndRef, pagesDict, &fieldsSrc, &fieldsDest, migrated,
+	); err != nil {
 		return fmt.Errorf("add pages: %w", err)
 	}
 
-	if ctxSrc.Form != nil && len(fieldsDest) > 0 {
-		d := ctxSrc.Form.Clone().(types.Dict)
-		if err := migrateFormDict(d, fieldsDest, ctxSrc, ctxDest, migrated); err != nil {
-			return fmt.Errorf("add pages: migrate form: %w", err)
-		}
-		ctxDest.RootDict["AcroForm"] = d
-	}
-
-	if n, ok := ctxSrc.Names["Dests"]; ok {
-		// Carry over used named destinations.
-		if err := migrateNamedDests(ctxSrc, n, migrated); err != nil {
-			return fmt.Errorf("add pages: migrate named destinations: %w", err)
-		}
-		ctxDest.Names = map[string]*model.Node{"Dests": n}
-	}
-
-	return nil
+	return finishAddedPages(c, ctxSrc, ctxDest, fieldsDest, migrated)
 }

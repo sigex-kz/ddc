@@ -45,8 +45,7 @@ func MarkCertificateStoreChanged() {
 	certificateStoreRevision.Add(1)
 }
 
-// IsPEM Do we need locking?
-
+// IsPEM reports whether fname has a PEM file extension.
 func IsPEM(fname string) bool {
 	return strings.HasSuffix(strings.ToLower(fname), ".pem")
 }
@@ -134,7 +133,7 @@ func ResetCertificates() error {
 		return err
 	}
 	MarkCertificateStoreChanged()
-	return installDefaultCertificates()
+	return installDefaultCertificates(TrustedCertDir)
 }
 
 func resetCertificatesDir() error {

@@ -22,8 +22,11 @@ import (
 	"os"
 )
 
-// ReplaceFile renames source over destination.
+// ReplaceFile renames source over destination, preserving the destination's group where supported.
 func ReplaceFile(source, destination string) error {
+	if err := PreserveGroup(source, destination); err != nil {
+		return err
+	}
 	return os.Rename(source, destination)
 }
 

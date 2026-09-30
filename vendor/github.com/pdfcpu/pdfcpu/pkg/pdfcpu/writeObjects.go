@@ -17,10 +17,12 @@ limitations under the License.
 package pdfcpu
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
@@ -384,7 +386,13 @@ func sigDict(d types.Dict) bool {
 	return false
 }
 
-func sigDictPDFString(ctx *model.Context, d types.Dict, objNr, genNr int) string {
+func sigDictPDFString(ctx *model.Context, d types.Dict, objNr, genNr int) (string, error) {
+	for key, o := range d {
+		if _, ok := o.(types.IndirectRef); ok {
+			return "", fmt.Errorf("signature dict entry %s: value must be direct", key)
+		}
+	}
+
 	// worst case [0 0000000000 0000000000 0000000000]
 	byteRangePDFString := fmt.Sprintf("/ByteRange%-36v", d["ByteRange"].PDFString())
 	contentsPDFString := fmt.Sprintf("/Contents%s", d["Contents"].PDFString())
@@ -402,7 +410,11 @@ func sigDictPDFString(ctx *model.Context, d types.Dict, objNr, genNr int) string
 	s = append(s, fmt.Sprintf("/Filter%s", d["Filter"].PDFString()))
 	s = append(s, fmt.Sprintf("/SubFilter%s", d["SubFilter"].PDFString()))
 
-	if *d.NameEntry("SubFilter") != "ETSI.RFC3161" {
+	subFilter := d.NameEntry("SubFilter")
+	if subFilter == nil {
+		return "", fmt.Errorf("signature dict: missing or invalid direct SubFilter")
+	}
+	if *subFilter != "ETSI.RFC3161" {
 		if d["M"] != nil {
 			s = append(s, fmt.Sprintf("/M%s", d["M"].PDFString()))
 		}
@@ -426,10 +438,10 @@ func sigDictPDFString(ctx *model.Context, d types.Dict, objNr, genNr int) string
 	}
 
 	s = append(s, ">>")
-	return strings.Join(s, "")
+	return strings.Join(s, ""), nil
 }
 
-func writeDictObject(ctx *model.Context, objNr, genNr int, d types.Dict) error {
+func writeDictObject(c context.Context, ctx *model.Context, objNr, genNr int, d types.Dict) error {
 	ok, err := writeToObjectStream(ctx, objNr, genNr)
 	if err != nil {
 		return err
@@ -440,7 +452,7 @@ func writeDictObject(ctx *model.Context, objNr, genNr int, d types.Dict) error {
 	}
 
 	if ctx.EncKey != nil {
-		_, err := encryptDeepObject(d, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
+		_, err := encryptDeepObject(c, d, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
 		if err != nil {
 			return err
 		}
@@ -448,13 +460,16 @@ func writeDictObject(ctx *model.Context, objNr, genNr int, d types.Dict) error {
 
 	s := d.PDFString()
 	if sigDict(d) {
-		s = sigDictPDFString(ctx, d, objNr, genNr)
+		s, err = sigDictPDFString(ctx, d, objNr, genNr)
+		if err != nil {
+			return err
+		}
 	}
 
 	return writeObject(ctx, objNr, genNr, s)
 }
 
-func writeArrayObject(ctx *model.Context, objNumber, genNumber int, a types.Array) error {
+func writeArrayObject(c context.Context, ctx *model.Context, objNumber, genNumber int, a types.Array) error {
 	ok, err := writeToObjectStream(ctx, objNumber, genNumber)
 	if err != nil {
 		return err
@@ -465,7 +480,7 @@ func writeArrayObject(ctx *model.Context, objNumber, genNumber int, a types.Arra
 	}
 
 	if ctx.EncKey != nil {
-		if _, err := encryptDeepObject(a, objNumber, genNumber, ctx.EncKey, ctx.AES4Strings, ctx.E.R); err != nil {
+		if _, err := encryptDeepObject(c, a, objNumber, genNumber, ctx.EncKey, ctx.AES4Strings, ctx.E.R); err != nil {
 			return err
 		}
 	}
@@ -603,31 +618,54 @@ func writeStreamDictObject(ctx *model.Context, objNr, genNr int, sd types.Stream
 	return nil
 }
 
-func writeDirectObject(ctx *model.Context, o types.Object) error {
+func writeDirectDict(c context.Context, ctx *model.Context, d types.Dict) error {
+	for k, v := range d {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		if ctx.WritingPages && (k == "Dest" || k == "D") {
+			ctx.Dest = true
+		}
+		if _, _, err := writeDeepObject(c, ctx, v); err != nil {
+			return err
+		}
+		ctx.Dest = false
+	}
+	return nil
+}
+
+func writeDirectArray(c context.Context, ctx *model.Context, a types.Array) error {
+	for i, v := range a {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		if ctx.Dest && i == 0 {
+			continue
+		}
+		if _, _, err := writeDeepObject(c, ctx, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeDirectObject(c context.Context, ctx *model.Context, o types.Object) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	switch o := o.(type) {
 
 	case types.Dict:
-		for k, v := range o {
-			if ctx.WritingPages && (k == "Dest" || k == "D") {
-				ctx.Dest = true
-			}
-			if _, _, err := writeDeepObject(ctx, v); err != nil {
-				return err
-			}
-			ctx.Dest = false
+		if err := writeDirectDict(c, ctx, o); err != nil {
+			return err
 		}
 		if log.WriteEnabled() {
 			log.Write.Printf("writeDirectObject: end offset=%d\n", ctx.Write.Offset)
 		}
 
 	case types.Array:
-		for i, v := range o {
-			if ctx.Dest && i == 0 {
-				continue
-			}
-			if _, _, err := writeDeepObject(ctx, v); err != nil {
-				return err
-			}
+		if err := writeDirectArray(c, ctx, o); err != nil {
+			return err
 		}
 		if log.WriteEnabled() {
 			log.Write.Printf("writeDirectObject: end offset=%d\n", ctx.Write.Offset)
@@ -653,8 +691,15 @@ func writeNullObject(ctx *model.Context, objNumber, genNumber int) error {
 	return ctx.UndeleteObject(objNumber)
 }
 
-func writeDeepDict(ctx *model.Context, d types.Dict, objNr, genNr int) error {
-	if d.IsPage() {
+func writeDeepDict(c context.Context, ctx *model.Context, d types.Dict, objNr, genNr int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	dictType, _, err := ctx.DereferenceNameEntry(d, "Type")
+	if err != nil {
+		return fmt.Errorf("write dict obj#%d gen#%d Type: %w", objNr, genNr, err)
+	}
+	if dictType != nil && dictType.Value() == "Page" {
 		valid, err := ctx.IsObjValid(objNr, genNr)
 		if err != nil {
 			return fmt.Errorf("write page dict obj#%d gen#%d: check valid: %w", objNr, genNr, err)
@@ -664,15 +709,18 @@ func writeDeepDict(ctx *model.Context, d types.Dict, objNr, genNr int) error {
 		}
 	}
 
-	if err := writeDictObject(ctx, objNr, genNr, d); err != nil {
+	if err := writeDictObject(c, ctx, objNr, genNr, d); err != nil {
 		return err
 	}
 
 	for k, v := range d {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		if ctx.WritingPages && (k == "Dest" || k == "D") {
 			ctx.Dest = true
 		}
-		if _, _, err := writeDeepObject(ctx, v); err != nil {
+		if _, _, err := writeDeepObject(c, ctx, v); err != nil {
 			return err
 		}
 		ctx.Dest = false
@@ -681,9 +729,12 @@ func writeDeepDict(ctx *model.Context, d types.Dict, objNr, genNr int) error {
 	return nil
 }
 
-func writeDeepStreamDict(ctx *model.Context, sd *types.StreamDict, objNr, genNr int) error {
+func writeDeepStreamDict(c context.Context, ctx *model.Context, sd *types.StreamDict, objNr, genNr int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if ctx.EncKey != nil {
-		if _, err := encryptDeepObject(*sd, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R); err != nil {
+		if _, err := encryptDeepObject(c, *sd, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R); err != nil {
 			return err
 		}
 	}
@@ -693,7 +744,10 @@ func writeDeepStreamDict(ctx *model.Context, sd *types.StreamDict, objNr, genNr 
 	}
 
 	for _, v := range sd.Dict {
-		if _, _, err := writeDeepObject(ctx, v); err != nil {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		if _, _, err := writeDeepObject(c, ctx, v); err != nil {
 			return err
 		}
 	}
@@ -701,16 +755,22 @@ func writeDeepStreamDict(ctx *model.Context, sd *types.StreamDict, objNr, genNr 
 	return nil
 }
 
-func writeDeepArray(ctx *model.Context, a types.Array, objNr, genNr int) error {
-	if err := writeArrayObject(ctx, objNr, genNr, a); err != nil {
+func writeDeepArray(c context.Context, ctx *model.Context, a types.Array, objNr, genNr int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if err := writeArrayObject(c, ctx, objNr, genNr, a); err != nil {
 		return err
 	}
 
 	for i, v := range a {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		if ctx.Dest && i == 0 {
 			continue
 		}
-		if _, _, err := writeDeepObject(ctx, v); err != nil {
+		if _, _, err := writeDeepObject(c, ctx, v); err != nil {
 			return err
 		}
 	}
@@ -727,17 +787,20 @@ func writeLazyObjectStreamObject(ctx *model.Context, objNr, genNr int, o types.L
 	return writeObject(ctx, objNr, genNr, string(data))
 }
 
-func writeObjectGeneric(ctx *model.Context, o types.Object, objNr, genNr int) (err error) {
+func writeObjectGeneric(c context.Context, ctx *model.Context, o types.Object, objNr, genNr int) (err error) {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	switch o := o.(type) {
 
 	case types.Dict:
-		err = writeDeepDict(ctx, o, objNr, genNr)
+		err = writeDeepDict(c, ctx, o, objNr, genNr)
 
 	case types.StreamDict:
-		err = writeDeepStreamDict(ctx, &o, objNr, genNr)
+		err = writeDeepStreamDict(c, ctx, &o, objNr, genNr)
 
 	case types.Array:
-		err = writeDeepArray(ctx, o, objNr, genNr)
+		err = writeDeepArray(c, ctx, o, objNr, genNr)
 
 	case types.Integer:
 		err = writeIntegerObject(ctx, objNr, genNr, o)
@@ -767,7 +830,10 @@ func writeObjectGeneric(ctx *model.Context, o types.Object, objNr, genNr int) (e
 	return err
 }
 
-func writeIndirectObject(ctx *model.Context, ir types.IndirectRef) error {
+func writeIndirectObject(c context.Context, ctx *model.Context, ir types.IndirectRef) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	objNr := int(ir.ObjectNumber)
 	genNr := int(ir.GenerationNumber)
 
@@ -800,24 +866,27 @@ func writeIndirectObject(ctx *model.Context, ir types.IndirectRef) error {
 		return nil
 	}
 
-	if err := writeObjectGeneric(ctx, o, objNr, genNr); err != nil {
+	if err := writeObjectGeneric(c, ctx, o, objNr, genNr); err != nil {
 		return err
 	}
 
 	return err
 }
 
-func writeDeepObject(ctx *model.Context, objIn types.Object) (objOut types.Object, written bool, err error) {
+func writeDeepObject(c context.Context, ctx *model.Context, objIn types.Object) (objOut types.Object, written bool, err error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, false, err
+	}
 	if log.WriteEnabled() {
 		log.Write.Printf("writeDeepObject: begin offset=%d\n%s\n", ctx.Write.Offset, objIn)
 	}
 
 	ir, ok := objIn.(types.IndirectRef)
 	if !ok {
-		return objIn, written, writeDirectObject(ctx, objIn)
+		return objIn, written, writeDirectObject(c, ctx, objIn)
 	}
 
-	if err = writeIndirectObject(ctx, ir); err == nil {
+	if err = writeIndirectObject(c, ctx, ir); err == nil {
 		written = true
 		if log.WriteEnabled() {
 			log.Write.Printf("writeDeepObject: end offset=%d\n", ctx.Write.Offset)
@@ -827,7 +896,10 @@ func writeDeepObject(ctx *model.Context, objIn types.Object) (objOut types.Objec
 	return objOut, written, err
 }
 
-func writeEntry(ctx *model.Context, d types.Dict, dictName, entryName string) (types.Object, error) {
+func writeEntry(c context.Context, ctx *model.Context, d types.Dict, dictName, entryName string) (types.Object, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	o, found := d.Find(entryName)
 	if !found || o == nil {
 		if log.WriteEnabled() {
@@ -840,7 +912,7 @@ func writeEntry(ctx *model.Context, d types.Dict, dictName, entryName string) (t
 		log.Write.Printf("writeEntry begin: dict=%s entry=%s offset=%d\n", dictName, entryName, ctx.Write.Offset)
 	}
 
-	o, _, err := writeDeepObject(ctx, o)
+	o, _, err := writeDeepObject(c, ctx, o)
 	if err != nil {
 		return nil, err
 	}
@@ -859,7 +931,10 @@ func writeEntry(ctx *model.Context, d types.Dict, dictName, entryName string) (t
 	return o, nil
 }
 
-func writeFlatObject(ctx *model.Context, objNr int) error {
+func writeFlatObject(c context.Context, ctx *model.Context, objNr int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	e, ok := ctx.FindTableEntryLight(objNr)
 	if !ok {
 		return fmt.Errorf("undefined PDF object #%d ", objNr)
@@ -877,13 +952,13 @@ func writeFlatObject(ctx *model.Context, objNr int) error {
 	switch o := o.(type) {
 
 	case types.Dict:
-		err = writeDictObject(ctx, objNr, genNr, o)
+		err = writeDictObject(c, ctx, objNr, genNr, o)
 
 	case types.StreamDict:
-		err = writeDeepStreamDict(ctx, &o, objNr, genNr)
+		err = writeDeepStreamDict(c, ctx, &o, objNr, genNr)
 
 	case types.Array:
-		err = writeArrayObject(ctx, objNr, genNr, o)
+		err = writeArrayObject(c, ctx, objNr, genNr, o)
 
 	case types.Integer:
 		err = writeIntegerObject(ctx, objNr, genNr, o)

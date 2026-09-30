@@ -18,6 +18,7 @@ package pdfcpu
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/filter"
 	"github.com/pdfcpu/pdfcpu/pkg/font"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
@@ -152,18 +154,21 @@ func parseScaleFactorWM(s string, wm *model.Watermark) (err error) {
 }
 
 func parseFontName(s string, wm *model.Watermark) error {
-	supported, err := font.SupportedFont(s)
-	if err != nil {
-		return fmt.Errorf("font %s: load metrics: %w", s, err)
-	}
-	if !supported {
-		return fmt.Errorf("%s is unsupported, please refer to \"pdfcpu fonts list\"", s)
-	}
 	wm.FontName = s
 	if strings.HasSuffix(strings.ToUpper(wm.FontName), "GB2312") {
 		wm.ScriptName = "HANS"
 	}
+	return nil
+}
 
+func validateWatermarkFont(c context.Context, repo *font.Repository, wm *model.Watermark) error {
+	supported, err := repo.SupportedFont(c, wm.FontName)
+	if err != nil {
+		return fmt.Errorf("font %s: load metrics: %w", wm.FontName, err)
+	}
+	if !supported {
+		return fmt.Errorf("%s is unsupported, please refer to \"pdfcpu fonts list\"", wm.FontName)
+	}
 	return nil
 }
 
@@ -488,46 +493,61 @@ func ValidateWatermarkModeParam(mode int, modeParm string, onTop bool) error {
 	return nil
 }
 
-func parseWatermarkDetails(mode int, modeParm, s string, onTop bool, u types.DisplayUnit) (*model.Watermark, error) {
+func parseWatermarkDetails(c context.Context, mode int, modeParm, s string, onTop bool, u types.DisplayUnit, repo *font.Repository) (*model.Watermark, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	wm := model.DefaultWatermarkConfig()
 	wm.OnTop = onTop
 	wm.InpUnit = u
 
 	ss := strings.Split(s, ",")
-	if len(ss) > 0 && len(ss[0]) == 0 {
-		return wm, setWatermarkType(mode, modeParm, wm)
+	if len(ss) > 0 && len(ss[0]) > 0 {
+		for _, s := range ss {
+			if err := contextutil.Check(c); err != nil {
+				return nil, err
+			}
+			ss1 := strings.Split(s, ":")
+			if len(ss1) != 2 {
+				return nil, parseWatermarkError(onTop)
+			}
+
+			paramPrefix := strings.TrimSpace(ss1[0])
+			paramValueStr := strings.TrimSpace(ss1[1])
+
+			if err := handleParameter(wmParamMap, paramPrefix, paramValueStr, wm); err != nil {
+				return nil, err
+			}
+		}
 	}
 
-	for _, s := range ss {
-		ss1 := strings.Split(s, ":")
-		if len(ss1) != 2 {
-			return nil, parseWatermarkError(onTop)
-		}
-
-		paramPrefix := strings.TrimSpace(ss1[0])
-		paramValueStr := strings.TrimSpace(ss1[1])
-
-		if err := handleParameter(wmParamMap, paramPrefix, paramValueStr, wm); err != nil {
-			return nil, err
-		}
+	if err := validateWatermarkFont(c, repo, wm); err != nil {
+		return nil, err
 	}
-
 	return wm, setWatermarkType(mode, modeParm, wm)
 }
 
-// ParseTextWatermarkDetails parses a text Watermark/Stamp command string into an internal structure.
-func ParseTextWatermarkDetails(text, desc string, onTop bool, u types.DisplayUnit) (*model.Watermark, error) {
-	return parseWatermarkDetails(model.WMText, text, desc, onTop, u)
+func watermarkFontRepository(conf *model.Configuration) *font.Repository {
+	if conf == nil {
+		return font.RepositoryForDir(font.UserFontDir)
+	}
+	dir, _ := conf.UserFontStore()
+	return font.RepositoryForDir(dir)
 }
 
-// ParseImageWatermarkDetails parses an image Watermark/Stamp command string into an internal structure.
-func ParseImageWatermarkDetails(fileName, desc string, onTop bool, u types.DisplayUnit) (*model.Watermark, error) {
-	return parseWatermarkDetails(model.WMImage, fileName, desc, onTop, u)
+// ParseTextWatermarkDetails parses a text watermark/stamp command and supports cancellation.
+func ParseTextWatermarkDetails(c context.Context, text, desc string, onTop bool, u types.DisplayUnit, conf *model.Configuration) (*model.Watermark, error) {
+	return parseWatermarkDetails(c, model.WMText, text, desc, onTop, u, watermarkFontRepository(conf))
 }
 
-// ParsePDFWatermarkDetails parses a PDF Watermark/Stamp command string into an internal structure.
-func ParsePDFWatermarkDetails(fileName, desc string, onTop bool, u types.DisplayUnit) (*model.Watermark, error) {
-	return parseWatermarkDetails(model.WMPDF, fileName, desc, onTop, u)
+// ParseImageWatermarkDetails parses an image watermark/stamp command and supports cancellation.
+func ParseImageWatermarkDetails(c context.Context, fileName, desc string, onTop bool, u types.DisplayUnit, conf *model.Configuration) (*model.Watermark, error) {
+	return parseWatermarkDetails(c, model.WMImage, fileName, desc, onTop, u, watermarkFontRepository(conf))
+}
+
+// ParsePDFWatermarkDetails parses a PDF watermark/stamp command and supports cancellation.
+func ParsePDFWatermarkDetails(c context.Context, fileName, desc string, onTop bool, u types.DisplayUnit, conf *model.Configuration) (*model.Watermark, error) {
+	return parseWatermarkDetails(c, model.WMPDF, fileName, desc, onTop, u, watermarkFontRepository(conf))
 }
 
 func onTopString(onTop bool) string {
@@ -679,20 +699,25 @@ func setWatermarkType(mode int, s string, wm *model.Watermark) (err error) {
 	return err
 }
 
-func appearanceState(d, normalAppearanceDict types.Dict) string {
-	if as := d.NameEntry("AS"); as != nil {
-		if _, found := normalAppearanceDict.Find(*as); found {
-			return *as
+func appearanceState(xRefTable *model.XRefTable, d, normalAppearanceDict types.Dict) (string, error) {
+	as, _, err := xRefTable.DereferenceNameEntry(d, "AS")
+	if err != nil {
+		return "", fmt.Errorf("annotation entry AS: %w", err)
+	}
+	if as != nil {
+		name := as.Value()
+		if _, found := normalAppearanceDict.Find(name); found {
+			return name, nil
 		}
 	}
 
 	for k := range normalAppearanceDict {
 		if k != "Off" {
-			return k
+			return k, nil
 		}
 	}
 
-	return "Off"
+	return "Off", nil
 }
 
 func normalAppearanceObject(xRefTable *model.XRefTable, d types.Dict) (types.Object, bool, error) {
@@ -722,7 +747,11 @@ func normalAppearanceObject(xRefTable *model.XRefTable, d types.Dict) (types.Obj
 		return o, ok, nil
 	}
 
-	o, found = normalAppearanceDict.Find(appearanceState(d, normalAppearanceDict))
+	state, err := appearanceState(xRefTable, d, normalAppearanceDict)
+	if err != nil {
+		return nil, false, err
+	}
+	o, found = normalAppearanceDict.Find(state)
 	return o, found, nil
 }
 
@@ -749,8 +778,8 @@ func ensureXObjectResourceDict(ctx *model.Context, resDict types.Dict) (types.Di
 	return d, nil
 }
 
-func xObjectRefForAppearance(o types.Object, ctxSrc, ctxDest *model.Context, migrated map[int]int) (types.IndirectRef, error) {
-	o, err := migrateObject(o, ctxSrc, ctxDest, migrated)
+func xObjectRefForAppearance(c context.Context, o types.Object, ctxSrc, ctxDest *model.Context, migrated map[int]int) (types.IndirectRef, error) {
+	o, err := migrateObject(c, o, ctxSrc, ctxDest, migrated)
 	if err != nil {
 		return types.IndirectRef{}, err
 	}
@@ -795,13 +824,10 @@ func appendAppearanceDo(w io.Writer, id string, rect, bbox *types.Rectangle) {
 	fmt.Fprintf(w, " q %.5f 0 0 %.5f %.5f %.5f cm /%s Do Q ", sx, sy, tx, ty, id)
 }
 
-func appendAnnotationAppearance(
-	w io.Writer,
-	ann types.Dict,
-	resDict types.Dict,
-	ctxSrc, ctxDest *model.Context,
-	migrated map[int]int,
-) error {
+func appendAnnotationAppearance(c context.Context, w io.Writer, ann types.Dict, resDict types.Dict, ctxSrc, ctxDest *model.Context, migrated map[int]int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	o, found, err := normalAppearanceObject(ctxSrc.XRefTable, ann)
 	if err != nil {
 		return fmt.Errorf("normal appearance: %w", err)
@@ -824,7 +850,7 @@ func appendAnnotationAppearance(
 	}
 
 	id := xo.NewIDForPrefix("Fm", 0)
-	ir, err := xObjectRefForAppearance(o, ctxSrc, ctxDest, migrated)
+	ir, err := xObjectRefForAppearance(c, o, ctxSrc, ctxDest, migrated)
 	if err != nil {
 		return fmt.Errorf("migrate XObject: %w", err)
 	}
@@ -839,16 +865,13 @@ func appendAnnotationAppearance(
 	}
 
 	appendAppearanceDo(w, id, rect, bbox)
-	return nil
+	return contextutil.Check(c)
 }
 
-func appendAnnotationAppearances(
-	w io.Writer,
-	pageDict types.Dict,
-	resDict types.Dict,
-	ctxSrc, ctxDest *model.Context,
-	migrated map[int]int,
-) error {
+func appendAnnotationAppearances(c context.Context, w io.Writer, pageDict types.Dict, resDict types.Dict, ctxSrc, ctxDest *model.Context, migrated map[int]int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	o, found := pageDict.Find("Annots")
 	if !found {
 		return nil
@@ -860,6 +883,9 @@ func appendAnnotationAppearances(
 	}
 
 	for i, o := range annots {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		ann, err := ctxSrc.DereferenceDict(o)
 		if err != nil {
 			return fmt.Errorf("annotation %d: dictionary: %w", i+1, err)
@@ -867,21 +893,39 @@ func appendAnnotationAppearances(
 		if ann == nil {
 			return fmt.Errorf("annotation %d: missing dictionary", i+1)
 		}
-		if err := appendAnnotationAppearance(w, ann, resDict, ctxSrc, ctxDest, migrated); err != nil {
+		if err := appendAnnotationAppearance(c, w, ann, resDict, ctxSrc, ctxDest, migrated); err != nil {
 			return fmt.Errorf("annotation %d: appearance: %w", i+1, err)
 		}
 	}
-	return nil
+	return contextutil.Check(c)
 }
 
-func createPDFRes(ctx, otherCtx *model.Context, pageNrSrc, pageNrDest int, migrated map[int]int, wm *model.Watermark) error {
+func normalizePDFSourceContent(content []byte, visibleRegion *types.Rectangle, rotation int) ([]byte, *types.Rectangle) {
+	box, m := resizeSourceGeometry(visibleRegion, composePageRotation(rotation, 0))
+	bb := types.RectForDim(box.Width(), box.Height())
+	if m == matrix.IdentMatrix {
+		return content, bb
+	}
+
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "q %.5f %.5f %.5f %.5f %.5f %.5f cm ",
+		m[0][0], m[0][1], m[1][0], m[1][1], m[2][0], m[2][1])
+	b.Write(content)
+	b.WriteString(" Q")
+	return b.Bytes(), bb
+}
+
+func createPDFRes(c context.Context, ctx, otherCtx *model.Context, pageNrSrc, pageNrDest int, migrated map[int]int, wm *model.Watermark) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	pdfRes := model.PdfResources{}
 	xRefTable := ctx.XRefTable
 	otherXRefTable := otherCtx.XRefTable
 
 	// Locate page dict & resource dict of PDF stamp.
 	consolidateRes := true
-	d, _, inhPAttrs, err := otherXRefTable.PageDict(pageNrSrc, consolidateRes)
+	d, _, inhPAttrs, err := otherXRefTable.PageDict(c, pageNrSrc, consolidateRes)
 	if err != nil {
 		return fmt.Errorf("source page dictionary: %w", err)
 	}
@@ -892,9 +936,6 @@ func createPDFRes(ctx, otherCtx *model.Context, pageNrSrc, pageNrDest int, migra
 		return errors.New("missing source page attributes")
 	}
 
-	// Take into account existing rotation.
-	wm.Rotation -= float64(inhPAttrs.Rotate % 360)
-
 	// Retrieve content stream bytes of page dict.
 	pdfRes.Content, err = otherXRefTable.PageContent(d, pageNrSrc)
 	if err != nil && err != model.ErrNoContent {
@@ -903,16 +944,20 @@ func createPDFRes(ctx, otherCtx *model.Context, pageNrSrc, pageNrDest int, migra
 
 	// Migrate external resource dict into ctx.
 	inhPAttrs.Resources = ensureResourceDict(inhPAttrs.Resources)
-	if _, err = migrateObject(inhPAttrs.Resources, otherCtx, ctx, migrated); err != nil {
+	if _, err = migrateObject(c, inhPAttrs.Resources, otherCtx, ctx, migrated); err != nil {
 		return fmt.Errorf("migrate source page resources: %w", err)
 	}
 
 	var b bytes.Buffer
 	b.Write(pdfRes.Content)
-	if err := appendAnnotationAppearances(&b, d, inhPAttrs.Resources, otherCtx, ctx, migrated); err != nil {
+	if err := appendAnnotationAppearances(c, &b, d, inhPAttrs.Resources, otherCtx, ctx, migrated); err != nil {
 		return fmt.Errorf("source page annotations: %w", err)
 	}
-	pdfRes.Content = b.Bytes()
+	visibleRegion := viewPort(inhPAttrs)
+	if visibleRegion == nil {
+		return fmt.Errorf("PDF stamp page %d: missing media box", pageNrSrc)
+	}
+	pdfRes.Content, pdfRes.Bb = normalizePDFSourceContent(b.Bytes(), visibleRegion, inhPAttrs.Rotate)
 
 	// Create an object for resource dict in xRefTable.
 	ir, err := xRefTable.IndRefForNewObject(inhPAttrs.Resources)
@@ -921,13 +966,9 @@ func createPDFRes(ctx, otherCtx *model.Context, pageNrSrc, pageNrDest int, migra
 	}
 	pdfRes.ResDict = ir
 
-	pdfRes.Bb = viewPort(inhPAttrs)
-	if pdfRes.Bb == nil {
-		return fmt.Errorf("PDF stamp page %d: missing media box", pageNrSrc)
-	}
 	wm.PdfRes[pageNrDest] = pdfRes
 
-	return nil
+	return contextutil.Check(c)
 }
 
 func pdfResourcePageCount(destPageCount, srcPageCount, startPageNrSrc, startPageNrDest int) (int, error) {
@@ -942,50 +983,39 @@ func pdfResourcePageCount(destPageCount, srcPageCount, startPageNrSrc, startPage
 	return min(srcPages, destPages), nil
 }
 
-func createPDFResForWM(ctx *model.Context, wm *model.Watermark) error {
+func readPDFWatermarkContext(c context.Context, wm *model.Watermark) (*model.Context, error) {
 	// Note: The stamp pdf is assumed to be valid!
 	if wm.PDF == nil && wm.FileName == "" {
-		return fmt.Errorf("missing PDF source: %w", ErrMissingWatermarkConfiguration)
-	}
-	if wm.PdfRes == nil {
-		wm.PdfRes = map[int]model.PdfResources{}
+		return nil, fmt.Errorf("missing PDF source: %w", ErrMissingWatermarkConfiguration)
 	}
 
-	var (
-		otherCtx *model.Context
-		err      error
-	)
+	var otherCtx *model.Context
+	var err error
 	if wm.PDF != nil {
-		otherCtx, err = Read(wm.PDF, nil)
+		otherCtx, err = Read(c, wm.PDF, nil)
 	} else {
-		otherCtx, err = ReadFile(wm.FileName, nil)
+		otherCtx, err = ReadFile(c, wm.FileName, nil)
 	}
 	if err != nil {
-		return fmt.Errorf("read source: %w", err)
+		return nil, fmt.Errorf("read source: %w", err)
 	}
 	if otherCtx == nil {
-		return ErrMissingPDFContext
+		return nil, ErrMissingPDFContext
 	}
 	if otherCtx.XRefTable == nil {
-		return ErrMissingXRefTable
+		return nil, ErrMissingXRefTable
 	}
 	if otherCtx.XRefTable.Version() == model.V20 {
-		return fmt.Errorf("source version: %w", ErrUnsupportedVersion)
+		return nil, fmt.Errorf("source version: %w", ErrUnsupportedVersion)
 	}
 
 	if err := otherCtx.EnsurePageCount(); err != nil {
-		return fmt.Errorf("source page count: %w", err)
+		return nil, fmt.Errorf("source page count: %w", err)
 	}
+	return otherCtx, contextutil.Check(c)
+}
 
-	migrated := map[int]int{}
-
-	if !wm.MultiStamp() {
-		if err := createPDFRes(ctx, otherCtx, wm.PdfPageNrSrc, wm.PdfPageNrSrc, migrated, wm); err != nil {
-			return fmt.Errorf("source page %d: %w", wm.PdfPageNrSrc, err)
-		}
-		return nil
-	}
-
+func createPDFResRange(c context.Context, ctx, otherCtx *model.Context, wm *model.Watermark, migrated map[int]int) error {
 	pageCount, err := pdfResourcePageCount(
 		ctx.PageCount,
 		otherCtx.PageCount,
@@ -997,14 +1027,40 @@ func createPDFResForWM(ctx *model.Context, wm *model.Watermark) error {
 	}
 
 	for i := range pageCount {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		srcPageNr := wm.PdfMultiStartPageNrSrc + i
 		destPageNr := wm.PdfMultiStartPageNrDest + i
-		if err := createPDFRes(ctx, otherCtx, srcPageNr, destPageNr, migrated, wm); err != nil {
+		if err := createPDFRes(c, ctx, otherCtx, srcPageNr, destPageNr, migrated, wm); err != nil {
 			return fmt.Errorf("source page %d to destination page %d: %w", srcPageNr, destPageNr, err)
 		}
 	}
+	return contextutil.Check(c)
+}
 
-	return nil
+func createPDFResForWM(c context.Context, ctx *model.Context, wm *model.Watermark) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	otherCtx, err := readPDFWatermarkContext(c, wm)
+	if err != nil {
+		return err
+	}
+	if wm.PdfRes == nil {
+		wm.PdfRes = map[int]model.PdfResources{}
+	}
+	migrated := map[int]int{}
+
+	if !wm.MultiStamp() {
+		if err := createPDFRes(
+			c, ctx, otherCtx, wm.PdfPageNrSrc, wm.PdfPageNrSrc, migrated, wm,
+		); err != nil {
+			return fmt.Errorf("source page %d: %w", wm.PdfPageNrSrc, err)
+		}
+		return nil
+	}
+	return createPDFResRange(c, ctx, otherCtx, wm, migrated)
 }
 
 func createImageResForWM(ctx *model.Context, wm *model.Watermark) (err error) {
@@ -1015,7 +1071,10 @@ func createImageResForWM(ctx *model.Context, wm *model.Watermark) (err error) {
 	return err
 }
 
-func createFontResForWM(ctx *model.Context, wm *model.Watermark, fonts map[string]types.IndirectRef) (err error) {
+func createFontResForWM(c context.Context, ctx *model.Context, wm *model.Watermark, fonts map[string]types.IndirectRef) (err error) {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if wm.FontName == "" {
 		return fmt.Errorf("font name: %w", ErrMissingWatermarkConfiguration)
 	}
@@ -1052,7 +1111,7 @@ func createFontResForWM(ctx *model.Context, wm *model.Watermark, fonts map[strin
 		}
 	}
 
-	indRef, err := pdffont.EnsureFontDict(ctx.XRefTable, wm.FontName, "", wm.ScriptName, false, nil)
+	indRef, err := pdffont.EnsureFontDict(c, ctx.XRefTable, wm.FontName, "", wm.ScriptName, false, nil)
 	if err != nil {
 		return fmt.Errorf("font %s: ensure font dictionary: %w", wm.FontName, err)
 	}
@@ -1062,23 +1121,26 @@ func createFontResForWM(ctx *model.Context, wm *model.Watermark, fonts map[strin
 	return nil
 }
 
-func createResourcesForWM(ctx *model.Context, wm *model.Watermark, fonts map[string]types.IndirectRef) error {
+func createResourcesForWM(c context.Context, ctx *model.Context, wm *model.Watermark, fonts map[string]types.IndirectRef) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if wm.IsPDF() {
-		if err := createPDFResForWM(ctx, wm); err != nil {
+		if err := createPDFResForWM(c, ctx, wm); err != nil {
 			return fmt.Errorf("PDF: %w", err)
 		}
-		return nil
+		return contextutil.Check(c)
 	}
 	if wm.IsImage() {
 		if err := createImageResForWM(ctx, wm); err != nil {
 			return fmt.Errorf("image: %w", err)
 		}
-		return nil
+		return contextutil.Check(c)
 	}
-	if err := createFontResForWM(ctx, wm, fonts); err != nil {
+	if err := createFontResForWM(c, ctx, wm, fonts); err != nil {
 		return fmt.Errorf("font: %w", err)
 	}
-	return nil
+	return contextutil.Check(c)
 }
 
 func ensureOCG(ctx *model.Context, onTop bool) (*types.IndirectRef, error) {
@@ -1355,7 +1417,8 @@ func pdfResourceForPage(wm *model.Watermark, pageNr int) (model.PdfResources, er
 	return pdfRes, nil
 }
 
-func calcFormBoundingBox(xRefTable *model.XRefTable, w io.Writer, timestampFormat string, pageNr, pageCount int, wm *model.Watermark) (bool, error) {
+func calcFormBoundingBox(c context.Context, xRefTable *model.XRefTable, w io.Writer, timestampFormat string,
+	pageNr, pageCount int, wm *model.Watermark) (bool, error) {
 	if wm.Vp == nil {
 		return false, fmt.Errorf("missing viewport: %w", ErrMissingWatermarkConfiguration)
 	}
@@ -1376,7 +1439,7 @@ func calcFormBoundingBox(xRefTable *model.XRefTable, w io.Writer, timestampForma
 		td, unique = setupTextDescriptor(*wm, timestampFormat, pageNr, pageCount)
 		// Pre-wrap text when MaxWidth is set.
 		if wm.MaxWidth > 0 {
-			lines, err := model.WordWrap(td.Text, td.FontName, int(td.FontSize), wm.MaxWidth)
+			lines, err := model.WordWrap(c, td.Text, td.FontName, int(td.FontSize), wm.MaxWidth)
 			if err != nil {
 				return false, fmt.Errorf("wrap text watermark: %w", err)
 			}
@@ -1384,7 +1447,9 @@ func calcFormBoundingBox(xRefTable *model.XRefTable, w io.Writer, timestampForma
 		}
 		// Render td into b and return the bounding box.
 		var err error
-		wm.Bb, err = model.WriteMultiLine(xRefTable, w, types.RectForDim(wm.Vp.Width(), wm.Vp.Height()), nil, td)
+		wm.Bb, err = model.WriteMultiLine(
+			c, xRefTable, w, types.RectForDim(wm.Vp.Width(), wm.Vp.Height()), nil, td,
+		)
 		if err != nil {
 			return false, fmt.Errorf("render text watermark: %w", err)
 		}
@@ -1461,7 +1526,7 @@ func ensureWatermarkCaches(wm *model.Watermark) {
 	}
 }
 
-func createForm(ctx *model.Context, pageNr, pageCount int, wm *model.Watermark, withBB bool) error {
+func createForm(c context.Context, ctx *model.Context, pageNr, pageCount int, wm *model.Watermark, withBB bool) error {
 	if wm == nil {
 		return ErrMissingWatermarkConfiguration
 	}
@@ -1471,7 +1536,7 @@ func createForm(ctx *model.Context, pageNr, pageCount int, wm *model.Watermark, 
 	ensureWatermarkCaches(wm)
 
 	var b bytes.Buffer
-	unique, err := calcFormBoundingBox(ctx.XRefTable, &b, ctx.Configuration.TimestampFormat, pageNr, pageCount, wm)
+	unique, err := calcFormBoundingBox(c, ctx.XRefTable, &b, ctx.Configuration.TimestampFormat, pageNr, pageCount, wm)
 	if err != nil {
 		return fmt.Errorf("calculate bounding box: %w", err)
 	}
@@ -1843,7 +1908,7 @@ func viewPort(a *model.InheritedPageAttrs) *types.Rectangle {
 	return visibleRegion
 }
 
-func handleLink(ctx *model.Context, pageIndRef *types.IndirectRef, d types.Dict, pageNr int, wm model.Watermark) error {
+func handleLink(c context.Context, ctx *model.Context, pageIndRef *types.IndirectRef, d types.Dict, pageNr int, wm model.Watermark) error {
 	if !wm.OnTop || wm.URL == "" {
 		return nil
 	}
@@ -1869,7 +1934,7 @@ func handleLink(ctx *model.Context, pageIndRef *types.IndirectRef, d types.Dict,
 		model.BSSolid,                       // borderStyle
 	)
 
-	if _, _, err := AddAnnotation(ctx, pageIndRef, d, pageNr, ann, false); err != nil {
+	if _, _, err := AddAnnotation(c, ctx, pageIndRef, d, pageNr, ann, false); err != nil {
 		return fmt.Errorf("annotation: %w", err)
 	}
 	return nil
@@ -1904,21 +1969,24 @@ func addPageWatermarkContents(ctx *model.Context, d types.Dict, wm *model.Waterm
 	return nil
 }
 
-func updatePageWatermark(ctx *model.Context, pageNr int, update bool) error {
+func updatePageWatermark(c context.Context, ctx *model.Context, pageNr int, update bool) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if !update {
 		return nil
 	}
 	if log.DebugEnabled() {
 		log.Debug.Println("Updating")
 	}
-	if _, err := removePageWatermark(ctx, pageNr); err != nil {
+	if _, err := removePageWatermark(c, ctx, pageNr); err != nil {
 		return fmt.Errorf("update existing watermark: %w", err)
 	}
 	return nil
 }
 
-func pageWatermarkContext(ctx *model.Context, pageNr int) (types.Dict, *types.IndirectRef, *model.InheritedPageAttrs, error) {
-	d, pageIndRef, attrs, err := ctx.PageDict(pageNr, false)
+func pageWatermarkContext(c context.Context, ctx *model.Context, pageNr int) (types.Dict, *types.IndirectRef, *model.InheritedPageAttrs, error) {
+	d, pageIndRef, attrs, err := ctx.PageDict(c, pageNr, false)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("page dictionary: %w", err)
 	}
@@ -1954,7 +2022,10 @@ func normalizePageWatermark(d types.Dict, attrs *model.InheritedPageAttrs, wm *m
 	return nil
 }
 
-func addPageWatermark(ctx *model.Context, pageNr int, wm model.Watermark) error {
+func addPageWatermark(c context.Context, ctx *model.Context, pageNr int, wm model.Watermark) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if pageNr < 1 || pageNr > ctx.PageCount {
 		return ErrInvalidPageNumber
 	}
@@ -1963,11 +2034,11 @@ func addPageWatermark(ctx *model.Context, pageNr int, wm model.Watermark) error 
 		log.Debug.Printf("addPageWatermark page:%d\n", pageNr)
 	}
 
-	if err := updatePageWatermark(ctx, pageNr, wm.Update); err != nil {
+	if err := updatePageWatermark(c, ctx, pageNr, wm.Update); err != nil {
 		return err
 	}
 
-	d, pageIndRef, inhPAttrs, err := pageWatermarkContext(ctx, pageNr)
+	d, pageIndRef, inhPAttrs, err := pageWatermarkContext(c, ctx, pageNr)
 	if err != nil {
 		return err
 	}
@@ -1976,8 +2047,11 @@ func addPageWatermark(ctx *model.Context, pageNr int, wm model.Watermark) error 
 		return err
 	}
 
-	if err = createForm(ctx, pageNr, ctx.PageCount, &wm, stampWithBBox); err != nil {
+	if err = createForm(c, ctx, pageNr, ctx.PageCount, &wm, stampWithBBox); err != nil {
 		return fmt.Errorf("create form: %w", err)
+	}
+	if err := contextutil.Check(c); err != nil {
+		return err
 	}
 
 	if log.DebugEnabled() {
@@ -1993,14 +2067,18 @@ func addPageWatermark(ctx *model.Context, pageNr int, wm model.Watermark) error 
 		return err
 	}
 
-	if err := handleLink(ctx, pageIndRef, d, pageNr, wm); err != nil {
+	if err := handleLink(c, ctx, pageIndRef, d, pageNr, wm); err != nil {
 		return fmt.Errorf("add link: %w", err)
 	}
-	return nil
+	return contextutil.Check(c)
 }
 
-// AddWatermarks adds watermarks to all pages selected.
-func AddWatermarks(ctx *model.Context, selectedPages types.IntSet, wm *model.Watermark) error {
+// AddWatermarks adds watermarks to all selected pages and supports cancellation.
+// On failure, ctx may contain partial changes and callers must discard it.
+func AddWatermarks(c context.Context, ctx *model.Context, selectedPages types.IntSet, wm *model.Watermark) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if err := validateWatermarkContext(ctx); err != nil {
 		return err
 	}
@@ -2025,25 +2103,28 @@ func AddWatermarks(ctx *model.Context, selectedPages types.IntSet, wm *model.Wat
 
 	fonts := map[string]types.IndirectRef{}
 
-	if err = createResourcesForWM(ctx, wm, fonts); err != nil {
+	if err = createResourcesForWM(c, ctx, wm, fonts); err != nil {
 		return fmt.Errorf("prepare resources: %w", err)
 	}
 
 	for i := wm.PdfMultiStartPageNrDest; i <= ctx.PageCount; i++ {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		if len(selectedPages) == 0 || selectedPages[i] {
-			if err = addPageWatermark(ctx, i, *wm); err != nil {
+			if err = addPageWatermark(c, ctx, i, *wm); err != nil {
 				return fmt.Errorf("page %d: %w", i, err)
 			}
 		}
 	}
 
-	if err := pdffont.UpdateUserfonts(ctx.XRefTable, fonts); err != nil {
+	if err := pdffont.UpdateUserfonts(c, ctx.XRefTable, fonts); err != nil {
 		return fmt.Errorf("update user fonts: %w", err)
 	}
 
 	ctx.EnsureVersionForWriting()
 
-	return nil
+	return contextutil.Check(c)
 }
 
 func sortedWatermarkPages[T any](m map[int]T) []int {
@@ -2065,12 +2146,18 @@ func validateSharedWatermarkSettings(wm, first *model.Watermark) error {
 	return nil
 }
 
-func watermarkMapSettings(ctx *model.Context, m map[int]*model.Watermark, pageNrs []int) (bool, float64, error) {
+func watermarkMapSettings(c context.Context, ctx *model.Context, m map[int]*model.Watermark, pageNrs []int) (bool, float64, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, 0, err
+	}
 	if len(m) == 0 {
 		return false, 0, ErrMissingWatermarks
 	}
 	var first *model.Watermark
 	for _, pageNr := range pageNrs {
+		if err := contextutil.Check(c); err != nil {
+			return false, 0, err
+		}
 		wm := m[pageNr]
 		if pageNr < 1 || pageNr > ctx.PageCount {
 			return false, 0, fmt.Errorf("page %d: %w", pageNr, ErrInvalidPageNumber)
@@ -2090,7 +2177,10 @@ func watermarkMapSettings(ctx *model.Context, m map[int]*model.Watermark, pageNr
 	return first.OnTop, first.Opacity, nil
 }
 
-func prepareSharedWatermarkResources(ctx *model.Context, onTop bool, opacity float64) (*types.IndirectRef, *types.IndirectRef, error) {
+func prepareSharedWatermarkResources(c context.Context, ctx *model.Context, onTop bool, opacity float64) (*types.IndirectRef, *types.IndirectRef, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, err
+	}
 	ocgIndRef, err := prepareOCPropertiesInRoot(ctx, onTop)
 	if err != nil {
 		return nil, nil, fmt.Errorf("prepare optional content: %w", err)
@@ -2099,55 +2189,71 @@ func prepareSharedWatermarkResources(ctx *model.Context, onTop bool, opacity flo
 	if err != nil {
 		return nil, nil, fmt.Errorf("create graphics state: %w", err)
 	}
-	return ocgIndRef, extGStateIndRef, nil
+	return ocgIndRef, extGStateIndRef, contextutil.Check(c)
 }
 
-// AddWatermarksMap adds watermarks in m to corresponding pages.
-func AddWatermarksMap(ctx *model.Context, m map[int]*model.Watermark) error {
+// AddWatermarksMap adds watermarks in m to corresponding pages and supports cancellation.
+// On failure, ctx may contain partial changes and callers must discard it.
+func AddWatermarksMap(c context.Context, ctx *model.Context, m map[int]*model.Watermark) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if err := validateWatermarkContext(ctx); err != nil {
 		return err
 	}
 	pageNrs := sortedWatermarkPages(m)
-	onTop, opacity, err := watermarkMapSettings(ctx, m, pageNrs)
+	onTop, opacity, err := watermarkMapSettings(c, ctx, m, pageNrs)
 	if err != nil {
 		return err
 	}
-	ocgIndRef, extGStateIndRef, err := prepareSharedWatermarkResources(ctx, onTop, opacity)
+	ocgIndRef, extGStateIndRef, err := prepareSharedWatermarkResources(c, ctx, onTop, opacity)
 	if err != nil {
 		return err
 	}
 	fonts := map[string]types.IndirectRef{}
 	for _, pageNr := range pageNrs {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		wm := m[pageNr]
-		if err := createResourcesForWM(ctx, wm, fonts); err != nil {
+		if err := createResourcesForWM(c, ctx, wm, fonts); err != nil {
 			return fmt.Errorf("page %d: prepare resources: %w", pageNr, err)
 		}
 	}
 	for _, pageNr := range pageNrs {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		wm := m[pageNr]
 		wm.Ocg = ocgIndRef
 		wm.ExtGState = extGStateIndRef
 		wm.OnTop = onTop
 		wm.Opacity = opacity
-		if err := addPageWatermark(ctx, pageNr, *wm); err != nil {
+		if err := addPageWatermark(c, ctx, pageNr, *wm); err != nil {
 			return fmt.Errorf("page %d: %w", pageNr, err)
 		}
 	}
-	if err := pdffont.UpdateUserfonts(ctx.XRefTable, fonts); err != nil {
+	if err := pdffont.UpdateUserfonts(c, ctx.XRefTable, fonts); err != nil {
 		return fmt.Errorf("update user fonts: %w", err)
 	}
 
 	ctx.EnsureVersionForWriting()
 
-	return nil
+	return contextutil.Check(c)
 }
 
-func watermarkSliceMapSettings(ctx *model.Context, m map[int][]*model.Watermark, pageNrs []int) (bool, float64, error) {
+func watermarkSliceMapSettings(c context.Context, ctx *model.Context, m map[int][]*model.Watermark, pageNrs []int) (bool, float64, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, 0, err
+	}
 	if len(m) == 0 {
 		return false, 0, ErrMissingWatermarks
 	}
 	var first *model.Watermark
 	for _, pageNr := range pageNrs {
+		if err := contextutil.Check(c); err != nil {
+			return false, 0, err
+		}
 		wms := m[pageNr]
 		if pageNr < 1 || pageNr > ctx.PageCount {
 			return false, 0, fmt.Errorf("page %d: %w", pageNr, ErrInvalidPageNumber)
@@ -2156,6 +2262,9 @@ func watermarkSliceMapSettings(ctx *model.Context, m map[int][]*model.Watermark,
 			return false, 0, fmt.Errorf("page %d: %w", pageNr, ErrMissingWatermarks)
 		}
 		for i, wm := range wms {
+			if err := contextutil.Check(c); err != nil {
+				return false, 0, err
+			}
 			if wm == nil {
 				return false, 0, fmt.Errorf("page %d, watermark %d: %w", pageNr, i, ErrMissingWatermarkConfiguration)
 			}
@@ -2172,48 +2281,80 @@ func watermarkSliceMapSettings(ctx *model.Context, m map[int][]*model.Watermark,
 	return first.OnTop, first.Opacity, nil
 }
 
-// AddWatermarksSliceMap adds watermarks in m to corresponding pages.
-func AddWatermarksSliceMap(ctx *model.Context, m map[int][]*model.Watermark) error {
-	if err := validateWatermarkContext(ctx); err != nil {
-		return err
-	}
-	pageNrs := sortedWatermarkPages(m)
-	onTop, opacity, err := watermarkSliceMapSettings(ctx, m, pageNrs)
-	if err != nil {
-		return err
-	}
-	ocgIndRef, extGStateIndRef, err := prepareSharedWatermarkResources(ctx, onTop, opacity)
-	if err != nil {
-		return err
-	}
-	fonts := map[string]types.IndirectRef{}
+func createWatermarkSliceMapResources(c context.Context, ctx *model.Context, m map[int][]*model.Watermark, pageNrs []int, fonts map[string]types.IndirectRef) error {
 	for _, pageNr := range pageNrs {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		wms := m[pageNr]
 		for i, wm := range wms {
-			if err := createResourcesForWM(ctx, wm, fonts); err != nil {
+			if err := contextutil.Check(c); err != nil {
+				return err
+			}
+			if err := createResourcesForWM(c, ctx, wm, fonts); err != nil {
 				return fmt.Errorf("page %d, watermark %d: prepare resources: %w", pageNr, i, err)
 			}
 		}
 	}
+	return contextutil.Check(c)
+}
+
+func addWatermarkSliceMapPages(c context.Context, ctx *model.Context, m map[int][]*model.Watermark, pageNrs []int, onTop bool, opacity float64, ocgIndRef, extGStateIndRef *types.IndirectRef) error {
 	for _, pageNr := range pageNrs {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		wms := m[pageNr]
 		for i, wm := range wms {
+			if err := contextutil.Check(c); err != nil {
+				return err
+			}
 			wm.Ocg = ocgIndRef
 			wm.ExtGState = extGStateIndRef
 			wm.OnTop = onTop
 			wm.Opacity = opacity
-			if err := addPageWatermark(ctx, pageNr, *wm); err != nil {
+			if err := addPageWatermark(c, ctx, pageNr, *wm); err != nil {
 				return fmt.Errorf("page %d, watermark %d: %w", pageNr, i, err)
 			}
 		}
 	}
-	if err := pdffont.UpdateUserfonts(ctx.XRefTable, fonts); err != nil {
+	return contextutil.Check(c)
+}
+
+// AddWatermarksSliceMap adds watermarks in m to corresponding pages and supports cancellation.
+// On failure, ctx may contain partial changes and callers must discard it.
+func AddWatermarksSliceMap(c context.Context, ctx *model.Context, m map[int][]*model.Watermark) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if err := validateWatermarkContext(ctx); err != nil {
+		return err
+	}
+	pageNrs := sortedWatermarkPages(m)
+	onTop, opacity, err := watermarkSliceMapSettings(c, ctx, m, pageNrs)
+	if err != nil {
+		return err
+	}
+	ocgIndRef, extGStateIndRef, err := prepareSharedWatermarkResources(c, ctx, onTop, opacity)
+	if err != nil {
+		return err
+	}
+	fonts := map[string]types.IndirectRef{}
+	if err := createWatermarkSliceMapResources(c, ctx, m, pageNrs, fonts); err != nil {
+		return err
+	}
+	if err := addWatermarkSliceMapPages(
+		c, ctx, m, pageNrs, onTop, opacity, ocgIndRef, extGStateIndRef,
+	); err != nil {
+		return err
+	}
+	if err := pdffont.UpdateUserfonts(c, ctx.XRefTable, fonts); err != nil {
 		return fmt.Errorf("update user fonts: %w", err)
 	}
 
 	ctx.EnsureVersionForWriting()
 
-	return nil
+	return contextutil.Check(c)
 }
 
 func removeResDictEntry(ctx *model.Context, d types.Dict, entry string, ids []string, i int) error {
@@ -2249,7 +2390,10 @@ func removeForms(ctx *model.Context, d types.Dict, ids []string, i int) error {
 	return removeResDictEntry(ctx, d, "XObject", ids, i)
 }
 
-func removeArtifacts(sd *types.StreamDict, i int) (ok bool, extGStates []string, forms []string, err error) {
+func removeArtifacts(c context.Context, sd *types.StreamDict, i int) (ok bool, extGStates []string, forms []string, err error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, nil, nil, err
+	}
 	if sd == nil {
 		return false, nil, nil, errors.New("missing content stream")
 	}
@@ -2263,6 +2407,9 @@ func removeArtifacts(sd *types.StreamDict, i int) (ok bool, extGStates []string,
 	// Watermarks may begin or end the content stream.
 
 	for {
+		if err := contextutil.Check(c); err != nil {
+			return false, nil, nil, err
+		}
 		s := string(sd.Content)
 		beg := strings.Index(s, "/Artifact <</Subtype /Watermark /Type /Pagination >>BDC")
 		if beg < 0 {
@@ -2306,16 +2453,19 @@ func removeArtifacts(sd *types.StreamDict, i int) (ok bool, extGStates []string,
 		}
 	}
 
-	return patched, extGStates, forms, nil
+	return patched, extGStates, forms, contextutil.Check(c)
 }
 
-func removeArtifactsFromPage(ctx *model.Context, sd *types.StreamDict, resDict types.Dict, i int) (bool, error) {
+func removeArtifactsFromPage(c context.Context, ctx *model.Context, sd *types.StreamDict, resDict types.Dict, i int) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 	if resDict == nil {
 		return false, errors.New("missing page resource dictionary")
 	}
 	// Remove watermark artifacts and locate id's
 	// of used extGStates and forms.
-	ok, extGStates, forms, err := removeArtifacts(sd, i)
+	ok, extGStates, forms, err := removeArtifacts(c, sd, i)
 	if err != nil {
 		return false, fmt.Errorf("remove artifacts: %w", err)
 	}
@@ -2333,12 +2483,12 @@ func removeArtifactsFromPage(ctx *model.Context, sd *types.StreamDict, resDict t
 	if err := removeForms(ctx, resDict, forms, i); err != nil {
 		return false, fmt.Errorf("remove XObject resources: %w", err)
 	}
-	return true, nil
+	return true, contextutil.Check(c)
 }
 
-func locatePageContentAndResourceDict(ctx *model.Context, pageNr int) (types.Object, *types.IndirectRef, types.Dict, error) {
+func locatePageContentAndResourceDict(c context.Context, ctx *model.Context, pageNr int) (types.Object, *types.IndirectRef, types.Dict, error) {
 	consolidateRes := false
-	d, pageDictIndRef, _, err := ctx.PageDict(pageNr, consolidateRes)
+	d, pageDictIndRef, _, err := ctx.PageDict(c, pageNr, consolidateRes)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("page dictionary: %w", err)
 	}
@@ -2370,8 +2520,8 @@ func locatePageContentAndResourceDict(ctx *model.Context, pageNr int) (types.Obj
 	return o, pageDictIndRef, resDict, nil
 }
 
-func removeArtifactsFromStream(ctx *model.Context, sd types.StreamDict, entry *model.XRefTableEntry, resDict types.Dict, pageNr int) (bool, types.StreamDict, error) {
-	found, err := removeArtifactsFromPage(ctx, &sd, resDict, pageNr)
+func removeArtifactsFromStream(c context.Context, ctx *model.Context, sd types.StreamDict, entry *model.XRefTableEntry, resDict types.Dict, pageNr int) (bool, types.StreamDict, error) {
+	found, err := removeArtifactsFromPage(c, ctx, &sd, resDict, pageNr)
 	if err != nil {
 		return false, sd, err
 	}
@@ -2381,7 +2531,10 @@ func removeArtifactsFromStream(ctx *model.Context, sd types.StreamDict, entry *m
 	return found, sd, nil
 }
 
-func removeArtifactsFromContentRef(ctx *model.Context, o types.Object, resDict types.Dict, pageNr, pos int) (bool, error) {
+func removeArtifactsFromContentRef(c context.Context, ctx *model.Context, o types.Object, resDict types.Dict, pageNr, pos int) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 	ir, ok := o.(types.IndirectRef)
 	if !ok {
 		return false, fmt.Errorf("content array entry %d: expected indirect reference, got %T", pos, o)
@@ -2394,40 +2547,49 @@ func removeArtifactsFromContentRef(ctx *model.Context, o types.Object, resDict t
 	if !ok {
 		return false, fmt.Errorf("content array entry %d obj#%d: expected stream dictionary, got %T", pos, objNr, obj)
 	}
-	found, _, err := removeArtifactsFromStream(ctx, sd, entry, resDict, pageNr)
+	found, _, err := removeArtifactsFromStream(c, ctx, sd, entry, resDict, pageNr)
 	if err != nil {
 		return false, fmt.Errorf("content array entry %d obj#%d: %w", pos, objNr, err)
 	}
 	return found, nil
 }
 
-func removeArtifactsFromContentArray(ctx *model.Context, a types.Array, resDict types.Dict, pageNr int) (bool, error) {
+func removeArtifactsFromContentArray(c context.Context, ctx *model.Context, a types.Array, resDict types.Dict, pageNr int) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 	if len(a) == 0 {
 		return false, nil
 	}
-	found, err := removeArtifactsFromContentRef(ctx, a[0], resDict, pageNr, 1)
+	found, err := removeArtifactsFromContentRef(c, ctx, a[0], resDict, pageNr, 1)
 	if err != nil || len(a) == 1 {
 		return found, err
 	}
-	foundLast, err := removeArtifactsFromContentRef(ctx, a[len(a)-1], resDict, pageNr, len(a))
+	foundLast, err := removeArtifactsFromContentRef(c, ctx, a[len(a)-1], resDict, pageNr, len(a))
 	return found || foundLast, err
 }
 
-func removeArtifacts1(ctx *model.Context, o types.Object, entry *model.XRefTableEntry, resDict types.Dict, pageNr int) (bool, types.Object, error) {
+func removeArtifacts1(c context.Context, ctx *model.Context, o types.Object, entry *model.XRefTableEntry, resDict types.Dict, pageNr int) (bool, types.Object, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, o, err
+	}
 	switch o := o.(type) {
 	case types.StreamDict:
-		found, sd, err := removeArtifactsFromStream(ctx, o, entry, resDict, pageNr)
+		found, sd, err := removeArtifactsFromStream(c, ctx, o, entry, resDict, pageNr)
 		return found, sd, err
 	case types.Array:
-		found, err := removeArtifactsFromContentArray(ctx, o, resDict, pageNr)
+		found, err := removeArtifactsFromContentArray(c, ctx, o, resDict, pageNr)
 		return found, o, err
 	default:
 		return false, o, fmt.Errorf("Contents: expected stream dictionary or array, got %T", o)
 	}
 }
 
-func removePageWatermark(ctx *model.Context, pageNr int) (bool, error) {
-	o, pageDictIndRef, resDict, err := locatePageContentAndResourceDict(ctx, pageNr)
+func removePageWatermark(c context.Context, ctx *model.Context, pageNr int) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
+	o, pageDictIndRef, resDict, err := locatePageContentAndResourceDict(c, ctx, pageNr)
 	if err != nil {
 		return false, err
 	}
@@ -2442,12 +2604,12 @@ func removePageWatermark(ctx *model.Context, pageNr int) (bool, error) {
 		}
 	}
 
-	found, patchedContents, err := removeArtifacts1(ctx, o, entry, resDict, pageNr)
+	found, patchedContents, err := removeArtifacts1(c, ctx, o, entry, resDict, pageNr)
 	if err != nil {
 		return false, fmt.Errorf("remove page artifacts: %w", err)
 	}
 	if found && entry == nil {
-		d, _, _, err := ctx.PageDict(pageNr, false)
+		d, _, _, err := ctx.PageDict(c, pageNr, false)
 		if err != nil {
 			return false, fmt.Errorf("store direct content stream: page dictionary: %w", err)
 		}
@@ -2471,6 +2633,9 @@ func removePageWatermark(ctx *model.Context, pageNr int) (bool, error) {
 	*/
 
 	if found {
+		if err := contextutil.Check(c); err != nil {
+			return false, err
+		}
 		// Remove any associated link annotations.
 		d, err := ctx.DereferenceDict(*pageDictIndRef)
 		if err != nil {
@@ -2480,12 +2645,14 @@ func removePageWatermark(ctx *model.Context, pageNr int) (bool, error) {
 			return false, errors.New("link annotations: missing page dictionary")
 		}
 		objNr := pageDictIndRef.ObjectNumber.Value()
-		if _, err = RemoveAnnotationsFromPageDict(ctx, nil, []string{"pdfcpu"}, nil, d, objNr, pageNr, false); err != nil {
+		if _, err = RemoveAnnotationsFromPageDict(
+			c, ctx, nil, []string{"pdfcpu"}, nil, d, objNr, pageNr, false,
+		); err != nil {
 			return false, fmt.Errorf("link annotations: remove: %w", err)
 		}
 	}
 
-	return found, nil
+	return found, contextutil.Check(c)
 }
 
 func locateOCGs(ctx *model.Context) (types.Array, error) {
@@ -2522,8 +2689,8 @@ func locateOCGs(ctx *model.Context) (types.Array, error) {
 	return a, nil
 }
 
-func detectStampOCG(ctx *model.Context, arr types.Array) error {
-	found, err := containsWatermarkOCG(ctx, arr)
+func detectStampOCG(c context.Context, ctx *model.Context, arr types.Array) error {
+	found, err := containsWatermarkOCG(c, ctx, arr)
 	if err != nil {
 		return err
 	}
@@ -2533,15 +2700,21 @@ func detectStampOCG(ctx *model.Context, arr types.Array) error {
 	return errNoWatermark
 }
 
-func removePageWatermarks(ctx *model.Context, selectedPages types.IntSet) error {
+func removePageWatermarks(c context.Context, ctx *model.Context, selectedPages types.IntSet) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	var removed bool
 
 	for _, pageNr := range sortedWatermarkPages(selectedPages) {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		if !selectedPages[pageNr] {
 			continue
 		}
 
-		ok, err := removePageWatermark(ctx, pageNr)
+		ok, err := removePageWatermark(c, ctx, pageNr)
 		if err != nil {
 			return fmt.Errorf("page %d: %w", pageNr, err)
 		}
@@ -2555,11 +2728,15 @@ func removePageWatermarks(ctx *model.Context, selectedPages types.IntSet) error 
 		return errNoWatermark
 	}
 
-	return nil
+	return contextutil.Check(c)
 }
 
-// RemoveWatermarks removes watermarks for all pages selected.
-func RemoveWatermarks(ctx *model.Context, selectedPages types.IntSet) error {
+// RemoveWatermarks removes watermarks for all selected pages and supports cancellation.
+// On failure, ctx may contain partial changes and callers must discard it.
+func RemoveWatermarks(c context.Context, ctx *model.Context, selectedPages types.IntSet) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if err := validateWatermarkContext(ctx); err != nil {
 		return err
 	}
@@ -2572,14 +2749,14 @@ func RemoveWatermarks(ctx *model.Context, selectedPages types.IntSet) error {
 		return fmt.Errorf("locate optional content groups: %w", err)
 	}
 
-	if err := detectStampOCG(ctx, arr); err != nil {
+	if err := detectStampOCG(c, ctx, arr); err != nil {
 		return fmt.Errorf("identify watermark optional content group: %w", err)
 	}
 
-	if err := removePageWatermarks(ctx, selectedPages); err != nil {
+	if err := removePageWatermarks(c, ctx, selectedPages); err != nil {
 		return fmt.Errorf("remove page watermarks: %w", err)
 	}
-	return nil
+	return contextutil.Check(c)
 }
 
 func detectArtifacts(sd *types.StreamDict) (bool, error) {
@@ -2643,7 +2820,10 @@ func detectArtifactsFromContents(ctx *model.Context, o types.Object) (bool, erro
 	}
 }
 
-func findPageWatermarks(ctx *model.Context, pageDictIndRef *types.IndirectRef) (bool, error) {
+func findPageWatermarks(c context.Context, ctx *model.Context, pageDictIndRef *types.IndirectRef) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 	if pageDictIndRef == nil {
 		return false, errors.New("missing page dictionary reference")
 	}
@@ -2659,10 +2839,17 @@ func findPageWatermarks(ctx *model.Context, pageDictIndRef *types.IndirectRef) (
 	if !found || o == nil {
 		return false, nil
 	}
-	return detectArtifactsFromContents(ctx, o)
+	found, err = detectArtifactsFromContents(ctx, o)
+	if err != nil {
+		return false, err
+	}
+	return found, contextutil.Check(c)
 }
 
-func detectPageTreeChildWatermarks(ctx *model.Context, o types.Object, pos int) error {
+func detectPageTreeChildWatermarks(c context.Context, ctx *model.Context, o types.Object, pos int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	ir, ok := o.(types.IndirectRef)
 	if !ok {
 		return fmt.Errorf("page tree child %d: expected indirect reference, got %T", pos, o)
@@ -2674,20 +2861,23 @@ func detectPageTreeChildWatermarks(ctx *model.Context, o types.Object, pos int) 
 	if d == nil {
 		return fmt.Errorf("page tree child %d obj#%d: missing dictionary", pos, ir.ObjectNumber.Value())
 	}
-	typ := d.Type()
+	typ, _, err := ctx.DereferenceNameEntry(d, "Type")
+	if err != nil {
+		return fmt.Errorf("page tree child %d obj#%d: Type: %w", pos, ir.ObjectNumber.Value(), err)
+	}
 	if typ == nil {
 		return nil
 	}
-	if *typ == "Pages" {
-		if err := detectPageTreeWatermarks(ctx, &ir); err != nil {
+	if typ.Value() == "Pages" {
+		if err := detectPageTreeWatermarks(c, ctx, &ir); err != nil {
 			return fmt.Errorf("page tree child %d obj#%d: nested pages: %w", pos, ir.ObjectNumber.Value(), err)
 		}
 		return nil
 	}
-	if *typ != "Page" {
+	if typ.Value() != "Page" {
 		return nil
 	}
-	found, err := findPageWatermarks(ctx, &ir)
+	found, err := findPageWatermarks(c, ctx, &ir)
 	if err != nil {
 		return fmt.Errorf("page tree child %d obj#%d: page watermarks: %w", pos, ir.ObjectNumber.Value(), err)
 	}
@@ -2695,7 +2885,10 @@ func detectPageTreeChildWatermarks(ctx *model.Context, o types.Object, pos int) 
 	return nil
 }
 
-func detectPageTreeWatermarks(ctx *model.Context, root *types.IndirectRef) error {
+func detectPageTreeWatermarks(c context.Context, ctx *model.Context, root *types.IndirectRef) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if root == nil {
 		return errors.New("page tree: missing root reference")
 	}
@@ -2715,13 +2908,16 @@ func detectPageTreeWatermarks(ctx *model.Context, root *types.IndirectRef) error
 		return fmt.Errorf("page tree: dereference Kids: %w", err)
 	}
 	for i, o := range kids {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		if ctx.Watermarked {
 			return nil
 		}
 		if o == nil {
 			continue
 		}
-		if err := detectPageTreeChildWatermarks(ctx, o, i+1); err != nil {
+		if err := detectPageTreeChildWatermarks(c, ctx, o, i+1); err != nil {
 			return err
 		}
 	}
@@ -2738,9 +2934,11 @@ func validateWatermarkContext(ctx *model.Context) error {
 	return nil
 }
 
-// DetectPageTreeWatermarks checks xRefTable's page tree for watermarks
-// and records the result to xRefTable.Watermarked.
-func DetectPageTreeWatermarks(ctx *model.Context) error {
+// DetectPageTreeWatermarks checks the page tree for watermarks, records the result and supports cancellation.
+func DetectPageTreeWatermarks(c context.Context, ctx *model.Context) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if err := validateWatermarkContext(ctx); err != nil {
 		return err
 	}
@@ -2752,7 +2950,7 @@ func DetectPageTreeWatermarks(ctx *model.Context) error {
 	if root == nil {
 		return errors.New("page tree watermarks: missing pages root")
 	}
-	if err := detectPageTreeWatermarks(ctx, root); err != nil {
+	if err := detectPageTreeWatermarks(c, ctx, root); err != nil {
 		return fmt.Errorf("page tree watermarks: %w", err)
 	}
 	return nil
@@ -2766,32 +2964,25 @@ func isWatermarkOCG(ctx *model.Context, o types.Object, pos int) (bool, error) {
 	if d == nil {
 		return false, nil
 	}
-	o, found := d.Find("Type")
-	if !found {
-		return false, nil
-	}
-	n, err := ctx.Dereference(o)
+	typ, _, err := ctx.DereferenceNameEntry(d, "Type")
 	if err != nil {
 		return false, fmt.Errorf("optional content group %d: type: %w", pos, err)
 	}
-	typ, ok := n.(types.Name)
-	if !ok || typ != "OCG" {
+	if typ == nil || typ.Value() != "OCG" {
 		return false, nil
 	}
-	o, found = d.Find("Name")
-	if !found {
-		return false, nil
-	}
-	n, err = ctx.Dereference(o)
+	name, _, err := ctx.DereferenceStringEntry(d, "Name")
 	if err != nil {
 		return false, fmt.Errorf("optional content group %d: name: %w", pos, err)
 	}
-	name, ok := n.(types.StringLiteral)
-	return ok && (name == "Background" || name == "Watermark"), nil
+	return name != nil && (*name == "Background" || *name == "Watermark"), nil
 }
 
-func containsWatermarkOCG(ctx *model.Context, a types.Array) (bool, error) {
+func containsWatermarkOCG(c context.Context, ctx *model.Context, a types.Array) (bool, error) {
 	for i, o := range a {
+		if err := contextutil.Check(c); err != nil {
+			return false, err
+		}
 		if o == nil {
 			continue
 		}
@@ -2806,9 +2997,11 @@ func containsWatermarkOCG(ctx *model.Context, a types.Array) (bool, error) {
 	return false, nil
 }
 
-// DetectWatermarks checks ctx for watermarks
-// and records the result to xRefTable.Watermarked.
-func DetectWatermarks(ctx *model.Context) error {
+// DetectWatermarks checks ctx for watermarks, records the result and supports cancellation.
+func DetectWatermarks(c context.Context, ctx *model.Context) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if err := validateWatermarkContext(ctx); err != nil {
 		return err
 	}
@@ -2820,7 +3013,7 @@ func DetectWatermarks(ctx *model.Context) error {
 		}
 		return fmt.Errorf("optional content groups: %w", err)
 	}
-	found, err := containsWatermarkOCG(ctx, a)
+	found, err := containsWatermarkOCG(c, ctx, a)
 	if err != nil {
 		return err
 	}
@@ -2830,5 +3023,5 @@ func DetectWatermarks(ctx *model.Context) error {
 		return nil
 	}
 
-	return DetectPageTreeWatermarks(ctx)
+	return DetectPageTreeWatermarks(c, ctx)
 }

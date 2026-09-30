@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package matrix provides affine transformations for PDF coordinates.
 package matrix
 
 import (
@@ -23,21 +24,24 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
+// Angle conversion factors.
 const (
 	DegToRad = math.Pi / 180
 	RadToDeg = 180 / math.Pi
 )
 
+// Matrix represents a three-dimensional affine transformation matrix.
 type Matrix [3][3]float64
 
+// IdentMatrix is the identity transformation matrix.
 var IdentMatrix = Matrix{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}
 
 // Multiply calculates the product of two matrices.
 func (m Matrix) Multiply(n Matrix) Matrix {
 	var p Matrix
-	for i := 0; i < 3; i++ {
-		for j := 0; j < 3; j++ {
-			for k := 0; k < 3; k++ {
+	for i := range 3 {
+		for j := range 3 {
+			for k := range 3 {
 				p[i][j] += m[i][k] * n[k][j]
 			}
 		}

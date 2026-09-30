@@ -14,9 +14,11 @@
 	limitations under the License.
 */
 
+// Package primitives renders declarative page content and interactive form elements.
 package primitives
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/font"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
@@ -38,6 +41,7 @@ import (
 // See table 221 et.al.
 type FieldFlags int
 
+// PDF form field flag bits defined by PDF 32000 table 221 and related field-specific tables.
 const (
 	FieldReadOnly FieldFlags = 1 << iota
 	FieldRequired
@@ -70,6 +74,7 @@ const (
 
 // PDF is the central structure for PDF generation.
 type PDF struct {
+	ctx             context.Context
 	Paper           string               // default paper size
 	mediaBox        *types.Rectangle     // default media box
 	Crop            string               // default crop box
@@ -257,22 +262,22 @@ func (pdf *PDF) validateFonts() error {
 
 func (pdf *PDF) validateHeader() error {
 	if pdf.Header != nil {
+		pdf.Header.pdf = pdf
 		if err := pdf.Header.validate(); err != nil {
 			return err
 		}
 		pdf.Header.position = types.TopCenter
-		pdf.Header.pdf = pdf
 	}
 	return nil
 }
 
 func (pdf *PDF) validateFooter() error {
 	if pdf.Footer != nil {
+		pdf.Footer.pdf = pdf
 		if err := pdf.Footer.validate(); err != nil {
 			return err
 		}
 		pdf.Footer.position = types.BottomCenter
-		pdf.Footer.pdf = pdf
 	}
 	return nil
 }
@@ -440,8 +445,12 @@ func (pdf *PDF) validatePages() ([]int, error) {
 	return pageNrs, nil
 }
 
-// Validate validates pdf.
-func (pdf *PDF) Validate() error {
+// Validate validates pdf and supports cancellation.
+func (pdf *PDF) Validate(c context.Context) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	pdf.ctx = c
 	if err := pdf.validatePageBoundaries(); err != nil {
 		return fmt.Errorf("page boundaries: %w", err)
 	}
@@ -609,7 +618,7 @@ func (pdf *PDF) idForFontName(fontName, fontLang string, pageFonts, globalFonts 
 				//fmt.Printf("searching for %s - obj:%d fontName:%s prefix:%s\n", fontName, objNr, fo.FontName, fo.Prefix)
 				if fontName == fo.FontName {
 					indRef = types.NewIndirectRef(objNr, 0)
-					userFont, err := font.IsUserFont(fontName)
+					userFont, err := pdf.XRefTable.FontRepository().IsUserFont(pdf.ctx, fontName)
 					if err != nil {
 						return "", fmt.Errorf("font %s: load metrics: %w", fontName, err)
 					}
@@ -635,12 +644,12 @@ func (pdf *PDF) idForFontName(fontName, fontLang string, pageFonts, globalFonts 
 	return id, nil
 }
 
-func fontIndRef(xRefTable *model.XRefTable, fontName, fontLang string) (*types.IndirectRef, error) {
+func fontIndRef(c context.Context, xRefTable *model.XRefTable, fontName, fontLang string) (*types.IndirectRef, error) {
 	fName := fontName
 	if strings.HasPrefix(fontName, "cjk:") {
 		fName = strings.TrimPrefix(fontName, "cjk:")
 	}
-	userFont, err := font.IsUserFont(fName)
+	userFont, err := xRefTable.FontRepository().IsUserFont(c, fName)
 	if err != nil {
 		return nil, fmt.Errorf("font %s: load metrics: %w", fName, err)
 	}
@@ -648,7 +657,7 @@ func fontIndRef(xRefTable *model.XRefTable, fontName, fontLang string) (*types.I
 		// Postpone font creation.
 		return xRefTable.IndRefForNewObject(types.NewDict())
 	}
-	return pdffont.EnsureFontDict(xRefTable, fName, fontLang, "", false, nil)
+	return pdffont.EnsureFontDict(c, xRefTable, fName, fontLang, "", false, nil)
 }
 
 func (pdf *PDF) ensureFont(fontID, fontName, fontLang string, fonts model.FontMap) (*types.IndirectRef, error) {
@@ -661,7 +670,7 @@ func (pdf *PDF) ensureFont(fontID, fontName, fontLang string, fonts model.FontMa
 			ir  *types.IndirectRef
 			err error
 		)
-		userFont, err := font.IsUserFont(fontName)
+		userFont, err := pdf.XRefTable.FontRepository().IsUserFont(pdf.ctx, fontName)
 		if err != nil {
 			return nil, fmt.Errorf("font %s: load metrics: %w", fontName, err)
 		}
@@ -669,7 +678,7 @@ func (pdf *PDF) ensureFont(fontID, fontName, fontLang string, fonts model.FontMa
 			// Postpone font creation.
 			ir, err = pdf.XRefTable.IndRefForNewObject(types.NewDict())
 		} else {
-			ir, err = pdffont.EnsureFontDict(pdf.XRefTable, fontName, fr.Lang, "", false, nil)
+			ir, err = pdffont.EnsureFontDict(pdf.ctx, pdf.XRefTable, fontName, fr.Lang, "", false, nil)
 		}
 		if err != nil {
 			return nil, err
@@ -709,7 +718,7 @@ func (pdf *PDF) ensureFont(fontID, fontName, fontLang string, fonts model.FontMa
 	}
 
 	if indRef == nil {
-		if indRef, err = fontIndRef(pdf.XRefTable, fontName, fontLang); err != nil {
+		if indRef, err = fontIndRef(pdf.ctx, pdf.XRefTable, fontName, fontLang); err != nil {
 			return nil, err
 		}
 	}
@@ -1128,8 +1137,12 @@ func (pdf *PDF) renderContentPage(page *PDFPage, p *model.Page, pageNr int, font
 	return nil
 }
 
-// RenderPages renders page content into model.Pages
-func (pdf *PDF) RenderPages() ([]*model.Page, model.FontMap, error) {
+// RenderPages renders page content into model.Pages and supports cancellation.
+func (pdf *PDF) RenderPages(c context.Context) ([]*model.Page, model.FontMap, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, err
+	}
+	pdf.ctx = c
 	pdf.calcInheritedAttrs()
 
 	pp := []*model.Page{}
@@ -1137,6 +1150,9 @@ func (pdf *PDF) RenderPages() ([]*model.Page, model.FontMap, error) {
 	imageMap := model.ImageMap{}
 
 	for i, page := range pdf.pages {
+		if err := c.Err(); err != nil {
+			return nil, nil, err
+		}
 
 		pageNr := i + 1
 
@@ -1163,5 +1179,5 @@ func (pdf *PDF) RenderPages() ([]*model.Page, model.FontMap, error) {
 		pp = append(pp, &p)
 	}
 
-	return pp, fontMap, nil
+	return pp, fontMap, c.Err()
 }

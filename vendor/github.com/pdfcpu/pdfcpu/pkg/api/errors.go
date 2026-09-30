@@ -21,7 +21,14 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/font"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
+
+// VersionRequirementError reports an element requiring a newer PDF version.
+type VersionRequirementError = pdfcpu.VersionRequirementError
+
+// ConfigurationSchemaCompatibilityError reports an incompatible persisted configuration schema.
+type ConfigurationSchemaCompatibilityError = model.ConfigurationSchemaCompatibilityError
 
 var (
 	// ErrAttachmentOutputCollision signals attachments resolving to the same output path.
@@ -32,6 +39,15 @@ var (
 
 	// ErrCircularBookmarks signals a circular bookmark tree.
 	ErrCircularBookmarks = pdfcpu.ErrCircularBookmarks
+
+	// ErrConfigurationNotWritable signals that the selected configuration mode forbids writes.
+	ErrConfigurationNotWritable = errors.New("configuration is not writable")
+
+	// ErrConfigurationResetRequired signals a configuration schema older than the schema required by this build.
+	ErrConfigurationResetRequired = model.ErrConfigurationResetRequired
+
+	// ErrConfigurationSchemaTooNew signals a configuration schema newer than the schemas supported by this build.
+	ErrConfigurationSchemaTooNew = model.ErrConfigurationSchemaTooNew
 
 	// ErrDuplicateCertificateDestination signals certificate inputs targeting the same installed file.
 	ErrDuplicateCertificateDestination = errors.New("duplicate certificate destination")
@@ -56,6 +72,12 @@ var (
 
 	// ErrInvalidCSV signals malformed or incomplete CSV form data.
 	ErrInvalidCSV = errors.New("invalid csv input file")
+
+	// ErrInvalidConfigurationMode signals an unsupported configuration loading mode.
+	ErrInvalidConfigurationMode = errors.New("invalid configuration mode")
+
+	// ErrInvalidConfigurationSchema signals malformed configuration schema metadata.
+	ErrInvalidConfigurationSchema = model.ErrInvalidConfigurationSchema
 
 	// ErrInvalidCutConfiguration signals an invalid cut configuration.
 	ErrInvalidCutConfiguration = errors.New("invalid cut configuration")
@@ -84,11 +106,11 @@ var (
 	// ErrInvalidPageMode signals an unsupported page mode.
 	ErrInvalidPageMode = errors.New("invalid page mode")
 
-	// ErrInvalidRotation signals a rotation that is not a multiple of 90 degrees.
-	ErrInvalidRotation = errors.New("invalid rotation")
-
 	// ErrInvalidResizeConfiguration signals an invalid resize configuration.
 	ErrInvalidResizeConfiguration = errors.New("invalid resize configuration")
+
+	// ErrInvalidRotation signals a rotation that is not a multiple of 90 degrees.
+	ErrInvalidRotation = errors.New("invalid rotation")
 
 	// ErrInvalidSplitPageNumberSequence signals an invalid split page number sequence.
 	ErrInvalidSplitPageNumberSequence = errors.New("invalid split page number sequence")
@@ -105,11 +127,11 @@ var (
 	// ErrMissingAnnotation signals a missing required annotation.
 	ErrMissingAnnotation = pdfcpu.ErrMissingAnnotation
 
-	// ErrMissingBookmarks signals that no bookmarks were provided.
-	ErrMissingBookmarks = errors.New("missing bookmarks")
-
 	// ErrMissingBookletConfiguration signals a missing booklet configuration.
 	ErrMissingBookletConfiguration = errors.New("missing booklet configuration")
+
+	// ErrMissingBookmarks signals that no bookmarks were provided.
+	ErrMissingBookmarks = errors.New("missing bookmarks")
 
 	// ErrMissingBoxConfiguration signals a missing box configuration.
 	ErrMissingBoxConfiguration = errors.New("missing box configuration")
@@ -122,6 +144,9 @@ var (
 
 	// ErrMissingConfiguration signals a missing pdfcpu configuration.
 	ErrMissingConfiguration = errors.New("missing configuration")
+
+	// ErrMissingContext signals a missing required Go context.
+	ErrMissingContext = pdfcpu.ErrMissingContext
 
 	// ErrMissingCutConfiguration signals a missing cut configuration.
 	ErrMissingCutConfiguration = errors.New("missing cut configuration")
@@ -226,18 +251,20 @@ var (
 	// Deprecated: viewer-preferences reset operations are idempotent and no longer return ErrNoOp.
 	ErrNoOp = errors.New("no operation")
 
+	// ErrNoOutlines is retained for source compatibility.
+	// Deprecated: use ErrNoBookmarks.
+	ErrNoOutlines = ErrNoBookmarks
+
 	// ErrNoPropertyRemoved signals that a remove operation did not match any property.
 	ErrNoPropertyRemoved = errors.New("no property removed")
 
 	// ErrNoSignatures signals that a PDF has no signatures to process.
 	ErrNoSignatures = pdfcpu.ErrNoSignatures
 
-	// Deprecated: use ErrNoBookmarks.
-	ErrNoOutlines = ErrNoBookmarks
-
 	// ErrNUpImageOutputConflict signals that n-up output aliases an image input.
 	ErrNUpImageOutputConflict = errors.New("n-up image output aliases input")
 
+	// ErrOutlines is retained for source compatibility.
 	// Deprecated: use ErrExistingBookmarks.
 	ErrOutlines = ErrExistingBookmarks
 
@@ -246,6 +273,9 @@ var (
 
 	// ErrUnsupportedCertificateFile signals an unsupported certificate input file.
 	ErrUnsupportedCertificateFile = pdfcpu.ErrUnsupportedCertificateFile
+
+	// ErrUnsupportedConfigurationSchema signals a configuration schema newer than the supported range.
+	ErrUnsupportedConfigurationSchema = errors.New("unsupported configuration schema")
 
 	// ErrUnsupportedFontFile signals an unsupported font input file.
 	ErrUnsupportedFontFile = errors.New("unsupported font file")
@@ -258,4 +288,7 @@ var (
 
 	// ErrUserFontNotFound is retained as a compatibility alias for ErrUnknownFont.
 	ErrUserFontNotFound = font.ErrUnknownFont
+
+	// ErrVersionTooLow signals that an element requires a newer declared PDF version.
+	ErrVersionTooLow = pdfcpu.ErrVersionTooLow
 )

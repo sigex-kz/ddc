@@ -18,6 +18,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -27,10 +28,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/internal/fileutil"
 	"github.com/pdfcpu/pdfcpu/pkg/font"
-	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
@@ -38,9 +38,19 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
+// FontInstallResult reports non-fatal cleanup failures encountered while installing fonts.
+type FontInstallResult struct {
+	Warnings []error
+}
+
+// FontCheatSheetResult identifies cheat-sheet PDFs that were published before the operation returned.
+type FontCheatSheetResult struct {
+	Paths []string
+}
+
 type fontAPIOperations struct {
 	userFontDir               string
-	reloadUserFonts           func() error
+	reloadUserFonts           func(context.Context) error
 	installTrueTypeFont       func(string, string) (font.InstallResult, error)
 	installTrueTypeCollection func(string, string) ([]font.InstallResult, error)
 	createStagingDir          func(string) (string, error)
@@ -48,7 +58,6 @@ type fontAPIOperations struct {
 	commitStagedFonts         func(string, string) (fontInstallCommit, error)
 	removeAll                 func(string) error
 	rename                    func(string, string) error
-	reportCleanupWarning      func(error)
 }
 
 type fontInstallCommit struct {
@@ -85,15 +94,15 @@ func defaultFontInstallFileOperations() fontInstallFileOperations {
 	}
 }
 
-type fontDemoOperations struct {
-	loadUserFonts func() error
-	userFont      func(string) (font.TTFLight, bool, error)
-	userFontNames func() ([]string, error)
+type fontCheatSheetOperations struct {
+	loadUserFonts func(context.Context) error
+	userFont      func(context.Context, string) (font.TTFLight, bool, error)
+	userFontNames func(context.Context) ([]string, error)
 	createXRef    func() (*model.XRefTable, error)
-	createPage    func(*model.XRefTable, int, int, int, string) (model.Page, error)
+	createPage    func(context.Context, *model.XRefTable, int, int, int, string) (model.Page, error)
 	catalog       func(*model.XRefTable) (types.Dict, error)
-	addPageTree   func(*model.XRefTable, types.Dict, model.Page) error
-	createPDFFile func(*model.XRefTable, string, *model.Configuration) error
+	addPageTree   func(context.Context, *model.XRefTable, types.Dict, model.Page) error
+	createPDFFile func(context.Context, *model.XRefTable, string, *model.Configuration) error
 	files         cheatSheetFileOperations
 }
 
@@ -114,7 +123,7 @@ func defaultCheatSheetFileOperations() cheatSheetFileOperations {
 	}
 }
 
-func defaultFontAPIOperations() fontAPIOperations {
+func defaultFontAPIOperationsWithResult(result *FontInstallResult) fontAPIOperations {
 	ops := fontAPIOperations{
 		userFontDir:     font.UserFontDir,
 		reloadUserFonts: font.ReloadUserFonts,
@@ -127,14 +136,11 @@ func defaultFontAPIOperations() fontAPIOperations {
 		commitStagedFonts: commitStagedFonts,
 		removeAll:         os.RemoveAll,
 		rename:            fileutil.ReplaceFile,
-		reportCleanupWarning: func(err error) {
-			fmt.Fprintf(os.Stderr, "pdfcpu: warning: %v\n", err)
-		},
 	}
 	ops.installTrueTypeFont = func(fontDir, fileName string) (font.InstallResult, error) {
 		report, err := font.InstallTrueTypeFontResult(fontDir, fileName)
 		for _, warning := range report.Warnings {
-			ops.reportCleanupWarning(warning)
+			addFontInstallWarning(result, warning)
 		}
 		if err != nil {
 			return font.InstallResult{}, err
@@ -147,58 +153,136 @@ func defaultFontAPIOperations() fontAPIOperations {
 	ops.installTrueTypeCollection = func(fontDir, fileName string) ([]font.InstallResult, error) {
 		report, err := font.InstallTrueTypeCollectionResults(fontDir, fileName)
 		for _, warning := range report.Warnings {
-			ops.reportCleanupWarning(warning)
+			addFontInstallWarning(result, warning)
 		}
 		return report.Fonts, err
 	}
 	return ops
 }
 
-func defaultFontDemoOperations() fontDemoOperations {
-	return fontDemoOperations{
+func addFontInstallWarning(result *FontInstallResult, err error) {
+	if result != nil && err != nil {
+		result.Warnings = append(result.Warnings, err)
+	}
+}
+
+func defaultFontCheatSheetOperations() fontCheatSheetOperations {
+	return fontCheatSheetOperations{
 		loadUserFonts: font.LoadUserFonts,
 		userFont:      font.UserFont,
 		userFontNames: font.UserFontNames,
-		createXRef:    pdfcpu.CreateDemoXRef,
-		createPage:    createUserFontDemoPage,
+		createXRef:    createFontXRefTable,
+		createPage:    createUserFontCheatSheetPage,
 		catalog:       func(xRefTable *model.XRefTable) (types.Dict, error) { return xRefTable.Catalog() },
-		addPageTree:   pdfcpu.AddPageTreeWithSamplePage,
+		addPageTree:   addFontPageTree,
 		createPDFFile: CreatePDFFile,
 		files:         defaultCheatSheetFileOperations(),
 	}
 }
 
-// ListFonts returns a list of supported fonts.
-func ListFonts() ([]string, error) {
-	return listFonts(font.UserFontNamesVerbose)
+func loadCheatSheetUserFonts(c context.Context, ops fontCheatSheetOperations) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if err := ops.loadUserFonts(c); err != nil {
+		return err
+	}
+	return contextutil.Check(c)
 }
 
-func listFonts(userFontNames func() ([]string, error)) ([]string, error) {
+func cheatSheetUserFont(c context.Context, fontName string, ops fontCheatSheetOperations) (font.TTFLight, bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return font.TTFLight{}, false, err
+	}
+	ttf, ok, err := ops.userFont(c, fontName)
+	if err != nil {
+		return font.TTFLight{}, false, err
+	}
+	if err := contextutil.Check(c); err != nil {
+		return font.TTFLight{}, false, err
+	}
+	return ttf, ok, nil
+}
+
+func cheatSheetUserFontNames(c context.Context, ops fontCheatSheetOperations) ([]string, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
+	names, err := ops.userFontNames(c)
+	if err != nil {
+		return nil, err
+	}
+	return names, contextutil.Check(c)
+}
+
+func createCheatSheetPage(c context.Context, xRefTable *model.XRefTable, w, h, plane int, fontName string, ops fontCheatSheetOperations) (model.Page, error) {
+	if err := contextutil.Check(c); err != nil {
+		return model.Page{}, err
+	}
+	p, err := ops.createPage(c, xRefTable, w, h, plane, fontName)
+	if err != nil {
+		return model.Page{}, err
+	}
+	return p, contextutil.Check(c)
+}
+
+func createCheatSheetPDF(c context.Context, xRefTable *model.XRefTable, fileName string, ops fontCheatSheetOperations) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if err := ops.createPDFFile(c, xRefTable, fileName, nil); err != nil {
+		return err
+	}
+	return contextutil.Check(c)
+}
+
+// ListFonts returns a list of supported fonts and supports cancellation.
+func ListFonts(c context.Context) ([]string, error) {
+	return listFontsUsing(c, font.UserFontNamesVerbose)
+}
+
+func listFontsUsing(c context.Context, userFontNames func(context.Context) ([]string, error)) ([]string, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	// Get list of PDF core fonts.
 	coreFonts := font.CoreFontNames()
 	for i, s := range coreFonts {
+		if err := contextutil.Check(c); err != nil {
+			return nil, err
+		}
 		coreFonts[i] = "  " + s
 	}
 	sort.Strings(coreFonts)
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 
 	sscf := []string{"Corefonts:"}
 	sscf = append(sscf, coreFonts...)
 
 	// Get installed fonts from pdfcpu config dir in users home dir
-	userFonts, err := userFontNames()
+	userFonts, err := userFontNames(c)
 	if err != nil {
 		return nil, fmt.Errorf("list fonts: load user fonts: %w", err)
 	}
 	for i, s := range userFonts {
+		if err := contextutil.Check(c); err != nil {
+			return nil, err
+		}
 		userFonts[i] = "  " + s
 	}
 	sort.Strings(userFonts)
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 
 	ssuf := []string{fmt.Sprintf("Userfonts(%s):", font.UserFontDir)}
 	ssuf = append(ssuf, userFonts...)
 
 	sscf = append(sscf, "")
-	return append(sscf, ssuf...), nil
+	result := append(sscf, ssuf...)
+	return result, contextutil.Check(c)
 }
 
 func validateFontFiles(fileNames []string) error {
@@ -215,12 +299,18 @@ func validateFontFiles(fileNames []string) error {
 	return nil
 }
 
-// InstallFonts transactionally installs true type fonts for embedding.
-// The batch uses directory staging, backup, commit, and rollback rather than
-// the single-file stagedOutput publication contract.
-// An empty file list reloads already installed user fonts without modifying the font directory.
-func InstallFonts(fileNames []string) error {
-	return installFonts(fileNames, defaultFontAPIOperations())
+// InstallFontsWithResult transactionally installs true type fonts, supports cancellation and reports non-fatal
+// cleanup warnings. Cancellation before publication leaves the installed font directory unchanged.
+func InstallFontsWithResult(c context.Context, fileNames []string) (result FontInstallResult, err error) {
+	ops := defaultFontAPIOperationsWithResult(&result)
+	err = installFontsUsing(c, fileNames, ops, &result)
+	return result, err
+}
+
+// InstallFonts transactionally installs true type fonts and supports cancellation.
+func InstallFonts(c context.Context, fileNames []string) error {
+	_, err := InstallFontsWithResult(c, fileNames)
+	return err
 }
 
 func stagedFontFiles(stagingDir string) ([]string, error) {
@@ -302,6 +392,9 @@ func commitStagedFontsWithOperations(fontDir, stagingDir string, fs fontInstallF
 		file := &files[len(files)-1]
 		target := filepath.Join(fontDir, name)
 		if _, err := fs.lstat(target); err == nil {
+			if err := fileutil.PreserveGroup(filepath.Join(stagingDir, name), target); err != nil {
+				return fontInstallCommit{}, errors.Join(err, rollback())
+			}
 			if err := fs.rename(target, filepath.Join(backupDir, name)); err != nil {
 				return fontInstallCommit{}, errors.Join(fmt.Errorf("backup font %s: %w", name, err), rollback())
 			}
@@ -378,15 +471,21 @@ func installFontInput(stagingDir, fileName string, input int, ops fontAPIOperati
 	return nil, inputDir, nil
 }
 
-func installFontInputs(fileNames []string, stagingDir string, ops fontAPIOperations) error {
+func installFontInputs(c context.Context, fileNames []string, stagingDir string, ops fontAPIOperations) error {
 	owners := map[string]string{}
 	for i, fn := range fileNames {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		input := i + 1
 		results, inputDir, err := installFontInput(stagingDir, fn, input, ops)
 		if err != nil {
 			return fmt.Errorf("install fonts: input %d: %w", input, err)
 		}
 		for _, result := range results {
+			if err := contextutil.Check(c); err != nil {
+				return err
+			}
 			origin := stagedFontOrigin(input, fn, result)
 			if err := mergeStagedFont(inputDir, stagingDir, result, origin, owners, ops); err != nil {
 				return fmt.Errorf("install fonts: %w", err)
@@ -399,22 +498,33 @@ func installFontInputs(fileNames []string, stagingDir string, ops fontAPIOperati
 	return nil
 }
 
-func installFonts(fileNames []string, ops fontAPIOperations) (err error) {
+func reloadInstalledFonts(c context.Context, ops fontAPIOperations) error {
+	if err := ops.reloadUserFonts(c); err != nil {
+		return fmt.Errorf("install fonts: reload user fonts: %w", err)
+	}
+	return contextutil.Check(c)
+}
+
+func rollbackFontInstall(commit fontInstallCommit, cause error) error {
+	rollbackErr := commit.rollback()
+	if rollbackErr != nil {
+		rollbackErr = fmt.Errorf("install fonts: rollback batch: %w", rollbackErr)
+	}
+	return errors.Join(cause, rollbackErr)
+}
+
+func installFontsUsing(c context.Context, fileNames []string, ops fontAPIOperations, result *FontInstallResult) (err error) {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if len(fileNames) == 0 {
-		if err := ops.reloadUserFonts(); err != nil {
-			return fmt.Errorf("install fonts: reload user fonts: %w", err)
-		}
-		return nil
+		return reloadInstalledFonts(c, ops)
 	}
 	if err := validateFontFiles(fileNames); err != nil {
 		return err
 	}
 	if ops.userFontDir == "" {
 		return fmt.Errorf("install fonts: user font directory: %w", ErrMissingConfiguration)
-	}
-
-	if log.CLIEnabled() {
-		log.CLI.Printf("installing to %s...", ops.userFontDir)
 	}
 
 	stagingDir, err := ops.createStagingDir(ops.userFontDir)
@@ -426,35 +536,39 @@ func installFonts(fileNames []string, ops fontAPIOperations) (err error) {
 		if cleanupErr := ops.removeAll(stagingDir); cleanupErr != nil {
 			cleanupErr = fmt.Errorf("install fonts: remove staging directory: %w", cleanupErr)
 			if installed {
-				ops.reportCleanupWarning(cleanupErr)
+				addFontInstallWarning(result, cleanupErr)
 			} else {
 				err = errors.Join(err, cleanupErr)
 			}
 		}
 	}()
-	if err := installFontInputs(fileNames, stagingDir, ops); err != nil {
+	if err := installFontInputs(c, fileNames, stagingDir, ops); err != nil {
+		return err
+	}
+	if err := contextutil.Check(c); err != nil {
 		return err
 	}
 	commit, err := ops.commitStagedFonts(ops.userFontDir, stagingDir)
 	if err != nil {
 		return fmt.Errorf("install fonts: commit batch: %w", err)
 	}
-	if err := ops.reloadUserFonts(); err != nil {
-		reloadErr := fmt.Errorf("install fonts: reload user fonts: %w", err)
-		rollbackErr := commit.rollback()
-		if rollbackErr != nil {
-			rollbackErr = fmt.Errorf("install fonts: rollback batch: %w", rollbackErr)
-		}
-		return errors.Join(reloadErr, rollbackErr)
+	if err := contextutil.Check(c); err != nil {
+		return rollbackFontInstall(commit, err)
+	}
+	if err := reloadInstalledFonts(c, ops); err != nil {
+		return rollbackFontInstall(commit, err)
 	}
 	installed = true
 	if err := commit.finalize(); err != nil {
-		ops.reportCleanupWarning(fmt.Errorf("install fonts: finalize batch: %w", err))
+		addFontInstallWarning(result, fmt.Errorf("install fonts: finalize batch: %w", err))
 	}
 	return nil
 }
 
-func rowLabel(xRefTable *model.XRefTable, i int, td model.TextDescriptor, baseFontName, baseFontKey string, buf *bytes.Buffer, mb *types.Rectangle, left bool) error {
+func rowLabel(c context.Context, xRefTable *model.XRefTable, i int, td model.TextDescriptor, baseFontName, baseFontKey string, buf *bytes.Buffer, mb *types.Rectangle, left bool) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	x := 39.
 	if !left {
 		x = 7750
@@ -464,13 +578,13 @@ func rowLabel(xRefTable *model.XRefTable, i int, td model.TextDescriptor, baseFo
 	td.StrokeCol, td.FillCol = color.Black, color.SimpleColor{B: .8}
 	td.FontName, td.FontKey, td.FontSize = baseFontName, baseFontKey, 14
 
-	if _, err := model.WriteMultiLine(xRefTable, buf, mb, nil, td); err != nil {
+	if _, err := model.WriteMultiLine(c, xRefTable, buf, mb, nil, td); err != nil {
 		return fmt.Errorf("render row label %d: %w", i, err)
 	}
 	return nil
 }
 
-func columnsLabel(xRefTable *model.XRefTable, td model.TextDescriptor, baseFontName, baseFontKey string, buf *bytes.Buffer, mb *types.Rectangle, top bool) error {
+func columnsLabel(c context.Context, xRefTable *model.XRefTable, td model.TextDescriptor, baseFontName, baseFontKey string, buf *bytes.Buffer, mb *types.Rectangle, top bool) error {
 	y := 7700.
 	if !top {
 		y = 0
@@ -479,10 +593,13 @@ func columnsLabel(xRefTable *model.XRefTable, td model.TextDescriptor, baseFontN
 	td.FontName, td.FontKey = baseFontName, baseFontKey
 
 	for i := range 256 {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		s := fmt.Sprintf("#%02X", i)
 		td.X, td.Y, td.Text, td.FontSize = float64(70+i*30), y, s, 14
 		td.StrokeCol, td.FillCol = color.Black, color.SimpleColor{B: .8}
-		if _, err := model.WriteMultiLine(xRefTable, buf, mb, nil, td); err != nil {
+		if _, err := model.WriteMultiLine(c, xRefTable, buf, mb, nil, td); err != nil {
 			return fmt.Errorf("render column label %d: %w", i, err)
 		}
 	}
@@ -493,7 +610,10 @@ func surrogate(r rune) bool {
 	return r >= 0xD800 && r <= 0xDFFF
 }
 
-func writeUserFontDemoContent(xRefTable *model.XRefTable, p model.Page, fontName string, plane int) error {
+func writeUserFontCheatSheetContent(c context.Context, xRefTable *model.XRefTable, p model.Page, fontName string, plane int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	baseFontName := "Helvetica"
 	baseFontSize := 24
 	baseFontKey := p.Fm.EnsureKey(baseFontName)
@@ -503,6 +623,9 @@ func writeUserFontDemoContent(xRefTable *model.XRefTable, p model.Page, fontName
 
 	fillCol := color.NewSimpleColor(0xf7e6c7)
 	draw.DrawGrid(p.Buf, 16*16, 16*16, types.RectForWidthAndHeight(55, 16, 16*480, 16*480), color.Black, &fillCol)
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 
 	td := model.TextDescriptor{
 		FontName:       fontName,
@@ -527,22 +650,28 @@ func writeUserFontDemoContent(xRefTable *model.XRefTable, p model.Page, fontName
 	td.X, td.Y, td.Text = p.MediaBox.Width()/2, 7750, s
 	td.FontName, td.FontKey = baseFontName, baseFontKey
 	td.StrokeCol, td.FillCol = color.NewSimpleColor(0x77bdbd), color.NewSimpleColor(0xab6f30)
-	if _, err := model.WriteMultiLine(xRefTable, p.Buf, p.MediaBox, nil, td); err != nil {
+	if _, err := model.WriteMultiLine(c, xRefTable, p.Buf, p.MediaBox, nil, td); err != nil {
 		return fmt.Errorf("render font demo heading: %w", err)
 	}
 
-	if err := columnsLabel(xRefTable, td, baseFontName, baseFontKey, p.Buf, p.MediaBox, true); err != nil {
+	if err := columnsLabel(c, xRefTable, td, baseFontName, baseFontKey, p.Buf, p.MediaBox, true); err != nil {
 		return err
 	}
 	base := rune(plane * 0x10000)
 	for j := range 256 {
-		if err := rowLabel(xRefTable, j, td, baseFontName, baseFontKey, p.Buf, p.MediaBox, true); err != nil {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		if err := rowLabel(c, xRefTable, j, td, baseFontName, baseFontKey, p.Buf, p.MediaBox, true); err != nil {
 			return err
 		}
 		buf := make([]byte, 4)
 		td.StrokeCol, td.FillCol = color.Black, color.Black
 		td.FontName, td.FontKey, td.FontSize = fontName, fontKey, float64(fontSize-2)
 		for i := range 256 {
+			if err := contextutil.Check(c); err != nil {
+				return err
+			}
 			r := base + rune(j*256+i)
 			s = " "
 			if !surrogate(r) {
@@ -550,25 +679,28 @@ func writeUserFontDemoContent(xRefTable *model.XRefTable, p model.Page, fontName
 				s = string(buf[:n])
 			}
 			td.X, td.Y, td.Text = float64(70+i*30), float64(7672-j*30), s
-			if _, err := model.WriteMultiLine(xRefTable, p.Buf, p.MediaBox, nil, td); err != nil {
+			if _, err := model.WriteMultiLine(c, xRefTable, p.Buf, p.MediaBox, nil, td); err != nil {
 				return fmt.Errorf("render font demo glyph U+%04X: %w", r, err)
 			}
 		}
-		if err := rowLabel(xRefTable, j, td, baseFontName, baseFontKey, p.Buf, p.MediaBox, false); err != nil {
+		if err := rowLabel(c, xRefTable, j, td, baseFontName, baseFontKey, p.Buf, p.MediaBox, false); err != nil {
 			return err
 		}
 	}
-	if err := columnsLabel(xRefTable, td, baseFontName, baseFontKey, p.Buf, p.MediaBox, false); err != nil {
+	if err := columnsLabel(c, xRefTable, td, baseFontName, baseFontKey, p.Buf, p.MediaBox, false); err != nil {
 		return err
 	}
 	return nil
 }
 
-func createUserFontDemoPage(xRefTable *model.XRefTable, w, h, plane int, fontName string) (p model.Page, err error) {
+func createUserFontCheatSheetPage(c context.Context, xRefTable *model.XRefTable, w, h, plane int, fontName string) (p model.Page, err error) {
 	defer fault.Catch(&err)
+	if err := contextutil.Check(c); err != nil {
+		return model.Page{}, err
+	}
 	mediaBox := types.RectForDim(float64(w), float64(h))
 	p = model.NewPageWithBg(mediaBox, color.NewSimpleColor(0xbeded9))
-	if err := writeUserFontDemoContent(xRefTable, p, fontName, plane); err != nil {
+	if err := writeUserFontCheatSheetContent(c, xRefTable, p, fontName, plane); err != nil {
 		return model.Page{}, fmt.Errorf("render font demo page: %w", err)
 	}
 	return p, nil
@@ -637,7 +769,45 @@ func rollbackCheatSheets(dir, backupDir string, files []committedCheatSheet, fs 
 	return syncTransactionDirectories(fs, dir)
 }
 
-func publishCheatSheets(dir, stagingDir string, names []string, fs cheatSheetFileOperations) (published bool, err error) {
+func publishCheatSheet(c context.Context, dir, stagingDir, backupDir string, file *committedCheatSheet, fs cheatSheetFileOperations) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	target := filepath.Join(dir, file.name)
+	if _, err := fs.lstat(target); err == nil {
+		if err := fileutil.PreserveGroup(filepath.Join(stagingDir, file.name), target); err != nil {
+			return err
+		}
+		if err := fs.rename(target, filepath.Join(backupDir, file.name)); err != nil {
+			return fmt.Errorf("backup cheat sheet %s: %w", file.name, err)
+		}
+		file.hadOriginal = true
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		if err := syncTransactionDirectories(fs, dir, backupDir); err != nil {
+			return fmt.Errorf("backup cheat sheet %s: %w", file.name, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect cheat sheet %s: %w", file.name, err)
+	}
+	if err := fs.rename(filepath.Join(stagingDir, file.name), target); err != nil {
+		return fmt.Errorf("publish cheat sheet %s: %w", file.name, err)
+	}
+	file.published = true
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if err := syncTransactionDirectories(fs, stagingDir, dir); err != nil {
+		return fmt.Errorf("publish cheat sheet %s: %w", file.name, err)
+	}
+	return nil
+}
+
+func publishCheatSheets(c context.Context, dir, stagingDir string, names []string, fs cheatSheetFileOperations) (published bool, err error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 	backupDir, err := fs.mkdirTemp(dir, ".pdfcpu-font-cheatsheet-backup-")
 	if err != nil {
 		return false, fmt.Errorf("create cheat-sheet backup: %w", err)
@@ -649,25 +819,12 @@ func publishCheatSheets(dir, stagingDir string, names []string, fs cheatSheetFil
 	for _, name := range names {
 		files = append(files, committedCheatSheet{name: name})
 		file := &files[len(files)-1]
-		target := filepath.Join(dir, name)
-		if _, err := fs.lstat(target); err == nil {
-			if err := fs.rename(target, filepath.Join(backupDir, name)); err != nil {
-				return false, rollback(fmt.Errorf("backup cheat sheet %s: %w", name, err))
-			}
-			file.hadOriginal = true
-			if err := syncTransactionDirectories(fs, dir, backupDir); err != nil {
-				return false, rollback(fmt.Errorf("backup cheat sheet %s: %w", name, err))
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return false, rollback(fmt.Errorf("inspect cheat sheet %s: %w", name, err))
+		if err := publishCheatSheet(c, dir, stagingDir, backupDir, file, fs); err != nil {
+			return false, rollback(err)
 		}
-		if err := fs.rename(filepath.Join(stagingDir, name), target); err != nil {
-			return false, rollback(fmt.Errorf("publish cheat sheet %s: %w", name, err))
-		}
-		file.published = true
-		if err := syncTransactionDirectories(fs, stagingDir, dir); err != nil {
-			return false, rollback(fmt.Errorf("publish cheat sheet %s: %w", name, err))
-		}
+	}
+	if err := contextutil.Check(c); err != nil {
+		return false, rollback(err)
 	}
 	if err := fs.removeAll(backupDir); err != nil {
 		return true, fmt.Errorf("published cheat sheets: remove backup: %w", err)
@@ -685,36 +842,56 @@ func normalizeCheatSheetDir(dir string) string {
 	return dir
 }
 
-// CreateUserFontDemoFiles atomically generates and publishes one PDF for each covered Unicode plane.
-// Generation failure leaves all existing output files untouched. Publication failure
-// attempts to restore every replaced file and joins any rollback failure.
-func CreateUserFontDemoFiles(dir, fn string) (err error) {
+// CreateUserFontCheatSheetsWithResult atomically generates and publishes one PDF for each covered Unicode plane,
+// supports cancellation and reports published paths.
+func CreateUserFontCheatSheetsWithResult(c context.Context, dir, fn string) (result FontCheatSheetResult, err error) {
 	defer fault.Catch(&err)
-	return createUserFontDemoFiles(dir, fn, defaultFontDemoOperations())
+	return createUserFontCheatSheetsUsing(c, dir, fn, defaultFontCheatSheetOperations())
 }
 
-func createUserFontDemoFiles(dir, fn string, ops fontDemoOperations) error {
-	if err := validateNoEmptyStrings([]string{fn}, "font name"); err != nil {
-		return fmt.Errorf("create font cheat sheet: %w", err)
+// CreateUserFontCheatSheets atomically generates and publishes one PDF for each covered Unicode plane and supports
+// cancellation.
+func CreateUserFontCheatSheets(c context.Context, dir, fn string) error {
+	_, err := CreateUserFontCheatSheetsWithResult(c, dir, fn)
+	return err
+}
+
+func createUserFontCheatSheetsUsing(c context.Context, dir string, fn string, ops fontCheatSheetOperations) (FontCheatSheetResult, error) {
+	if err := contextutil.Check(c); err != nil {
+		return FontCheatSheetResult{}, err
 	}
-	if err := ops.loadUserFonts(); err != nil {
-		return fmt.Errorf("create font cheat sheet: load user fonts: %w", err)
+	if err := validateNoEmptyStrings([]string{fn}, "font name"); err != nil {
+		return FontCheatSheetResult{}, fmt.Errorf("create font cheat sheet: %w", err)
+	}
+	if err := loadCheatSheetUserFonts(c, ops); err != nil {
+		return FontCheatSheetResult{}, fmt.Errorf("create font cheat sheet: load user fonts: %w", err)
 	}
 
-	ttf, ok, err := ops.userFont(fn)
+	ttf, ok, err := cheatSheetUserFont(c, fn, ops)
 	if err != nil {
-		return fmt.Errorf("create font cheat sheet: font %s metrics: %w", fn, err)
+		return FontCheatSheetResult{}, fmt.Errorf("create font cheat sheet: font %s metrics: %w", fn, err)
 	}
 	if !ok {
-		return fmt.Errorf("create font cheat sheet: font %s: %w", fn, ErrUserFontNotFound)
+		return FontCheatSheetResult{}, fmt.Errorf("create font cheat sheet: font %s: %w", fn, ErrUserFontNotFound)
 	}
-	if err := createUserFontDemoBatch(dir, []string{fn}, map[string]font.TTFLight{fn: ttf}, ops); err != nil {
-		return fmt.Errorf("create font cheat sheet: %w", err)
+	paths, err := createUserFontCheatSheetBatch(
+		c,
+		dir,
+		[]string{fn},
+		map[string]font.TTFLight{fn: ttf},
+		ops,
+	)
+	result := FontCheatSheetResult{Paths: paths}
+	if err != nil {
+		return result, fmt.Errorf("create font cheat sheet: %w", err)
 	}
-	return nil
+	return result, nil
 }
 
-func stageUserFontDemoFiles(dir, fn string, ttf font.TTFLight, ops fontDemoOperations) ([]string, error) {
+func stageUserFontCheatSheets(c context.Context, dir, fn string, ttf font.TTFLight, ops fontCheatSheetOperations) ([]string, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	const w, h = 7800, 7800
 	planes, err := coveredUnicodePlanes(ttf.Planes)
 	if err != nil {
@@ -723,6 +900,9 @@ func stageUserFontDemoFiles(dir, fn string, ttf font.TTFLight, ops fontDemoOpera
 	names := make([]string, 0, len(planes))
 	// Create a single page PDF for each Unicode plane with existing glyphs.
 	for _, i := range planes {
+		if err := contextutil.Check(c); err != nil {
+			return nil, err
+		}
 		context := fmt.Sprintf("font %s plane %d", fn, i)
 		suffix, err := planeString(i)
 		if err != nil {
@@ -732,7 +912,7 @@ func stageUserFontDemoFiles(dir, fn string, ttf font.TTFLight, ops fontDemoOpera
 		if err != nil {
 			return nil, fmt.Errorf("%s: create PDF context: %w", context, err)
 		}
-		p, err := ops.createPage(xRefTable, w, h, i, fn)
+		p, err := createCheatSheetPage(c, xRefTable, w, h, i, fn, ops)
 		if err != nil {
 			return nil, fmt.Errorf("%s: render page: %w", context, err)
 		}
@@ -741,24 +921,27 @@ func stageUserFontDemoFiles(dir, fn string, ttf font.TTFLight, ops fontDemoOpera
 		if err != nil {
 			return nil, fmt.Errorf("%s: access catalog: %w", context, err)
 		}
-		if err = ops.addPageTree(xRefTable, rootDict, p); err != nil {
+		if err = ops.addPageTree(c, xRefTable, rootDict, p); err != nil {
 			return nil, fmt.Errorf("%s: build page tree: %w", context, err)
 		}
 		name := fn + "_" + suffix + ".pdf"
 		fileName := filepath.Join(dir, name)
-		if err := ops.createPDFFile(xRefTable, fileName, nil); err != nil {
+		if err := createCheatSheetPDF(c, xRefTable, fileName, ops); err != nil {
 			return nil, fmt.Errorf("%s: %w", context, err)
 		}
 		names = append(names, name)
 	}
-	return names, nil
+	return names, contextutil.Check(c)
 }
 
-func createUserFontDemoBatch(dir string, fontNames []string, fonts map[string]font.TTFLight, ops fontDemoOperations) (err error) {
+func createUserFontCheatSheetBatch(c context.Context, dir string, fontNames []string, fonts map[string]font.TTFLight, ops fontCheatSheetOperations) (paths []string, err error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	dir = normalizeCheatSheetDir(dir)
 	stagingDir, err := ops.files.mkdirTemp(dir, ".pdfcpu-font-cheatsheets-")
 	if err != nil {
-		return fmt.Errorf("create staging directory: %w", err)
+		return nil, fmt.Errorf("create staging directory: %w", err)
 	}
 	published := false
 	defer func() {
@@ -774,70 +957,91 @@ func createUserFontDemoBatch(dir string, fontNames []string, fonts map[string]fo
 	names := []string{}
 	seen := map[string]bool{}
 	for _, fn := range fontNames {
-		staged, err := stageUserFontDemoFiles(stagingDir, fn, fonts[fn], ops)
+		if err := contextutil.Check(c); err != nil {
+			return nil, err
+		}
+		staged, err := stageUserFontCheatSheets(c, stagingDir, fn, fonts[fn], ops)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, name := range staged {
+			if err := contextutil.Check(c); err != nil {
+				return nil, err
+			}
 			if seen[name] {
-				return fmt.Errorf("duplicate cheat-sheet output %s", name)
+				return nil, fmt.Errorf("duplicate cheat-sheet output %s", name)
 			}
 			seen[name] = true
 			names = append(names, name)
 		}
 	}
-	published, err = publishCheatSheets(dir, stagingDir, names, ops.files)
-	if err != nil {
-		return err
-	}
-	if log.CLIEnabled() {
-		for _, name := range names {
-			log.CLI.Printf("%s\n", filepath.Join(dir, name))
+	published, err = publishCheatSheets(c, dir, stagingDir, names, ops.files)
+	if published {
+		paths = make([]string, len(names))
+		for i, name := range names {
+			paths[i] = filepath.Join(dir, name)
 		}
 	}
-	return nil
+	return paths, err
 }
 
-// CreateCheatSheetsUserFonts atomically generates a batch of user-font cheat sheets.
-// Every PDF is written to same-directory staging before publication. Generation
-// failure leaves existing outputs untouched; publication failure attempts a full
-// rollback and joins rollback diagnostics. Cleanup failure after completed
-// publication is returned as an error and does not retract published PDFs.
-func CreateCheatSheetsUserFonts(fontNames []string) (err error) {
+// CreateCheatSheetsUserFontsWithResult atomically generates a batch of user-font cheat sheets, supports cancellation
+// and reports published paths.
+func CreateCheatSheetsUserFontsWithResult(c context.Context, fontNames []string) (result FontCheatSheetResult, err error) {
 	defer fault.Catch(&err)
-	return createCheatSheetsUserFonts(fontNames, defaultFontDemoOperations())
+	return createCheatSheetsUserFontsUsing(c, fontNames, defaultFontCheatSheetOperations())
 }
 
-func createCheatSheetsUserFonts(fontNames []string, ops fontDemoOperations) error {
-	if err := validateNoEmptyStrings(fontNames, "font name"); err != nil {
-		return fmt.Errorf("create font cheat sheets: %w", err)
+// CreateCheatSheetsUserFonts atomically generates a batch of user-font cheat sheets and supports cancellation.
+func CreateCheatSheetsUserFonts(c context.Context, fontNames []string) error {
+	_, err := CreateCheatSheetsUserFontsWithResult(c, fontNames)
+	return err
+}
+
+func createCheatSheetsUserFontsUsing(c context.Context, fontNames []string, ops fontCheatSheetOperations) (FontCheatSheetResult, error) {
+	if err := contextutil.Check(c); err != nil {
+		return FontCheatSheetResult{}, err
 	}
-	if err := ops.loadUserFonts(); err != nil {
-		return fmt.Errorf("create font cheat sheets: load user fonts: %w", err)
+	if err := validateNoEmptyStrings(fontNames, "font name"); err != nil {
+		return FontCheatSheetResult{}, fmt.Errorf("create font cheat sheets: %w", err)
+	}
+	if err := loadCheatSheetUserFonts(c, ops); err != nil {
+		return FontCheatSheetResult{}, fmt.Errorf("create font cheat sheets: load user fonts: %w", err)
 	}
 
 	names := slices.Clone(fontNames)
+	if err := contextutil.Check(c); err != nil {
+		return FontCheatSheetResult{}, err
+	}
 	if len(names) == 0 {
 		var err error
-		names, err = ops.userFontNames()
+		names, err = cheatSheetUserFontNames(c, ops)
 		if err != nil {
-			return fmt.Errorf("create font cheat sheets: list user fonts: %w", err)
+			return FontCheatSheetResult{}, fmt.Errorf("create font cheat sheets: list user fonts: %w", err)
 		}
 	}
 	sort.Strings(names)
+	if err := contextutil.Check(c); err != nil {
+		return FontCheatSheetResult{}, err
+	}
 	fonts := make(map[string]font.TTFLight, len(names))
 	for _, fn := range names {
-		ttf, ok, err := ops.userFont(fn)
+		if err := contextutil.Check(c); err != nil {
+			return FontCheatSheetResult{}, err
+		}
+		ttf, ok, err := cheatSheetUserFont(c, fn, ops)
 		if err != nil {
-			return fmt.Errorf("create font cheat sheets: font %s metrics: %w", fn, err)
+			return FontCheatSheetResult{}, fmt.Errorf("create font cheat sheets: font %s metrics: %w", fn, err)
 		}
 		if !ok {
-			return fmt.Errorf("create font cheat sheets: font %s: %w", fn, ErrUserFontNotFound)
+			return FontCheatSheetResult{}, fmt.Errorf("create font cheat sheets: font %s: %w", fn, ErrUserFontNotFound)
 		}
 		fonts[fn] = ttf
 	}
-	if err := createUserFontDemoBatch(".", names, fonts, ops); err != nil {
-		return fmt.Errorf("create font cheat sheets: %w", err)
+	paths, err := createUserFontCheatSheetBatch(c, ".", names, fonts, ops)
+	result := FontCheatSheetResult{Paths: paths}
+	if err != nil {
+		return result, fmt.Errorf("create font cheat sheets: %w", err)
 	}
-	return nil
+	return result, nil
 }

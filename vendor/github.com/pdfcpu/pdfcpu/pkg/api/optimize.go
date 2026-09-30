@@ -17,19 +17,21 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
-func optimize(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) error {
-	ctx, err := ReadValidateAndOptimize(rs, conf)
+func optimize(c context.Context, rs io.ReadSeeker, w io.Writer, conf *model.Configuration, options ProgressOptions) error {
+	ctx, err := ReadValidateAndOptimize(c, rs, conf, &options)
 	if err != nil {
 		return err
 	}
@@ -38,8 +40,18 @@ func optimize(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) error {
 		log.Stats.Printf("XRefTable:\n%s\n", ctx)
 	}
 
-	if err := WriteContext(ctx, w); err != nil {
+	if err := reportProgress(options, ProgressStageWriting); err != nil {
+		return err
+	}
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+
+	if err := WriteContext(c, ctx, w); err != nil {
 		return fmt.Errorf("write output: %w", err)
+	}
+	if err := contextutil.Check(c); err != nil {
+		return err
 	}
 
 	if ctx.StatsFileName != "" {
@@ -51,11 +63,14 @@ func optimize(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) error {
 	return nil
 }
 
-// Optimize reads a PDF stream from rs and writes the optimized PDF stream to w.
-// noEncryption ensures w writes without encryption.
-func Optimize(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (err error) {
+// Optimize reads and optimizes a PDF stream, supports cancellation and reports optional semantic progress.
+// A nil options pointer disables progress reporting. Supplied options are not modified.
+func Optimize(c context.Context, rs io.ReadSeeker, w io.Writer, conf *model.Configuration, options *ProgressOptions) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rs == nil {
 		return ErrMissingPDFReadSeeker
 	}
@@ -64,25 +79,24 @@ func Optimize(rs io.ReadSeeker, w io.Writer, conf *model.Configuration) (err err
 		return ErrMissingPDFWriter
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.OPTIMIZE
+	conf = operationConfiguration(conf, model.OPTIMIZE)
 
-	if err := optimize(rs, w, conf); err != nil {
+	if err := optimize(c, rs, w, conf, progressOptionsValue(options)); err != nil {
 		return fmt.Errorf("optimize: %w", err)
 	}
 	return nil
 }
 
-// OptimizeFile reads inFile and writes the optimized PDF to outFile.
-// If outFile is not provided then inFile gets overwritten
-// which leads to the same result as when inFile equals outFile.
-// noEncryption ensures outFile is not encrypted.
-func OptimizeFile(inFile, outFile string, conf *model.Configuration) (err error) {
+// OptimizeFile reads inFile, writes the optimized PDF to outFile and supports cancellation and optional progress reporting.
+// An empty outFile or one equal to inFile replaces inFile.
+// A nil options pointer disables progress reporting. Supplied options are not modified.
+func OptimizeFile(c context.Context, inFile, outFile string, conf *model.Configuration, options *ProgressOptions) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if inFile == "" {
 		return ErrMissingPDFInput
 	}
@@ -94,9 +108,6 @@ func OptimizeFile(inFile, outFile string, conf *model.Configuration) (err error)
 	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		logWritingTo(outFile)
-	} else {
-		logWritingTo(inFile)
 	}
 
 	staged, err := openStagedOutput(f1, inFile, tmpFile, "optimize")
@@ -107,6 +118,8 @@ func OptimizeFile(inFile, outFile string, conf *model.Configuration) (err error)
 		)
 	}
 	f2 = staged.output.file
+	inputOptions := progressOptionsValue(options)
+	inputOptions.Input = inFile
 
 	defer func() {
 		if !ok {
@@ -116,12 +129,14 @@ func OptimizeFile(inFile, outFile string, conf *model.Configuration) (err error)
 		err = staged.commit()
 	}()
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
+	if err = Optimize(c, f1, f2, conf, &inputOptions); err != nil {
+		return err
 	}
-	conf.Cmd = model.OPTIMIZE
 
-	if err = Optimize(f1, f2, conf); err != nil {
+	if err = reportProgress(inputOptions, ProgressStageCommitting); err != nil {
+		return err
+	}
+	if err = contextutil.Check(c); err != nil {
 		return err
 	}
 

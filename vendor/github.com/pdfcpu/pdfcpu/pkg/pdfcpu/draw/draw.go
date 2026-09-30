@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package draw writes PDF drawing primitives and table separators.
 package draw
 
 import (
@@ -177,6 +178,7 @@ func DrawHairCross(w io.Writer, x, y float64, r *types.Rectangle) {
 
 // CLI drawing
 
+// CLI drawing elements.
 const (
 	HBar     = "\u2501"
 	VBar     = "\u2502"
@@ -186,12 +188,12 @@ const (
 // HorSepLine renders a horizontal divider with optional column separators:
 // ━━━━━━━━━━┿━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━┿━━━━━━━━┿━━━━━━━━
 func HorSepLine(ii []int) string {
-	s := ""
+	var s strings.Builder
 	for i, j := range ii {
 		if i > 0 {
-			s += CrossBar
+			s.WriteString(CrossBar)
 		}
-		s += strings.Repeat(HBar, j)
+		s.WriteString(strings.Repeat(HBar, j))
 	}
-	return s
+	return s.String()
 }

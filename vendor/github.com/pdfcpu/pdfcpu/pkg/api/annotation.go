@@ -17,12 +17,14 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -52,36 +54,39 @@ func validateAnnotationRendererMap(m map[int][]model.AnnotationRenderer) error {
 	return nil
 }
 
-// Annotations returns page annotations of rs for selected pages.
-func Annotations(rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (m map[int]model.PgAnnots, err error) {
+// Annotations returns page annotations of rs for selected pages and supports cancellation.
+func Annotations(c context.Context, rs io.ReadSeeker, selectedPages []string, conf *model.Configuration) (m map[int]model.PgAnnots, err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	if rs == nil {
 		return nil, ErrMissingPDFReadSeeker
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.LISTANNOTATIONS
+	conf = operationConfiguration(conf, model.LISTANNOTATIONS)
 
-	ctx, err := ReadValidateAndOptimize(rs, conf)
+	ctx, err := ReadValidateAndOptimize(c, rs, conf, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list annotations: %w", err)
 	}
 
-	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+	pages, err := PagesForSelection(ctx.PageCount, selectedPages, true)
 	if err != nil {
 		return nil, fmt.Errorf("list annotations: parse page selection: %w", err)
 	}
 
-	return pdfcpu.AnnotationsForSelectedPages(ctx, pages), nil
+	return pdfcpu.AnnotationsForSelectedPages(c, ctx, pages)
 }
 
-// AddAnnotations adds annotations for selected pages in rs and writes the result to w.
-func AddAnnotations(rs io.ReadSeeker, w io.Writer, selectedPages []string, ann model.AnnotationRenderer, conf *model.Configuration) (err error) {
+// AddAnnotations adds annotations for selected pages in rs, writes the result to w and supports cancellation.
+func AddAnnotations(c context.Context, rs io.ReadSeeker, w io.Writer, selectedPages []string, ann model.AnnotationRenderer, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rs == nil {
 		return ErrMissingPDFReadSeeker
 	}
@@ -94,22 +99,19 @@ func AddAnnotations(rs io.ReadSeeker, w io.Writer, selectedPages []string, ann m
 		return err
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.ADDANNOTATIONS
+	conf = operationConfiguration(conf, model.ADDANNOTATIONS)
 
-	ctx, err := ReadValidateAndOptimize(rs, conf)
+	ctx, err := ReadValidateAndOptimize(c, rs, conf, nil)
 	if err != nil {
 		return fmt.Errorf("add annotations: %w", err)
 	}
 
-	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+	pages, err := PagesForSelection(ctx.PageCount, selectedPages, true)
 	if err != nil {
 		return fmt.Errorf("add annotations: parse page selection: %w", err)
 	}
 
-	ok, err := pdfcpu.AddAnnotations(ctx, pages, ann, false)
+	ok, err := pdfcpu.AddAnnotations(c, ctx, pages, ann, false)
 	if err != nil {
 		return fmt.Errorf("add annotations: add: %w", err)
 	}
@@ -117,16 +119,19 @@ func AddAnnotations(rs io.ReadSeeker, w io.Writer, selectedPages []string, ann m
 		return errors.New("no annotations added")
 	}
 
-	if err = Write(ctx, w, conf); err != nil {
+	if err = Write(c, ctx, w, conf); err != nil {
 		return fmt.Errorf("add annotations: write output: %w", err)
 	}
 	return nil
 }
 
-// AddAnnotationsAsIncrement adds annotations for selected pages in rws and writes out a PDF increment.
-func AddAnnotationsAsIncrement(rws io.ReadWriteSeeker, selectedPages []string, ar model.AnnotationRenderer, conf *model.Configuration) (err error) {
+// AddAnnotationsAsIncrement adds annotations for selected pages in rws, writes a PDF increment and supports cancellation.
+func AddAnnotationsAsIncrement(c context.Context, rws io.ReadWriteSeeker, selectedPages []string, ar model.AnnotationRenderer, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rws == nil {
 		return ErrMissingPDFReadWriteSeeker
 	}
@@ -135,12 +140,9 @@ func AddAnnotationsAsIncrement(rws io.ReadWriteSeeker, selectedPages []string, a
 		return err
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.ADDANNOTATIONS
+	conf = operationConfiguration(conf, model.ADDANNOTATIONS)
 
-	ctx, err := ReadAndValidate(rws, conf)
+	ctx, err := ReadAndValidate(c, rws, conf)
 	if err != nil {
 		return fmt.Errorf("add annotations: prepare PDF context: %w", err)
 	}
@@ -149,12 +151,12 @@ func AddAnnotationsAsIncrement(rws io.ReadWriteSeeker, selectedPages []string, a
 		return errors.New("incremental writing not supported for PDF version < V1.4")
 	}
 
-	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+	pages, err := PagesForSelection(ctx.PageCount, selectedPages, true)
 	if err != nil {
 		return fmt.Errorf("add annotations: parse page selection: %w", err)
 	}
 
-	ok, err := pdfcpu.AddAnnotations(ctx, pages, ar, true)
+	ok, err := pdfcpu.AddAnnotations(c, ctx, pages, ar, true)
 	if err != nil {
 		return fmt.Errorf("add annotations: add: %w", err)
 	}
@@ -162,17 +164,20 @@ func AddAnnotationsAsIncrement(rws io.ReadWriteSeeker, selectedPages []string, a
 		return errors.New("no annotations added")
 	}
 
-	if err = WriteIncr(ctx, rws, conf); err != nil {
+	if err = WriteIncr(c, ctx, rws, conf); err != nil {
 		return fmt.Errorf("add annotations: write increment: %w", err)
 	}
 	return nil
 }
 
-// AddAnnotationsFile adds annotations for selected pages to a PDF context read from inFile and writes the result to outFile.
-func AddAnnotationsFile(inFile, outFile string, selectedPages []string, ar model.AnnotationRenderer, conf *model.Configuration, incr bool) (err error) {
+// AddAnnotationsFile adds annotations for selected pages to inFile, writes the result to outFile and supports cancellation.
+func AddAnnotationsFile(c context.Context, inFile, outFile string, selectedPages []string, ar model.AnnotationRenderer, conf *model.Configuration, incr bool) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if inFile == "" {
 		return ErrMissingPDFInput
 	}
@@ -184,18 +189,11 @@ func AddAnnotationsFile(inFile, outFile string, selectedPages []string, ar model
 	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		logWritingTo(outFile)
 	} else {
-		logWritingTo(inFile)
 		if incr {
-			f, err := os.OpenFile(inFile, os.O_RDWR, 0644)
-			if err != nil {
-				return fmt.Errorf("add annotations: open input %s: %w", inFile, err)
-			}
-			defer func() {
-				err = errors.Join(err, closeFile(f, "add annotations: close input"))
-			}()
-			return AddAnnotationsAsIncrement(f, selectedPages, ar, conf)
+			return updateFileTransaction(c, inFile, "add annotations", func(c context.Context, f *os.File) error {
+				return AddAnnotationsAsIncrement(c, f, selectedPages, ar, conf)
+			})
 		}
 	}
 
@@ -220,7 +218,7 @@ func AddAnnotationsFile(inFile, outFile string, selectedPages []string, ar model
 		err = staged.commit()
 	}()
 
-	if err = AddAnnotations(f1, f2, selectedPages, ar, conf); err != nil {
+	if err = AddAnnotations(c, f1, f2, selectedPages, ar, conf); err != nil {
 		return err
 	}
 
@@ -229,10 +227,13 @@ func AddAnnotationsFile(inFile, outFile string, selectedPages []string, ar model
 	return nil
 }
 
-// AddAnnotationsMap adds annotations in m to corresponding pages of rs and writes the result to w.
-func AddAnnotationsMap(rs io.ReadSeeker, w io.Writer, m map[int][]model.AnnotationRenderer, conf *model.Configuration) (err error) {
+// AddAnnotationsMap adds annotations in m to corresponding pages of rs, writes the result to w and supports cancellation.
+func AddAnnotationsMap(c context.Context, rs io.ReadSeeker, w io.Writer, m map[int][]model.AnnotationRenderer, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rs == nil {
 		return ErrMissingPDFReadSeeker
 	}
@@ -245,17 +246,14 @@ func AddAnnotationsMap(rs io.ReadSeeker, w io.Writer, m map[int][]model.Annotati
 		return err
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.ADDANNOTATIONS
+	conf = operationConfiguration(conf, model.ADDANNOTATIONS)
 
-	ctx, err := ReadValidateAndOptimize(rs, conf)
+	ctx, err := ReadValidateAndOptimize(c, rs, conf, nil)
 	if err != nil {
 		return fmt.Errorf("add annotations: %w", err)
 	}
 
-	ok, err := pdfcpu.AddAnnotationsMap(ctx, m, false)
+	ok, err := pdfcpu.AddAnnotationsMap(c, ctx, m, false)
 	if err != nil {
 		return fmt.Errorf("add annotations: add: %w", err)
 	}
@@ -263,16 +261,19 @@ func AddAnnotationsMap(rs io.ReadSeeker, w io.Writer, m map[int][]model.Annotati
 		return errors.New("no annotations added")
 	}
 
-	if err = Write(ctx, w, conf); err != nil {
+	if err = Write(c, ctx, w, conf); err != nil {
 		return fmt.Errorf("add annotations: write output: %w", err)
 	}
 	return nil
 }
 
-// AddAnnotationsMapAsIncrement adds annotations in m to corresponding pages of rws and writes out a PDF increment.
-func AddAnnotationsMapAsIncrement(rws io.ReadWriteSeeker, m map[int][]model.AnnotationRenderer, conf *model.Configuration) (err error) {
+// AddAnnotationsMapAsIncrement adds annotations in m to corresponding pages of rws, writes a PDF increment and supports cancellation.
+func AddAnnotationsMapAsIncrement(c context.Context, rws io.ReadWriteSeeker, m map[int][]model.AnnotationRenderer, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rws == nil {
 		return ErrMissingPDFReadWriteSeeker
 	}
@@ -281,12 +282,9 @@ func AddAnnotationsMapAsIncrement(rws io.ReadWriteSeeker, m map[int][]model.Anno
 		return err
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.ADDANNOTATIONS
+	conf = operationConfiguration(conf, model.ADDANNOTATIONS)
 
-	ctx, err := ReadAndValidate(rws, conf)
+	ctx, err := ReadAndValidate(c, rws, conf)
 	if err != nil {
 		return fmt.Errorf("add annotations: prepare PDF context: %w", err)
 	}
@@ -295,7 +293,7 @@ func AddAnnotationsMapAsIncrement(rws io.ReadWriteSeeker, m map[int][]model.Anno
 		return errors.New("incremental writing not supported for PDF version < V1.4")
 	}
 
-	ok, err := pdfcpu.AddAnnotationsMap(ctx, m, true)
+	ok, err := pdfcpu.AddAnnotationsMap(c, ctx, m, true)
 	if err != nil {
 		return fmt.Errorf("add annotations: add: %w", err)
 	}
@@ -303,17 +301,20 @@ func AddAnnotationsMapAsIncrement(rws io.ReadWriteSeeker, m map[int][]model.Anno
 		return errors.New("no annotations added")
 	}
 
-	if err = WriteIncr(ctx, rws, conf); err != nil {
+	if err = WriteIncr(c, ctx, rws, conf); err != nil {
 		return fmt.Errorf("add annotations: write increment: %w", err)
 	}
 	return nil
 }
 
-// AddAnnotationsMapFile adds annotations in m to corresponding pages of inFile and writes the result to outFile.
-func AddAnnotationsMapFile(inFile, outFile string, m map[int][]model.AnnotationRenderer, conf *model.Configuration, incr bool) (err error) {
+// AddAnnotationsMapFile adds annotations in m to corresponding pages of inFile, writes the result to outFile and supports cancellation.
+func AddAnnotationsMapFile(c context.Context, inFile, outFile string, m map[int][]model.AnnotationRenderer, conf *model.Configuration, incr bool) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if inFile == "" {
 		return ErrMissingPDFInput
 	}
@@ -326,18 +327,11 @@ func AddAnnotationsMapFile(inFile, outFile string, m map[int][]model.AnnotationR
 
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		logWritingTo(outFile)
 	} else {
-		logWritingTo(inFile)
 		if incr {
-			f, err := os.OpenFile(inFile, os.O_RDWR, 0644)
-			if err != nil {
-				return fmt.Errorf("add annotations: open input %s: %w", inFile, err)
-			}
-			defer func() {
-				err = errors.Join(err, closeFile(f, "add annotations: close input"))
-			}()
-			return AddAnnotationsMapAsIncrement(f, m, conf)
+			return updateFileTransaction(c, inFile, "add annotations", func(c context.Context, f *os.File) error {
+				return AddAnnotationsMapAsIncrement(c, f, m, conf)
+			})
 		}
 	}
 
@@ -362,7 +356,7 @@ func AddAnnotationsMapFile(inFile, outFile string, m map[int][]model.AnnotationR
 		err = staged.commit()
 	}()
 
-	if err = AddAnnotationsMap(f1, f2, m, conf); err != nil {
+	if err = AddAnnotationsMap(c, f1, f2, m, conf); err != nil {
 		return err
 	}
 
@@ -371,11 +365,14 @@ func AddAnnotationsMapFile(inFile, outFile string, m map[int][]model.AnnotationR
 	return nil
 }
 
-// RemoveAnnotations removes annotations for selected pages by id and object number
-// from a PDF context read from rs and writes the result to w.
-func RemoveAnnotations(rs io.ReadSeeker, w io.Writer, selectedPages, idsAndTypes []string, objNrs []int, conf *model.Configuration) (err error) {
+// RemoveAnnotations removes annotations for selected pages by ID and object number from a PDF context
+// read from rs, writes the result to w and supports cancellation.
+func RemoveAnnotations(c context.Context, rs io.ReadSeeker, w io.Writer, selectedPages, idsAndTypes []string, objNrs []int, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rs == nil {
 		return ErrMissingPDFReadSeeker
 	}
@@ -388,22 +385,19 @@ func RemoveAnnotations(rs io.ReadSeeker, w io.Writer, selectedPages, idsAndTypes
 		return err
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.REMOVEANNOTATIONS
+	conf = operationConfiguration(conf, model.REMOVEANNOTATIONS)
 
-	ctx, err := ReadValidateAndOptimize(rs, conf)
+	ctx, err := ReadValidateAndOptimize(c, rs, conf, nil)
 	if err != nil {
 		return fmt.Errorf("remove annotations: %w", err)
 	}
 
-	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+	pages, err := PagesForSelection(ctx.PageCount, selectedPages, true)
 	if err != nil {
 		return fmt.Errorf("remove annotations: parse page selection: %w", err)
 	}
 
-	ok, err := pdfcpu.RemoveAnnotations(ctx, pages, idsAndTypes, objNrs, false)
+	ok, err := pdfcpu.RemoveAnnotations(c, ctx, pages, idsAndTypes, objNrs, false)
 	if err != nil {
 		return fmt.Errorf("remove annotations: remove: %w", err)
 	}
@@ -411,17 +405,20 @@ func RemoveAnnotations(rs io.ReadSeeker, w io.Writer, selectedPages, idsAndTypes
 		return errors.New("no annotation removed")
 	}
 
-	if err = Write(ctx, w, conf); err != nil {
+	if err = Write(c, ctx, w, conf); err != nil {
 		return fmt.Errorf("remove annotations: write output: %w", err)
 	}
 	return nil
 }
 
-// RemoveAnnotationsAsIncrement removes annotations for selected pages by ids and object number
-// from a PDF context read from rs and writes out a PDF increment.
-func RemoveAnnotationsAsIncrement(rws io.ReadWriteSeeker, selectedPages, idsAndTypes []string, objNrs []int, conf *model.Configuration) (err error) {
+// RemoveAnnotationsAsIncrement removes annotations for selected pages by IDs and object number from a PDF context
+// read from rws, writes out a PDF increment and supports cancellation.
+func RemoveAnnotationsAsIncrement(c context.Context, rws io.ReadWriteSeeker, selectedPages, idsAndTypes []string, objNrs []int, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rws == nil {
 		return ErrMissingPDFReadWriteSeeker
 	}
@@ -430,12 +427,9 @@ func RemoveAnnotationsAsIncrement(rws io.ReadWriteSeeker, selectedPages, idsAndT
 		return err
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.REMOVEANNOTATIONS
+	conf = operationConfiguration(conf, model.REMOVEANNOTATIONS)
 
-	ctx, err := ReadAndValidate(rws, conf)
+	ctx, err := ReadAndValidate(c, rws, conf)
 	if err != nil {
 		return fmt.Errorf("remove annotations: prepare PDF context: %w", err)
 	}
@@ -444,12 +438,12 @@ func RemoveAnnotationsAsIncrement(rws io.ReadWriteSeeker, selectedPages, idsAndT
 		return errors.New("incremental writing not supported for PDF version < V1.4")
 	}
 
-	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+	pages, err := PagesForSelection(ctx.PageCount, selectedPages, true)
 	if err != nil {
 		return fmt.Errorf("remove annotations: parse page selection: %w", err)
 	}
 
-	ok, err := pdfcpu.RemoveAnnotations(ctx, pages, idsAndTypes, objNrs, true)
+	ok, err := pdfcpu.RemoveAnnotations(c, ctx, pages, idsAndTypes, objNrs, true)
 	if err != nil {
 		return fmt.Errorf("remove annotations: remove: %w", err)
 	}
@@ -457,18 +451,21 @@ func RemoveAnnotationsAsIncrement(rws io.ReadWriteSeeker, selectedPages, idsAndT
 		return errors.New("no annotation removed")
 	}
 
-	if err = WriteIncr(ctx, rws, conf); err != nil {
+	if err = WriteIncr(c, ctx, rws, conf); err != nil {
 		return fmt.Errorf("remove annotations: write increment: %w", err)
 	}
 	return nil
 }
 
-// RemoveAnnotationsFile removes annotations for selected pages by id and object number
-// from a PDF context read from inFile and writes the result to outFile.
-func RemoveAnnotationsFile(inFile, outFile string, selectedPages, idsAndTypes []string, objNrs []int, conf *model.Configuration, incr bool) (err error) {
+// RemoveAnnotationsFile removes annotations for selected pages by ID and object number
+// from a PDF context read from inFile, writes the result to outFile and supports cancellation.
+func RemoveAnnotationsFile(c context.Context, inFile, outFile string, selectedPages, idsAndTypes []string, objNrs []int, conf *model.Configuration, incr bool) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if inFile == "" {
 		return ErrMissingPDFInput
 	}
@@ -480,17 +477,11 @@ func RemoveAnnotationsFile(inFile, outFile string, selectedPages, idsAndTypes []
 	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		logWritingTo(outFile)
 	} else {
-		logWritingTo(inFile)
 		if incr {
-			if f1, err = os.OpenFile(inFile, os.O_RDWR, 0644); err != nil {
-				return fmt.Errorf("remove annotations: open input %s: %w", inFile, err)
-			}
-			defer func() {
-				err = errors.Join(err, closeFile(f1, "remove annotations: close input"))
-			}()
-			return RemoveAnnotationsAsIncrement(f1, selectedPages, idsAndTypes, objNrs, conf)
+			return updateFileTransaction(c, inFile, "remove annotations", func(c context.Context, f *os.File) error {
+				return RemoveAnnotationsAsIncrement(c, f, selectedPages, idsAndTypes, objNrs, conf)
+			})
 		}
 	}
 
@@ -515,7 +506,10 @@ func RemoveAnnotationsFile(inFile, outFile string, selectedPages, idsAndTypes []
 		err = staged.commit()
 	}()
 
-	if err = RemoveAnnotations(f1, f2, selectedPages, idsAndTypes, objNrs, conf); err != nil {
+	if err = RemoveAnnotations(c, f1, f2, selectedPages, idsAndTypes, objNrs, conf); err != nil {
+		return err
+	}
+	if err = contextutil.Check(c); err != nil {
 		return err
 	}
 

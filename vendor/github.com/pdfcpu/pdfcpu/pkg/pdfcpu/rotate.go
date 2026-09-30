@@ -17,8 +17,11 @@ limitations under the License.
 package pdfcpu
 
 import (
+	"context"
 	"fmt"
+	"sort"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
@@ -32,13 +35,13 @@ func composePageRotation(current, delta int) int {
 	return rotation
 }
 
-func rotatePage(xRefTable *model.XRefTable, i, j int) error {
+func rotatePage(c context.Context, xRefTable *model.XRefTable, i, j int) error {
 	if log.DebugEnabled() {
 		log.Debug.Printf("rotate page:%d\n", i)
 	}
 
 	consolidateRes := false
-	d, _, inhPAttrs, err := xRefTable.PageDict(i, consolidateRes)
+	d, _, inhPAttrs, err := xRefTable.PageDict(c, i, consolidateRes)
 	if err != nil {
 		return err
 	}
@@ -48,16 +51,44 @@ func rotatePage(xRefTable *model.XRefTable, i, j int) error {
 	return nil
 }
 
-// RotatePages rotates all selected pages by a multiple of 90 degrees.
-func RotatePages(ctx *model.Context, selectedPages types.IntSet, rotation int) error {
-	for k, v := range selectedPages {
-		if v {
-			err := rotatePage(ctx.XRefTable, k, rotation)
-			if err != nil {
-				return fmt.Errorf("page %d: page dict: %w", k, err)
-			}
+// RotatePages rotates all selected pages by a multiple of 90 degrees and supports cancellation.
+func RotatePages(c context.Context, ctx *model.Context, selectedPages types.IntSet, rotation int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	if err := requireContextWithXRefTable(ctx); err != nil {
+		return fmt.Errorf("rotate pages: source context: %w", err)
+	}
+	return rotatePagesUsing(c, ctx, selectedPages, rotation, func(xRefTable *model.XRefTable, pageNr, rotation int) error {
+		return rotatePage(c, xRefTable, pageNr, rotation)
+	})
+}
+
+func rotatePagesUsing(
+	c context.Context,
+	ctx *model.Context,
+	selectedPages types.IntSet,
+	rotation int,
+	rotate func(*model.XRefTable, int, int) error,
+) error {
+	pageNrs := make([]int, 0, len(selectedPages))
+	for pageNr, selected := range selectedPages {
+		if err := c.Err(); err != nil {
+			return err
+		}
+		if selected {
+			pageNrs = append(pageNrs, pageNr)
 		}
 	}
+	sort.Ints(pageNrs)
 
+	for _, pageNr := range pageNrs {
+		if err := c.Err(); err != nil {
+			return err
+		}
+		if err := rotate(ctx.XRefTable, pageNr, rotation); err != nil {
+			return fmt.Errorf("page %d: page dict: %w", pageNr, err)
+		}
+	}
 	return nil
 }

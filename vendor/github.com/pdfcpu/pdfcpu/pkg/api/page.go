@@ -17,6 +17,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/fault"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -49,10 +51,13 @@ func invalidPageDimension(v float64) bool {
 	return v <= 0 || math.IsNaN(v) || math.IsInf(v, 0)
 }
 
-// InsertPages inserts a blank page before or after every page selected of rs and writes the result to w.
-func InsertPages(rs io.ReadSeeker, w io.Writer, selectedPages []string, before bool, pageConf *pdfcpu.PageConfiguration, conf *model.Configuration) (err error) {
+// InsertPages inserts a blank page before or after every selected page, writes the result to w and supports cancellation.
+func InsertPages(c context.Context, rs io.ReadSeeker, w io.Writer, selectedPages []string, before bool, pageConf *pdfcpu.PageConfiguration, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rs == nil {
 		return ErrMissingPDFReadSeeker
 	}
@@ -64,20 +69,18 @@ func InsertPages(rs io.ReadSeeker, w io.Writer, selectedPages []string, before b
 		return fmt.Errorf("insert pages: validate page configuration: %w", err)
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.INSERTPAGESAFTER
+	cmd := model.INSERTPAGESAFTER
 	if before {
-		conf.Cmd = model.INSERTPAGESBEFORE
+		cmd = model.INSERTPAGESBEFORE
 	}
+	conf = operationConfiguration(conf, cmd)
 
-	ctx, err := ReadValidateAndOptimize(rs, conf)
+	ctx, err := ReadValidateAndOptimize(c, rs, conf, nil)
 	if err != nil {
 		return fmt.Errorf("insert pages: %w", err)
 	}
 
-	pages, err := PagesForPageSelection(ctx.PageCount, selectedPages, true, true)
+	pages, err := PagesForSelection(ctx.PageCount, selectedPages, true)
 	if err != nil {
 		return fmt.Errorf("insert pages: parse page selection: %w", err)
 	}
@@ -87,21 +90,24 @@ func InsertPages(rs io.ReadSeeker, w io.Writer, selectedPages []string, before b
 		dim = pageConf.PageDim
 	}
 
-	if err = ctx.InsertBlankPages(pages, dim, before); err != nil {
+	if err = ctx.InsertBlankPages(c, pages, dim, before); err != nil {
 		return fmt.Errorf("insert pages: insert blank pages: %w", err)
 	}
 
-	if err = Write(ctx, w, conf); err != nil {
+	if err = Write(c, ctx, w, conf); err != nil {
 		return fmt.Errorf("insert pages: write output: %w", err)
 	}
 	return nil
 }
 
-// InsertPagesFile inserts a blank page before or after every selected inFile page and writes the result to outFile.
-func InsertPagesFile(inFile, outFile string, selectedPages []string, before bool, pageConf *pdfcpu.PageConfiguration, conf *model.Configuration) (err error) {
+// InsertPagesFile inserts a blank page before or after every selected page, writes the result to outFile and supports cancellation.
+func InsertPagesFile(c context.Context, inFile, outFile string, selectedPages []string, before bool, pageConf *pdfcpu.PageConfiguration, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if inFile == "" {
 		return ErrMissingPDFInput
 	}
@@ -115,9 +121,6 @@ func InsertPagesFile(inFile, outFile string, selectedPages []string, before bool
 	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		logWritingTo(outFile)
-	} else {
-		logWritingTo(inFile)
 	}
 	staged, err := openStagedOutput(f1, inFile, tmpFile, "insert pages")
 	if err != nil {
@@ -136,7 +139,10 @@ func InsertPagesFile(inFile, outFile string, selectedPages []string, before bool
 		err = staged.commit()
 	}()
 
-	if err = InsertPages(f1, f2, selectedPages, before, pageConf, conf); err != nil {
+	if err = InsertPages(c, f1, f2, selectedPages, before, pageConf, conf); err != nil {
+		return err
+	}
+	if err = contextutil.Check(c); err != nil {
 		return err
 	}
 
@@ -145,10 +151,13 @@ func InsertPagesFile(inFile, outFile string, selectedPages []string, before bool
 	return nil
 }
 
-// RemovePages removes selected pages from rs and writes the result to w.
-func RemovePages(rs io.ReadSeeker, w io.Writer, selectedPages []string, conf *model.Configuration) (err error) {
+// RemovePages removes selected pages from rs, writes the result to w and supports cancellation.
+func RemovePages(c context.Context, rs io.ReadSeeker, w io.Writer, selectedPages []string, conf *model.Configuration) (err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if rs == nil {
 		return ErrMissingPDFReadSeeker
 	}
@@ -157,23 +166,23 @@ func RemovePages(rs io.ReadSeeker, w io.Writer, selectedPages []string, conf *mo
 		return ErrMissingPDFWriter
 	}
 
-	if conf == nil {
-		conf = model.NewDefaultConfiguration()
-	}
-	conf.Cmd = model.REMOVEPAGES
+	conf = operationConfiguration(conf, model.REMOVEPAGES)
 
-	ctx, err := ReadValidateAndOptimize(rs, conf)
+	ctx, err := ReadValidateAndOptimize(c, rs, conf, nil)
 	if err != nil {
 		return fmt.Errorf("remove pages: %w", err)
 	}
 
-	pages, err := RemainingPagesForPageRemoval(ctx.PageCount, selectedPages, true)
+	pages, err := RemainingPagesForRemoval(ctx.PageCount, selectedPages)
 	if err != nil {
 		return fmt.Errorf("remove pages: parse page selection: %w", err)
 	}
 
 	var pageNrs []int
 	for k, v := range pages {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
 		if v {
 			pageNrs = append(pageNrs, k)
 		}
@@ -183,22 +192,25 @@ func RemovePages(rs io.ReadSeeker, w io.Writer, selectedPages []string, conf *mo
 		return fmt.Errorf("remove pages: no pages remaining: %w", pdfcpu.ErrMissingPageNumbers)
 	}
 
-	ctxDest, err := pdfcpu.ExtractPages(ctx, pageNrs, false)
+	ctxDest, err := pdfcpu.ExtractPages(c, ctx, pageNrs, false)
 	if err != nil {
 		return fmt.Errorf("remove pages: extract remaining pages: %w", err)
 	}
 
-	if err = Write(ctxDest, w, conf); err != nil {
+	if err = Write(c, ctxDest, w, conf); err != nil {
 		return fmt.Errorf("remove pages: write output: %w", err)
 	}
 	return nil
 }
 
-// RemovePagesFile removes selected inFile pages and writes the result to outFile.
-func RemovePagesFile(inFile, outFile string, selectedPages []string, conf *model.Configuration) (err error) {
+// RemovePagesFile removes selected pages from inFile, writes the result to outFile and supports cancellation.
+func RemovePagesFile(c context.Context, inFile, outFile string, selectedPages []string, conf *model.Configuration) (err error) {
 	var f1, f2 *os.File
 	ok := false
 
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	if inFile == "" {
 		return ErrMissingPDFInput
 	}
@@ -209,9 +221,6 @@ func RemovePagesFile(inFile, outFile string, selectedPages []string, conf *model
 	tmpFile := ""
 	if outFile != "" && inFile != outFile {
 		tmpFile = outFile
-		logWritingTo(outFile)
-	} else {
-		logWritingTo(inFile)
 	}
 	staged, err := openStagedOutput(f1, inFile, tmpFile, "remove pages")
 	if err != nil {
@@ -230,7 +239,10 @@ func RemovePagesFile(inFile, outFile string, selectedPages []string, conf *model
 		err = staged.commit()
 	}()
 
-	if err = RemovePages(f1, f2, selectedPages, conf); err != nil {
+	if err = RemovePages(c, f1, f2, selectedPages, conf); err != nil {
+		return err
+	}
+	if err = contextutil.Check(c); err != nil {
 		return err
 	}
 
@@ -239,15 +251,18 @@ func RemovePagesFile(inFile, outFile string, selectedPages []string, conf *model
 	return nil
 }
 
-// PageCount returns rs's page count.
-func PageCount(rs io.ReadSeeker, conf *model.Configuration) (count int, err error) {
+// PageCount returns rs's page count and supports cancellation.
+func PageCount(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (count int, err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return 0, err
+	}
 	if rs == nil {
 		return 0, ErrMissingPDFReadSeeker
 	}
 
-	ctx, err := ReadAndValidate(rs, conf)
+	ctx, err := ReadAndValidate(c, rs, conf)
 	if err != nil {
 		return 0, fmt.Errorf("page count: %w", err)
 	}
@@ -255,8 +270,11 @@ func PageCount(rs io.ReadSeeker, conf *model.Configuration) (count int, err erro
 	return ctx.PageCount, nil
 }
 
-// PageCountFile returns inFile's page count.
-func PageCountFile(inFile string) (count int, err error) {
+// PageCountFile returns inFile's page count and supports cancellation.
+func PageCountFile(c context.Context, inFile string) (count int, err error) {
+	if err := contextutil.Check(c); err != nil {
+		return 0, err
+	}
 	if inFile == "" {
 		return 0, ErrMissingPDFInput
 	}
@@ -268,23 +286,26 @@ func PageCountFile(inFile string) (count int, err error) {
 		err = errors.Join(err, closeFile(f, "page count: close input"))
 	}()
 
-	return PageCount(f, model.NewDefaultConfiguration())
+	return PageCount(c, f, model.NewDefaultConfiguration())
 }
 
-// PageDims returns media box dimensions for rs in ascending page order.
-func PageDims(rs io.ReadSeeker, conf *model.Configuration) (pd []types.Dim, err error) {
+// PageDims returns media box dimensions for rs in ascending page order and supports cancellation.
+func PageDims(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (pd []types.Dim, err error) {
 	defer fault.Catch(&err)
 
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	if rs == nil {
 		return nil, ErrMissingPDFReadSeeker
 	}
 
-	ctx, err := ReadAndValidate(rs, conf)
+	ctx, err := ReadAndValidate(c, rs, conf)
 	if err != nil {
 		return nil, fmt.Errorf("page dimensions: %w", err)
 	}
 
-	pd, err = ctx.PageDims()
+	pd, err = ctx.PageDims(c)
 	if err != nil {
 		return nil, fmt.Errorf("page dimensions: collect page dimensions: %w", err)
 	}
@@ -296,8 +317,11 @@ func PageDims(rs io.ReadSeeker, conf *model.Configuration) (pd []types.Dim, err 
 	return pd, nil
 }
 
-// PageDimsFile returns media box dimensions for inFile in ascending page order.
-func PageDimsFile(inFile string) (pd []types.Dim, err error) {
+// PageDimsFile returns media box dimensions for inFile in ascending page order and supports cancellation.
+func PageDimsFile(c context.Context, inFile string) (pd []types.Dim, err error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	if inFile == "" {
 		return nil, ErrMissingPDFInput
 	}
@@ -309,5 +333,5 @@ func PageDimsFile(inFile string) (pd []types.Dim, err error) {
 		err = errors.Join(err, closeFile(f, "page dimensions: close input"))
 	}()
 
-	return PageDims(f, model.NewDefaultConfiguration())
+	return PageDims(c, f, model.NewDefaultConfiguration())
 }

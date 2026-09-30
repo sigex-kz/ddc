@@ -3,6 +3,7 @@ package ddc
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -269,18 +270,20 @@ func (ddc *Builder) EmbedPDF(pdf io.ReadSeeker, fileName string) error {
 	config.WriteObjectStream = false
 	config.WriteXRefStream = false
 
-	ctx, err := pdfcpuapi.ReadContext(pdf, config)
+	c := context.Background()
+
+	ctx, err := pdfcpuapi.ReadContext(c, pdf, config)
 	if err != nil {
 		return err
 	}
 
-	err = pdfcpuapi.ValidateContext(ctx)
+	err = pdfcpuapi.ValidateContext(c, ctx)
 	if err != nil {
 		return err
 	}
 
 	numPages := ctx.PageCount
-	pagesSizes, err := ctx.PageDims()
+	pagesSizes, err := ctx.PageDims(c)
 	if err != nil {
 		return err
 	}
@@ -541,7 +544,9 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		return err
 	}
 
-	ctx, err := pdfcpuapi.ReadContext(bytes.NewReader(pdfBytes.Bytes()), pdfcpumodel.NewDefaultConfiguration())
+	c := context.Background()
+
+	ctx, err := pdfcpuapi.ReadContext(c, bytes.NewReader(pdfBytes.Bytes()), pdfcpumodel.NewDefaultConfiguration())
 	if err != nil {
 		return err
 	}
@@ -551,7 +556,7 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 		desc := fmt.Sprintf("offset: %v 0 ,rot:0, scale:0.8 rel", constPageLeftMargin)
 
 		var wm *pdfcpumodel.Watermark
-		wm, err = pdfcpu.ParsePDFWatermarkDetails(ddc.embeddedDocFileName, desc, false, pdfcputypes.POINTS)
+		wm, err = pdfcpu.ParsePDFWatermarkDetails(c, ddc.embeddedDocFileName, desc, false, pdfcputypes.POINTS, nil)
 		if err != nil {
 			return err
 		}
@@ -572,18 +577,18 @@ func (ddc *Builder) Build(visualizeDocument, visualizeSignatures bool, creationD
 			return errPages
 		}
 
-		err = pdfcpu.AddWatermarks(ctx, pages, wm)
+		err = pdfcpu.AddWatermarks(c, ctx, pages, wm)
 		if err != nil {
 			return err
 		}
 	}
 
-	err = pdfcpuapi.ValidateContext(ctx)
+	err = pdfcpuapi.ValidateContext(c, ctx)
 	if err != nil {
 		return err
 	}
 
-	err = pdfcpuapi.WriteContext(ctx, w)
+	err = pdfcpuapi.WriteContext(c, ctx, w)
 	if err != nil {
 		return err
 	}
@@ -1106,7 +1111,7 @@ type AttachedFile struct {
 
 // ExtractAttachments from DDC and return them as structures
 func ExtractAttachments(ddcPdf io.ReadSeeker) (documentOriginal *AttachedFile, signatures []AttachedFile, err error) {
-	attachments, err := pdfcpuapi.ExtractAttachmentsRaw(ddcPdf, "", nil, nil)
+	attachments, err := pdfcpuapi.ExtractAttachmentsRaw(context.Background(), ddcPdf, "", nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}

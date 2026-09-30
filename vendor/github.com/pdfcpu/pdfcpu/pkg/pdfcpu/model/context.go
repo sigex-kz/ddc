@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package model defines shared PDF processing state and configuration types.
 package model
 
 import (
@@ -25,9 +26,13 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
+
+// ErrMissingContext signals a missing required Go context.
+var ErrMissingContext = contextutil.ErrMissingContext
 
 // ErrMissingPDFContext signals a missing required PDF context.
 var ErrMissingPDFContext = errors.New("missing PDF context")
@@ -39,18 +44,22 @@ var ErrMissingXRefTable = errors.New("missing PDF cross-reference table")
 type Context struct {
 	*Configuration
 	*XRefTable
-	Read         *ReadContext
-	Optimize     *OptimizationContext
-	Write        *WriteContext
-	WritingPages bool // true, when writing page dicts.
-	Dest         bool // true when writing a destination within a page.
+	Read             *ReadContext
+	Optimize         *OptimizationContext
+	Write            *WriteContext
+	validationReport ValidationReport
+	WritingPages     bool // true, when writing page dicts.
+	Dest             bool // true when writing a destination within a page.
 }
 
 // NewContext initializes a new Context.
 func NewContext(rs io.ReadSeeker, conf *Configuration) (*Context, error) {
-
 	if conf == nil {
 		conf = NewDefaultConfiguration()
+	}
+
+	if err := conf.Limits.CheckInputSize(0); err != nil {
+		return nil, err
 	}
 
 	rdCtx, err := newReadContext(rs)
@@ -58,15 +67,18 @@ func NewContext(rs io.ReadSeeker, conf *Configuration) (*Context, error) {
 		return nil, err
 	}
 
-	ctx := &Context{
-		conf,
-		newXRefTable(conf),
-		rdCtx,
-		newOptimizationContext(),
-		NewWriteContext(conf.Eol),
-		false,
-		false,
+	if err := conf.Limits.CheckInputSize(rdCtx.FileSize); err != nil {
+		return nil, err
 	}
+
+	ctx := &Context{
+		Configuration: conf,
+		XRefTable:     newXRefTable(conf),
+		Read:          rdCtx,
+		Optimize:      newOptimizationContext(),
+		Write:         NewWriteContext(conf.Eol),
+	}
+	ctx.XRefTable.validationReport = &ctx.validationReport
 
 	return ctx, nil
 }

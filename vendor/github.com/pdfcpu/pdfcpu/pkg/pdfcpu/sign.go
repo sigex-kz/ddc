@@ -17,6 +17,7 @@ limitations under the License.
 package pdfcpu
 
 import (
+	"context"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -25,12 +26,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/sign"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
 type signatureValidationHandler func(
+	context.Context,
 	io.ReaderAt,
 	types.Dict,
 	bool,
@@ -42,25 +45,111 @@ type signatureValidationHandler func(
 	*model.Context,
 ) error
 
-// ValidateSignatures validates signature integrity, reports available trust evidence and performs a best-effort local
-// assessment.
-func ValidateSignatures(ra io.ReaderAt, ctx *model.Context, all bool) ([]*model.SignatureValidationResult, error) {
+type signatureContextReaderAt struct {
+	context.Context
+	io.ReaderAt
+}
+
+func (r signatureContextReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if err := r.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.ReaderAt.ReadAt(p, off)
+	if contextErr := r.Err(); contextErr != nil {
+		return n, contextErr
+	}
+	return n, err
+}
+
+// ValidateSignatures validates signature integrity, reports available trust evidence,
+// performs a best-effort local assessment and supports cancellation.
+func ValidateSignatures(c context.Context, ra io.ReaderAt, ctx *model.Context, all bool) ([]*model.SignatureValidationResult, error) {
+	return validateSignatures(c, ra, ctx, all, userCertificatePool())
+}
+
+// ValidateSignaturesWithCertificatePool validates signatures using rootCerts as the local trust pool and supports
+// cancellation. A nil pool is treated as an empty local trust pool.
+func ValidateSignaturesWithCertificatePool(c context.Context, ra io.ReaderAt, ctx *model.Context, all bool, rootCerts *x509.CertPool) ([]*model.SignatureValidationResult, error) {
+	if rootCerts == nil {
+		rootCerts = x509.NewCertPool()
+	}
+	return validateSignatures(c, ra, ctx, all, rootCerts)
+}
+
+func validateSignatures(
+	c context.Context,
+	ra io.ReaderAt,
+	ctx *model.Context,
+	all bool,
+	rootCerts *x509.CertPool,
+) ([]*model.SignatureValidationResult, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
+	if err := requireContext(ctx); err != nil {
+		return nil, err
+	}
+	if ra != nil {
+		ra = signatureContextReaderAt{Context: c, ReaderAt: ra}
+	}
 	var results []*model.SignatureValidationResult
 
 	if ctx.URSignature != nil {
-		svr, err := validateURSignature(ctx.URSignature, ctx.URSignatureIncrement, ctx, ra)
+		svr, err := validateURSignatureWithCertificatePool(
+			c,
+			ctx.URSignature,
+			signatureRevisionOffset(ctx.URSignatureIncrement),
+			ctx,
+			ra,
+			rootCerts,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("usage rights signature: %w", err)
 		}
 		results = append(results, svr)
 	}
 
-	incrs := make([]int, 0, len(ctx.Signatures))
-	for k := range ctx.Signatures {
+	incrs, err := sortedSignatureIncrements(c, ctx.Signatures)
+	if err != nil {
+		return nil, err
+	}
+	validated, err := validateSignaturesForIncrements(c, ra, ctx, all, rootCerts, incrs)
+	if err != nil {
+		return nil, err
+	}
+	return append(results, validated...), contextutil.Check(c)
+}
+
+// signatureRevisionOffset converts reader ordinals (newest is 1) to revisions back from current (0).
+// Preserve zero for contexts constructed without reader revision metadata. Unsigned revisions still count.
+func signatureRevisionOffset(increment int) int {
+	return max(0, increment-1)
+}
+
+func sortedSignatureIncrements(
+	c context.Context,
+	signatures map[int]map[int]model.Signature,
+) ([]int, error) {
+	incrs := make([]int, 0, len(signatures))
+	for k := range signatures {
+		if err := contextutil.Check(c); err != nil {
+			return nil, err
+		}
 		incrs = append(incrs, k)
 	}
 	sort.Ints(incrs)
+	return incrs, contextutil.Check(c)
+}
 
+func validateSignaturesForIncrements(
+	c context.Context,
+	ra io.ReaderAt,
+	ctx *model.Context,
+	all bool,
+	rootCerts *x509.CertPool,
+	incrs []int,
+) ([]*model.SignatureValidationResult, error) {
+	var results []*model.SignatureValidationResult
 	first, ok := true, false
 
 	// NOTE: Long term validation is restricted to processing the latest doc timestamp (contained in the last increment).
@@ -68,12 +157,17 @@ func ValidateSignatures(ra io.ReaderAt, ctx *model.Context, all bool) ([]*model.
 	// Process all increments chronologically in reverse order.
 	for i, inc := range incrs {
 		for _, sig := range orderedSignatures(ctx.Signatures[inc]) {
+			if err := contextutil.Check(c); err != nil {
+				return nil, err
+			}
 
 			if i > 0 && sig.Type == model.SigTypeDTS {
 				continue
 			}
 
-			svr, err := validateSignature(sig, ctx, ra, first, all, inc)
+			svr, err := validateSignatureWithCertificatePool(
+				c, sig, ctx, ra, first, all, signatureRevisionOffset(inc), rootCerts,
+			)
 			if err != nil {
 				return nil, fmt.Errorf("signature obj#%d: %w", sig.ObjNr, err)
 			}
@@ -100,7 +194,7 @@ func ValidateSignatures(ra io.ReaderAt, ctx *model.Context, all bool) ([]*model.
 		}
 	}
 
-	return results, nil
+	return results, contextutil.Check(c)
 }
 
 func orderedSignatures(signatures map[int]model.Signature) []model.Signature {
@@ -126,7 +220,27 @@ func checkForAbortAfterFirst(first bool, svr *model.SignatureValidationResult, c
 	return svr.Certified()
 }
 
-func validateURSignature(sigDict types.Dict, increment int, ctx *model.Context, ra io.ReaderAt) (*model.SignatureValidationResult, error) {
+func validateURSignature(
+	c context.Context,
+	sigDict types.Dict,
+	increment int,
+	ctx *model.Context,
+	ra io.ReaderAt,
+) (*model.SignatureValidationResult, error) {
+	return validateURSignatureWithCertificatePool(c, sigDict, increment, ctx, ra, userCertificatePool())
+}
+
+func validateURSignatureWithCertificatePool(
+	c context.Context,
+	sigDict types.Dict,
+	increment int,
+	ctx *model.Context,
+	ra io.ReaderAt,
+	rootCerts *x509.CertPool,
+) (*model.SignatureValidationResult, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	sig := model.Signature{Type: model.SigTypeUR, Visible: false, Signed: true}
 	result := model.SignatureValidationResult{Signature: sig}
 
@@ -149,13 +263,14 @@ func validateURSignature(sigDict types.Dict, increment int, ctx *model.Context, 
 	}
 
 	if err := f(
+		c,
 		ra,
 		sigDict,
 		false,
 		false,
 		true,
 		0,
-		userCertificatePool(),
+		rootCerts,
 		&result,
 		ctx,
 	); err != nil {
@@ -165,7 +280,29 @@ func validateURSignature(sigDict types.Dict, increment int, ctx *model.Context, 
 	return &result, nil
 }
 
-func validateSignature(sig model.Signature, ctx *model.Context, ra io.ReaderAt, first, all bool, increment int) (*model.SignatureValidationResult, error) {
+func validateSignature(
+	c context.Context,
+	sig model.Signature,
+	ctx *model.Context,
+	ra io.ReaderAt,
+	first, all bool,
+	increment int,
+) (*model.SignatureValidationResult, error) {
+	return validateSignatureWithCertificatePool(c, sig, ctx, ra, first, all, increment, userCertificatePool())
+}
+
+func validateSignatureWithCertificatePool(
+	c context.Context,
+	sig model.Signature,
+	ctx *model.Context,
+	ra io.ReaderAt,
+	first, all bool,
+	increment int,
+	rootCerts *x509.CertPool,
+) (*model.SignatureValidationResult, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, err
+	}
 	sigField, err := ctx.DereferenceDict(*types.NewIndirectRef(sig.ObjNr, 0))
 	if err != nil {
 		return nil, fmt.Errorf("signature field dict: dereference: %w", err)
@@ -184,7 +321,7 @@ func validateSignature(sig model.Signature, ctx *model.Context, ra io.ReaderAt, 
 		return nil, errors.New("signature field dict: missing")
 	}
 
-	fieldDetails(sigField, &result)
+	fieldDetails(ctx, sigField, &result)
 
 	indRef := sigField.IndirectRefEntry("V")
 	if indRef == nil {
@@ -225,13 +362,14 @@ func validateSignature(sig model.Signature, ctx *model.Context, ra io.ReaderAt, 
 	}
 
 	if err := f(
+		c,
 		ra,
 		sigDict,
 		result.Signature.Certified,
 		result.Signature.Authoritative,
 		all,
 		perms,
-		userCertificatePool(),
+		rootCerts,
 		&result,
 		ctx,
 	); err != nil {
@@ -251,6 +389,7 @@ func signatureSubFilter(sigDict types.Dict, usageRights bool, result *model.Sign
 		)
 		return "", nil, false
 	}
+
 	name, ok := obj.(types.Name)
 	if !ok {
 		recordSubFilterProblem(
@@ -368,6 +507,7 @@ func sigHandler(subFilter string) signatureValidationHandler {
 }
 
 func validateX509RSASHA1Signature(
+	c context.Context,
 	ra io.ReaderAt,
 	sigDict types.Dict,
 	certified bool,
@@ -379,19 +519,12 @@ func validateX509RSASHA1Signature(
 	ctx *model.Context,
 ) error {
 	return sign.ValidateX509RSASHA1Signature(
-		ra,
-		sigDict,
-		certified,
-		authoritative,
-		validateAll,
-		perms,
-		rootCerts,
-		result,
-		ctx,
+		c, ra, sigDict, certified, authoritative, validateAll, perms, rootCerts, result, ctx,
 	)
 }
 
 func validatePKCS7Signatures(
+	c context.Context,
 	ra io.ReaderAt,
 	sigDict types.Dict,
 	certified bool,
@@ -403,19 +536,12 @@ func validatePKCS7Signatures(
 	ctx *model.Context,
 ) error {
 	return sign.ValidatePKCS7Signatures(
-		ra,
-		sigDict,
-		certified,
-		authoritative,
-		validateAll,
-		perms,
-		rootCerts,
-		result,
-		ctx,
+		c, ra, sigDict, certified, authoritative, validateAll, perms, rootCerts, result, ctx,
 	)
 }
 
 func validateDTS(
+	c context.Context,
 	ra io.ReaderAt,
 	sigDict types.Dict,
 	certified bool,
@@ -427,34 +553,24 @@ func validateDTS(
 	ctx *model.Context,
 ) error {
 	return sign.ValidateDTS(
-		ra,
-		sigDict,
-		certified,
-		authoritative,
-		validateAll,
-		perms,
-		rootCerts,
-		result,
-		ctx,
+		c, ra, sigDict, certified, authoritative, validateAll, perms, rootCerts, result, ctx,
 	)
 }
 
-func fieldDetails(sigField types.Dict, result *model.SignatureValidationResult) {
-	sl := sigField.StringLiteralEntry("T")
-	if sl == nil {
-		return
-	}
-	s, err := types.StringLiteralToString(*sl)
+func fieldDetails(ctx *model.Context, sigField types.Dict, result *model.SignatureValidationResult) {
+	s, _, err := ctx.DereferenceStringEntry(sigField, "T")
 	if err != nil {
 		result.AddProblem(fmt.Sprintf("signature field dict entry T: %v", err))
 		return
 	}
-	result.Details.FieldName = strings.TrimSpace(s)
+	if s != nil {
+		result.Details.FieldName = strings.TrimSpace(*s)
+	}
 }
 
 func signatureDetails(sigDict types.Dict, ctx *model.Context, result *model.SignatureValidationResult) {
-	if sl := sigDict.StringLiteralEntry("Name"); sl != nil {
-		s, err := types.StringLiteralToString(*sl)
+	if o, found := sigDict.Find("Name"); found {
+		s, err := model.Text(o)
 		if err != nil {
 			result.AddProblem(fmt.Sprintf("signature dict entry Name: %v", err))
 		} else {
@@ -462,8 +578,8 @@ func signatureDetails(sigDict types.Dict, ctx *model.Context, result *model.Sign
 		}
 	}
 
-	if sl := sigDict.StringLiteralEntry("ContactInfo"); sl != nil {
-		s, err := types.StringLiteralToString(*sl)
+	if o, found := sigDict.Find("ContactInfo"); found {
+		s, err := model.Text(o)
 		if err != nil {
 			result.AddProblem(fmt.Sprintf("signature dict entry ContactInfo: %v", err))
 		} else {
@@ -471,8 +587,8 @@ func signatureDetails(sigDict types.Dict, ctx *model.Context, result *model.Sign
 		}
 	}
 
-	if sl := sigDict.StringLiteralEntry("Location"); sl != nil {
-		s, err := types.StringLiteralToString(*sl)
+	if o, found := sigDict.Find("Location"); found {
+		s, err := model.Text(o)
 		if err != nil {
 			result.AddProblem(fmt.Sprintf("signature dict entry Location: %v", err))
 		} else {
@@ -480,8 +596,8 @@ func signatureDetails(sigDict types.Dict, ctx *model.Context, result *model.Sign
 		}
 	}
 
-	if sl := sigDict.StringLiteralEntry("Reason"); sl != nil {
-		s, err := types.StringLiteralToString(*sl)
+	if o, found := sigDict.Find("Reason"); found {
+		s, err := model.Text(o)
 		if err != nil {
 			result.AddProblem(fmt.Sprintf("signature dict entry Reason: %v", err))
 		} else {
@@ -491,7 +607,7 @@ func signatureDetails(sigDict types.Dict, ctx *model.Context, result *model.Sign
 
 	if o, ok := sigDict.Find("M"); ok {
 		// informational (cannot be relied upon for long term validation)
-		s, err := ctx.DereferenceStringOrHexLiteral(o, model.V10, nil)
+		s, err := model.Text(o)
 		if err != nil {
 			result.AddProblem(fmt.Sprintf("signature dict entry M: %v", err))
 		} else if t, ok := types.DateTime(s, ctx.XRefTable.ValidationMode == model.ValidationRelaxed); s != "" && ok {
@@ -532,7 +648,16 @@ func detectPermissions(sigDict types.Dict, ctx *model.Context, result *model.Sig
 		if !ok {
 			continue
 		}
-		if tm := d.NameEntry("TransformMethod"); tm == nil || *tm != "DocMDP" {
+		tm, _, err := ctx.DereferenceNameEntry(d, "TransformMethod")
+		if err != nil {
+			result.AddProblem(fmt.Sprintf(
+				"signature dict entry Reference, reference index %d, signature reference dict entry TransformMethod: %v",
+				refIndex+1,
+				err,
+			))
+			continue
+		}
+		if tm == nil || tm.Value() != "DocMDP" {
 			continue
 		}
 		if perm, ok := docMDPPermission(d, refIndex, ctx, result); ok {
@@ -630,7 +755,16 @@ func docMDPPermission(refDict types.Dict, refIndex int, ctx *model.Context, resu
 		))
 		return 0, false
 	}
-	if typ := params.Type(); typ == nil || *typ != "TransformParams" {
+	typ, _, err := ctx.DereferenceNameEntry(params, "Type")
+	if err != nil {
+		result.AddProblem(fmt.Sprintf(
+			"signature dict entry Reference, reference index %d, TransformParams dict entry Type: expected TransformParams: %v",
+			refIndex+1,
+			err,
+		))
+		return 0, false
+	}
+	if typ == nil || typ.Value() != "TransformParams" {
 		result.AddProblem(fmt.Sprintf(
 			"signature dict entry Reference, reference index %d, TransformParams dict entry Type: expected TransformParams",
 			refIndex+1,

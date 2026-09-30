@@ -12,7 +12,7 @@ github.com/clipperhouse/uax29/v2/graphemes
 github.com/hhrutter/tiff
 # github.com/kr/text v0.2.0
 ## explicit
-# github.com/mattn/go-runewidth v0.0.27
+# github.com/mattn/go-runewidth v0.0.30
 ## explicit; go 1.23
 github.com/mattn/go-runewidth
 # github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822
@@ -21,11 +21,13 @@ github.com/munnerz/goautoneg
 # github.com/patrickmn/go-cache v2.1.0+incompatible
 ## explicit
 github.com/patrickmn/go-cache
-# github.com/pdfcpu/pdfcpu v0.15.0
-## explicit; go 1.25.0
+# github.com/pdfcpu/pdfcpu v0.16.0
+## explicit; go 1.26.0
+github.com/pdfcpu/pdfcpu/internal/contextutil
 github.com/pdfcpu/pdfcpu/internal/corefont/metrics
 github.com/pdfcpu/pdfcpu/internal/fileutil
 github.com/pdfcpu/pdfcpu/internal/filter/lzw
+github.com/pdfcpu/pdfcpu/internal/netutil
 github.com/pdfcpu/pdfcpu/pkg/api
 github.com/pdfcpu/pdfcpu/pkg/filter
 github.com/pdfcpu/pdfcpu/pkg/font
@@ -77,8 +79,8 @@ go.yaml.in/yaml/v2
 # go.yaml.in/yaml/v3 v3.0.5
 ## explicit; go 1.16
 go.yaml.in/yaml/v3
-# golang.org/x/crypto v0.54.0
-## explicit; go 1.25.0
+# golang.org/x/crypto v0.57.0
+## explicit; go 1.26.0
 golang.org/x/crypto/ocsp
 # golang.org/x/image v0.46.0
 ## explicit; go 1.26.0

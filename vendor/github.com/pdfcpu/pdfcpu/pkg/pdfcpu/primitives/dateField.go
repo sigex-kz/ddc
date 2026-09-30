@@ -18,10 +18,12 @@ package primitives
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/format"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -221,7 +223,6 @@ func (df *DateField) validateTab() error {
 }
 
 func (df *DateField) validate() error {
-
 	if err := df.validateID(); err != nil {
 		return err
 	}
@@ -281,8 +282,9 @@ func (df *DateField) validate() error {
 	return df.validateTab()
 }
 
-func (df *DateField) calcFontFromDA(ctx *model.Context, d types.Dict, da *string, needUTF8 bool, fonts map[string]types.IndirectRef) (*types.IndirectRef, error) {
-	id, font, _, fontIndRef, err := calcFontDetailsFromDA(ctx, d, da, needUTF8, fonts)
+func (df *DateField) calcFontFromDA(c context.Context, ctx *model.Context, d types.Dict, da *string, needUTF8 bool,
+	fonts map[string]types.IndirectRef) (*types.IndirectRef, error) {
+	id, font, _, fontIndRef, err := calcFontDetailsFromDA(c, ctx, d, da, needUTF8, fonts)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +346,6 @@ func (df *DateField) calcMargin() (float64, float64, float64, float64, error) {
 }
 
 func (df *DateField) labelPos(labelHeight, w, g float64) (float64, float64) {
-
 	var x, y float64
 	bb, horAlign := df.BoundingBox, df.Label.HorAlign
 
@@ -404,9 +405,9 @@ func (tf *DateField) renderBackground(w io.Writer, bgCol, boCol *color.SimpleCol
 	}
 }
 
-func (df *DateField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
-
+func (df *DateField) renderN(c context.Context, xRefTable *model.XRefTable) ([]byte, error) {
 	w, h := df.BoundingBox.Width(), df.BoundingBox.Height()
+	repo := xRefTable.FontRepository()
 	bgCol := df.BgCol
 	boWidth, boCol := df.calcBorder()
 	buf := new(bytes.Buffer)
@@ -429,24 +430,24 @@ func (df *DateField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 
 	f := df.Font
 	if f.Size > h {
-		size, err := fontSizeForLineHeight(f.Name, h)
+		size, err := fontSizeForLineHeight(c, repo, f.Name, h)
 		if err != nil {
 			return nil, fmt.Errorf("date field text: %w", err)
 		}
 		f.Size = size
 	}
 
-	lineBB, err := model.CalcBoundingBoxFloat(v, 0, 0, f.Name, f.Size)
+	lineBB, err := repo.TextBoundingBox(c, v, f.Name, f.Size)
 	if err != nil {
 		return nil, fmt.Errorf("date field text: %w", err)
 	}
-	s, err := model.PrepBytes(xRefTable, v, f.Name, true, false, f.FillFont)
+	s, err := f.prepareBytes(c, xRefTable, v, true, false)
 	if err != nil {
 		return nil, fmt.Errorf("date field text: %w", err)
 	}
 	x := alignedFieldTextX(df.HorAlign, w, lineBB.Width(), boWidth)
 
-	lineHeight, descent, err := fontLineMetrics(f.Name, f.Size)
+	lineHeight, descent, err := fontLineMetrics(c, repo, f.Name, f.Size)
 	if err != nil {
 		return nil, fmt.Errorf("date field text: %w", err)
 	}
@@ -468,9 +469,12 @@ func (df *DateField) renderN(xRefTable *model.XRefTable) ([]byte, error) {
 }
 
 // RefreshN updates the normal appearance referred to by indRef according to df.
-// Unused.
-func (df *DateField) RefreshN(xRefTable *model.XRefTable, indRef *types.IndirectRef) error {
-	bb, err := df.renderN(xRefTable)
+// RefreshN updates the normal appearance referred to by indRef and supports cancellation.
+func (df *DateField) RefreshN(c context.Context, xRefTable *model.XRefTable, indRef *types.IndirectRef) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	bb, err := df.renderN(c, xRefTable)
 	if err != nil {
 		return err
 	}
@@ -489,8 +493,7 @@ func (df *DateField) RefreshN(xRefTable *model.XRefTable, indRef *types.Indirect
 }
 
 func (df *DateField) irN(fonts model.FontMap) (*types.IndirectRef, error) {
-
-	bb, err := df.renderN(df.pdf.XRefTable)
+	bb, err := df.renderN(df.pdf.ctx, df.pdf.XRefTable)
 	if err != nil {
 		return nil, err
 	}
@@ -712,7 +715,6 @@ func (df *DateField) prepareRectLL(mTop, mRight, mBottom, mLeft float64) (float6
 }
 
 func (df *DateField) prepLabel(p *model.Page, pageNr int, fonts model.FontMap) error {
-
 	if df.Label == nil {
 		return nil
 	}
@@ -755,7 +757,9 @@ func (df *DateField) prepLabel(p *model.Page, pageNr int, fonts model.FontMap) e
 		td.ShowBackground, td.ShowTextBB, td.BackgroundCol = true, true, *l.BgCol
 	}
 
-	bb, err := model.WriteMultiLine(df.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td)
+	bb, err := model.WriteMultiLine(
+		df.pdf.ctx, df.pdf.XRefTable, new(bytes.Buffer), types.RectForFormat("A4"), nil, td,
+	)
 	if err != nil {
 		return fmt.Errorf("date field label: %w", err)
 	}
@@ -781,7 +785,6 @@ func (df *DateField) prepLabel(p *model.Page, pageNr int, fonts model.FontMap) e
 }
 
 func (df *DateField) prepForRender(p *model.Page, pageNr int, fonts model.FontMap) error {
-
 	mTop, mRight, mBottom, mLeft, err := df.calcMargin()
 	if err != nil {
 		return err
@@ -808,7 +811,6 @@ func (df *DateField) prepForRender(p *model.Page, pageNr int, fonts model.FontMa
 }
 
 func (df *DateField) doRender(p *model.Page, fonts model.FontMap) error {
-
 	d, err := df.prepareDict(fonts)
 	if err != nil {
 		return err
@@ -822,7 +824,7 @@ func (df *DateField) doRender(p *model.Page, fonts model.FontMap) error {
 	}
 
 	if df.Label != nil {
-		if _, err := model.WriteColumn(df.pdf.XRefTable, p.Buf, p.MediaBox, nil, *df.Label.td, 0); err != nil {
+		if _, err := model.WriteColumn(df.pdf.ctx, df.pdf.XRefTable, p.Buf, p.MediaBox, nil, *df.Label.td, 0); err != nil {
 			return fmt.Errorf("date field label: %w", err)
 		}
 	}
@@ -835,7 +837,6 @@ func (df *DateField) doRender(p *model.Page, fonts model.FontMap) error {
 }
 
 func (df *DateField) render(p *model.Page, pageNr int, fonts model.FontMap) error {
-
 	if err := df.prepForRender(p, pageNr, fonts); err != nil {
 		return err
 	}
@@ -843,14 +844,11 @@ func (df *DateField) render(p *model.Page, pageNr int, fonts model.FontMap) erro
 	return df.doRender(p, fonts)
 }
 
-// NewDateField returns a new date field for d.
-func NewDateField(
-	ctx *model.Context,
-	d types.Dict,
-	v string,
-	da *string,
-	fontIndRef *types.IndirectRef,
-	fonts map[string]types.IndirectRef) (*DateField, *types.IndirectRef, error) {
+// NewDateField returns a new date field and supports cancellation.
+func NewDateField(c context.Context, ctx *model.Context, d types.Dict, v string, da *string, fontIndRef *types.IndirectRef, fonts map[string]types.IndirectRef) (*DateField, *types.IndirectRef, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, nil, err
+	}
 
 	df := &DateField{Value: v}
 
@@ -864,14 +862,18 @@ func NewDateField(
 	df.BoundingBox = types.RectForDim(bb.Width(), bb.Height())
 
 	if fontIndRef == nil {
-		if fontIndRef, err = df.calcFontFromDA(ctx, d, da, hasUTF(v), fonts); err != nil {
+		if fontIndRef, err = df.calcFontFromDA(c, ctx, d, da, hasUTF(v), fonts); err != nil {
 			return nil, nil, err
 		}
 	}
 
 	df.HorAlign = types.AlignLeft
-	if q := d.IntEntry("Q"); q != nil {
-		df.HorAlign = types.HAlignment(*q)
+	q, _, err := ctx.XRefTable.DereferenceIntegerEntry(d, "Q")
+	if err != nil {
+		return nil, nil, err
+	}
+	if q != nil {
+		df.HorAlign = types.HAlignment(q.Value())
 	}
 
 	bgCol, boCol, err := calcColsFromMK(ctx, d)
@@ -881,7 +883,10 @@ func NewDateField(
 	df.BgCol = bgCol
 
 	var b Border
-	boWidth := calcBorderWidth(d)
+	boWidth, err := calcBorderWidth(ctx, d)
+	if err != nil {
+		return nil, nil, err
+	}
 	if boWidth > 0 {
 		b.Width = boWidth
 		b.col = boCol
@@ -891,14 +896,14 @@ func NewDateField(
 	return df, fontIndRef, nil
 }
 
-func renderDateFieldAP(ctx *model.Context, d types.Dict, v string, da *string, fonts map[string]types.IndirectRef) error {
-
-	df, fontIndRef, err := NewDateField(ctx, d, v, da, nil, fonts)
+func renderDateFieldAP(c context.Context, ctx *model.Context, d types.Dict, v string, da *string,
+	fonts map[string]types.IndirectRef) error {
+	df, fontIndRef, err := NewDateField(c, ctx, d, v, da, nil, fonts)
 	if err != nil {
 		return err
 	}
 
-	bb, err := df.renderN(ctx.XRefTable)
+	bb, err := df.renderN(c, ctx.XRefTable)
 	if err != nil {
 		return err
 	}
@@ -913,13 +918,14 @@ func renderDateFieldAP(ctx *model.Context, d types.Dict, v string, da *string, f
 	return nil
 }
 
-func refreshDateFieldAP(ctx *model.Context, d types.Dict, v string, da *string, fonts map[string]types.IndirectRef, irN *types.IndirectRef) error {
-	df, _, err := NewDateField(ctx, d, v, da, nil, fonts)
+func refreshDateFieldAP(c context.Context, ctx *model.Context, d types.Dict, v string, da *string,
+	fonts map[string]types.IndirectRef, irN *types.IndirectRef) error {
+	df, _, err := NewDateField(c, ctx, d, v, da, nil, fonts)
 	if err != nil {
 		return err
 	}
 
-	bb, err := df.renderN(ctx.XRefTable)
+	bb, err := df.renderN(c, ctx.XRefTable)
 	if err != nil {
 		return err
 	}
@@ -927,11 +933,14 @@ func refreshDateFieldAP(ctx *model.Context, d types.Dict, v string, da *string, 
 	return updateForm(ctx.XRefTable, bb, irN)
 }
 
-// EnsureDateFieldAP ensures date field ap.
-func EnsureDateFieldAP(ctx *model.Context, d types.Dict, v string, da *string, fonts map[string]types.IndirectRef) error {
+// EnsureDateFieldAP ensures a date field appearance and supports cancellation.
+func EnsureDateFieldAP(c context.Context, ctx *model.Context, d types.Dict, v string, da *string, fonts map[string]types.IndirectRef) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	apd := d.DictEntry("AP")
 	if apd == nil {
-		return renderDateFieldAP(ctx, d, v, da, fonts)
+		return renderDateFieldAP(c, ctx, d, v, da, fonts)
 	}
 
 	irN := apd.IndirectRefEntry("N")
@@ -939,5 +948,5 @@ func EnsureDateFieldAP(ctx *model.Context, d types.Dict, v string, da *string, f
 		return nil
 	}
 
-	return refreshDateFieldAP(ctx, d, v, da, fonts, irN)
+	return refreshDateFieldAP(c, ctx, d, v, da, fonts, irN)
 }

@@ -18,6 +18,7 @@ package sign
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/subtle"
 	"crypto/x509"
@@ -30,6 +31,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/pkcs7"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
@@ -89,9 +91,10 @@ type rawSigningCertificateV2 struct {
 	Policies asn1.RawValue `asn1:"optional"`
 }
 
-// ValidateDTS validates signature integrity, reports available trust evidence and performs a best-effort local
-// assessment for an ETSI.RFC3161 document timestamp.
+// ValidateDTS validates signature integrity, reports available trust evidence, performs a best-effort local assessment
+// for an ETSI.RFC3161 document timestamp and supports cancellation.
 func ValidateDTS(
+	c context.Context,
 	ra io.ReaderAt,
 	sigDict types.Dict,
 	certified bool,
@@ -103,19 +106,12 @@ func ValidateDTS(
 	ctx *model.Context,
 ) error {
 	return validateDTS(
-		ra,
-		sigDict,
-		certified,
-		authoritative,
-		validateAll,
-		perms,
-		rootCerts,
-		result,
-		ctx,
+		c, ra, sigDict, certified, authoritative, validateAll, perms, rootCerts, result, ctx,
 	)
 }
 
 func validateDTS(
+	c context.Context,
 	ra io.ReaderAt,
 	sigDict types.Dict,
 	certified bool,
@@ -126,6 +122,9 @@ func validateDTS(
 	result *model.SignatureValidationResult,
 	ctx *model.Context,
 ) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	localAssessment := localSignatureAssessment{}
 	ctx.DTS = time.Time{}
 
@@ -152,10 +151,13 @@ func validateDTS(
 
 	signer := &model.Signer{}
 	result.Details.AddSigner(signer)
+	signer.Evidence.Timestamp.Kind = model.TimestampKindDocument
+	signer.Evidence.Timestamp.Present = true
 
 	certs, crls, ocsps := dtsValidationMaterial(ctx, signer, result, p7.Certificates)
 
 	if !p7.ContentType.Equal(oidTSTInfo) {
+		setDTSProfileEvidence(signer, model.False)
 		result.Reason = model.SignatureReasonTimestampTokenInvalid
 		signer.AddProblem("SubFilter ETSI.RFC3161: missing timestamp info")
 		return nil
@@ -163,10 +165,12 @@ func validateDTS(
 
 	tstInfo, err := parseTSTInfo(p7.Content)
 	if err != nil {
+		setDTSProfileEvidence(signer, model.False)
 		result.Reason = model.SignatureReasonTimestampTokenInvalid
 		signer.AddProblem(fmt.Sprintf("SubFilter ETSI.RFC3161: invalid timestamp info: %v", err))
 		return nil
 	}
+	signer.Evidence.Timestamp.Time = tstInfo.GenTime
 	if !checkTSTInfoProfile(tstInfo, signer, result) {
 		return nil
 	}
@@ -197,8 +201,12 @@ func validateDTS(
 	localAssessment.SignatureAuthenticated = true
 	localAssessment.DigestVerified = true
 	localAssessment.ProfileValidated = true
+	if err := c.Err(); err != nil {
+		return err
+	}
 
 	return evaluateDTSTimestamp(
+		c,
 		sigDict,
 		tstInfo,
 		p7,
@@ -231,16 +239,20 @@ func authenticateDTSEvidence(
 		reportDTSSignatureError(err, signer, result)
 		return false
 	}
+	signer.Evidence.SignatureAuthenticated = model.True
+	signer.Evidence.Timestamp.SignatureAuthenticated = model.True
 	if !applyDTSDigestEvidence(digestErr, signer, result) ||
 		!checkTimestampingEKU(signerCert, signer, result) ||
 		!checkTimestampSigningCertificate(p7Signer, signerCert, signer, result) {
 		return false
 	}
+	setDTSProfileEvidence(signer, model.True)
 	markDocumentUnmodified(result)
 	return true
 }
 
 func evaluateDTSTimestamp(
+	c context.Context,
 	sigDict types.Dict,
 	tstInfo *TSTInfo,
 	p7 *pkcs7.PKCS7,
@@ -255,6 +267,9 @@ func evaluateDTSTimestamp(
 	ctx *model.Context,
 	localAssessment localSignatureAssessment,
 ) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	rawToken, err := signatureContents(sigDict)
 	if err != nil {
 		return fmt.Errorf("SubFilter ETSI.RFC3161: read timestamp token: %w", err)
@@ -272,6 +287,7 @@ func evaluateDTSTimestamp(
 
 	// Assess the TSA certificate using the configured local certificate sources.
 	pathValidated, err := validateDTSCert(
+		c,
 		signerCert,
 		certs,
 		rootCerts,
@@ -346,18 +362,26 @@ func dtsSignerCertificate(
 ) *x509.Certificate {
 	cert, err := pkcs7.GetCertFromCertsByIssuerAndSerial(certs, p7Signer.IssuerAndSerialNumber)
 	if err != nil {
+		signer.Evidence.CertificateIdentified = model.False
 		markCertificateInvalidEvidence(result)
 		signer.AddProblem(fmt.Sprintf("SubFilter ETSI.RFC3161: signer identifier: %v", err))
 		return nil
 	}
 	if cert == nil {
+		signer.Evidence.CertificateIdentified = model.False
 		markCertificateInvalidEvidence(result)
 		signer.AddProblem("SubFilter ETSI.RFC3161: missing certificate for signer")
+		return nil
 	}
+	signer.Evidence.CertificateIdentified = model.True
 	return cert
 }
 
 func reportDTSSignatureError(err error, signer *model.Signer, result *model.SignatureValidationResult) {
+	if errors.Is(err, pkcs7.ErrSignatureMismatch) {
+		signer.Evidence.SignatureAuthenticated = model.False
+		signer.Evidence.Timestamp.SignatureAuthenticated = model.False
+	}
 	reportSignatureVerificationError(
 		"SubFilter ETSI.RFC3161: verify signature",
 		err,
@@ -369,6 +393,7 @@ func reportDTSSignatureError(err error, signer *model.Signer, result *model.Sign
 
 func checkTSTInfoProfile(tstInfo *TSTInfo, signer *model.Signer, result *model.SignatureValidationResult) bool {
 	if tstInfo == nil {
+		setDTSProfileEvidence(signer, model.False)
 		result.Reason = model.SignatureReasonTimestampTokenInvalid
 		signer.AddProblem("SubFilter ETSI.RFC3161: timestamp info missing")
 		return false
@@ -382,11 +407,17 @@ func checkTSTInfoProfile(tstInfo *TSTInfo, signer *model.Signer, result *model.S
 		return false
 	}
 	if tstInfo.GenTime.IsZero() {
+		setDTSProfileEvidence(signer, model.False)
 		result.Reason = model.SignatureReasonTimestampTokenInvalid
 		signer.AddProblem("SubFilter ETSI.RFC3161: timestamp info genTime missing")
 		return false
 	}
 	return true
+}
+
+func setDTSProfileEvidence(signer *model.Signer, status int) {
+	signer.Evidence.ProfileValidated = status
+	signer.Evidence.Timestamp.ProfileValidated = status
 }
 
 func checkDTSSignedAttributes(p7Signer pkcs7.SignerInfo, signer *model.Signer, result *model.SignatureValidationResult) bool {
@@ -440,11 +471,13 @@ func checkTimestampSigningCertificate(
 	}
 	switch {
 	case errors.Is(err, errESSCertificateMismatch):
+		setDTSProfileEvidence(signer, model.False)
 		markInvalidEvidence(result, model.SignatureReasonTimestampTokenInvalid, model.Unknown)
 	case errors.Is(err, pkcs7.ErrUnsupportedAlgorithm),
 		errors.Is(err, errUnsupportedESSCertificateProfile):
 		markUnsupportedEvidence(result)
 	default:
+		setDTSProfileEvidence(signer, model.False)
 		markMalformedEvidence(result)
 	}
 	signer.AddProblem(fmt.Sprintf("SubFilter ETSI.RFC3161: authenticate TSA certificate: %v", err))
@@ -695,6 +728,7 @@ func parseTSTInfo(bb []byte) (*TSTInfo, error) {
 }
 
 func validateDTSCert(
+	c context.Context,
 	signerCert *x509.Certificate,
 	certs []*x509.Certificate,
 	rootCerts *x509.CertPool,
@@ -703,6 +737,9 @@ func validateDTSCert(
 	result *model.SignatureValidationResult,
 	ctx *model.Context,
 ) (bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return false, err
+	}
 	// Collect certificate-path evidence using the configured local certificate sources.
 	chains := buildP7CertChains(true, signerCert, certs, rootCerts, signer, result)
 	pathResolved := len(chains) > 0
@@ -711,6 +748,7 @@ func validateDTSCert(
 	}
 
 	assessment, err := assessCertificateEvidence(
+		c,
 		chains,
 		pathResolved,
 		rootCerts,
@@ -744,6 +782,8 @@ func applyDTSDigestEvidence(err error, signer *model.Signer, result *model.Signa
 	if err != nil {
 		var mdErr *pkcs7.MessageDigestMismatchError
 		if errors.As(err, &mdErr) {
+			signer.Evidence.DigestVerified = model.False
+			signer.Evidence.Timestamp.DigestVerified = model.False
 			markInvalidEvidence(result, model.SignatureReasonDocModified, model.True)
 			signer.AddProblem(fmt.Sprintf("SubFilter ETSI.RFC3161: message digest mismatch: %v", err))
 			return false
@@ -752,6 +792,8 @@ func applyDTSDigestEvidence(err error, signer *model.Signer, result *model.Signa
 		signer.AddProblem(fmt.Sprintf("SubFilter ETSI.RFC3161: verify message digest: %v", err))
 		return false
 	}
+	signer.Evidence.DigestVerified = model.True
+	signer.Evidence.Timestamp.DigestVerified = model.True
 	return true
 }
 

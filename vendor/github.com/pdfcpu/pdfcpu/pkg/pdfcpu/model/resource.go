@@ -18,6 +18,8 @@ package model
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -30,6 +32,8 @@ type FontObject struct {
 	Prefix        string
 	FontName      string
 	FontDict      types.Dict
+	SubtypeName   types.Name
+	EncodingName  string
 	Data          []byte
 	Extension     string
 	Embedded      bool
@@ -59,6 +63,10 @@ func (fo FontObject) ResourceNamesString() string {
 
 // SubType returns the SubType of this font.
 func (fo FontObject) SubType() string {
+	if len(fo.SubtypeName) > 0 {
+		return fo.SubtypeName.Value()
+	}
+
 	var subType string
 	if fo.FontDict.Subtype() != nil {
 		subType = *fo.FontDict.Subtype()
@@ -68,6 +76,10 @@ func (fo FontObject) SubType() string {
 
 // Encoding returns the Encoding of this font.
 func (fo FontObject) Encoding() string {
+	if len(fo.EncodingName) > 0 {
+		return fo.EncodingName
+	}
+
 	encoding := "Built-in"
 	pdfObject, found := fo.FontDict.Find("Encoding")
 	if found {
@@ -125,7 +137,7 @@ func (io ImageObject) ResourceNamesString() string {
 	return strings.Join(resNames, ",")
 }
 
-var resourceTypes = types.NewStringSet([]string{"ColorSpace", "ExtGState", "Font", "Pattern", "Properties", "Shading", "XObject"})
+var resourceTypes = []string{"ColorSpace", "ExtGState", "Font", "Pattern", "Properties", "Shading", "XObject"}
 
 // PageResourceNames represents the required resource names for a specific page as extracted from its content streams.
 type PageResourceNames map[string]types.StringSet
@@ -133,7 +145,7 @@ type PageResourceNames map[string]types.StringSet
 // NewPageResourceNames returns initialized pageResourceNames.
 func NewPageResourceNames() PageResourceNames {
 	m := make(map[string]types.StringSet, len(resourceTypes))
-	for k := range resourceTypes {
+	for _, k := range resourceTypes {
 		m[k] = types.StringSet{}
 	}
 	return m
@@ -151,7 +163,7 @@ func (prn PageResourceNames) HasResources(s string) bool {
 
 // HasContent returns true in any resource names present.
 func (prn PageResourceNames) HasContent() bool {
-	for k := range resourceTypes {
+	for _, k := range resourceTypes {
 		if prn.HasResources(k) {
 			return true
 		}
@@ -164,11 +176,9 @@ func (prn PageResourceNames) String() string {
 	sep := ", "
 	var ss []string
 	s := []string{"PageResourceNames:\n"}
-	for k := range resourceTypes {
+	for _, k := range resourceTypes {
 		ss = nil
-		for k := range prn.Resources(k) {
-			ss = append(ss, k)
-		}
+		ss = append(ss, slices.Sorted(maps.Keys(prn.Resources(k)))...)
 		s = append(s, k+": "+strings.Join(ss, sep)+"\n")
 	}
 	return strings.Join(s, "")
