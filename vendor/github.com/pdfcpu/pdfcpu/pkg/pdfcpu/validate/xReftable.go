@@ -24,7 +24,6 @@ import (
 	"maps"
 	"net"
 	"net/http"
-	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -35,6 +34,8 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
+
+var errLinkVerification = errors.New("link verification failed")
 
 func validateXRefTableContext(ctx *model.Context) error {
 	if ctx == nil {
@@ -132,6 +133,10 @@ func validateXRefTable(c context.Context, ctx *model.Context) error {
 		return err
 	}
 	xRefTable.Valid = true
+
+	if err = checkForBrokenLinks(c, ctx); err != nil {
+		return err
+	}
 
 	if xRefTable.CustomExtensions && log.CLIEnabled() {
 		log.CLI.Println("Note: custom extensions will not be validated.")
@@ -579,7 +584,12 @@ func validateOpenAction(c context.Context, xRefTable *model.XRefTable, rootDict 
 	switch o := o.(type) {
 
 	case types.Dict:
-		err = validateActionDictObject(c, xRefTable, o, rawOpenAction, "rootDict.OpenAction")
+		origin := activeContentOrigin{
+			owner:      activeContentOwnerDocument,
+			source:     activeContentSourceOpenAction,
+			ownerObjNr: validationRootObjectNumber(xRefTable),
+		}
+		err = validateActionDictObjectWithOrigin(c, xRefTable, o, rawOpenAction, "rootDict.OpenAction", origin)
 
 	case types.Array:
 		err = validateDestinationArray(
@@ -614,7 +624,6 @@ func validateURI(xRefTable *model.XRefTable, rootDict types.Dict, required bool,
 
 	// Base, optional, ASCII string
 	_, err = validateStringEntry(xRefTable, d, uriObjNr, "URIdict", "Base", OPTIONAL, model.V10, nil)
-
 	return err
 }
 
@@ -1349,6 +1358,7 @@ func validateDSS(xRefTable *model.XRefTable, rootDict types.Dict, required bool,
 
 func validateAF(xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {
 	// => 14.13 Associated Files
+	// TODO v0.17.0: Support PDF 2.0 associated files.
 
 	rootObjNr := validationRootObjectNumber(xRefTable)
 	afObjNr := validationEntryObjectNumber(rootObjNr, rootDict, "AF")
@@ -1389,6 +1399,10 @@ func logURIError(xRefTable *model.XRefTable, pages []int) {
 				switch resp {
 				case "i":
 					s = "invalid url"
+				case "b":
+					s = "blocked by security policy"
+				case "k":
+					s = "skipped"
 				case "s":
 					s = "severe error"
 				case "t":
@@ -1397,64 +1411,337 @@ func logURIError(xRefTable *model.XRefTable, pages []int) {
 					s = fmt.Sprintf("status=%s", resp)
 				}
 				if log.CLIEnabled() {
-					log.CLI.Printf("Page %d: %s - %s\n", page, uri, s)
+					location := fmt.Sprintf("Page %d", page)
+					if page == 0 {
+						location = "Document"
+					}
+					log.CLI.Printf("%s: %s - %s\n", location, redactedLinkURI(uri), s)
 				}
 			}
 		}
 	}
 }
 
-func checkLinks(xRefTable *model.XRefTable, client http.Client, pages []int) bool {
-	var httpErr bool
+func logURISuccesses(xRefTable *model.XRefTable, pages []int) {
+	if !log.CLIEnabled() || !log.InfoEnabled() {
+		return
+	}
 	for _, page := range pages {
 		for _, uri := range slices.Sorted(maps.Keys(xRefTable.URIs[page])) {
+			if xRefTable.URIs[page][uri] != "" {
+				continue
+			}
+			location := fmt.Sprintf("page %d", page)
+			if page == 0 {
+				location = "document"
+			}
+			log.CLI.Printf("pdfcpu checked: %s: %s - HTTP status 200\n", location, redactedLinkURI(uri))
+		}
+	}
+}
+
+type linkResultCategory uint8
+
+const (
+	linkResultOK linkResultCategory = iota + 1
+	linkResultInvalidURL
+	linkResultBlocked
+	linkResultSkipped
+	linkResultTimeout
+	linkResultNetworkError
+	linkResultHTTPStatus
+)
+
+func linkResultDescription(category linkResultCategory, httpStatus int, reason string) string {
+	switch category {
+	case linkResultOK:
+		return "HTTP status 200"
+	case linkResultInvalidURL:
+		return "invalid URL"
+	case linkResultBlocked:
+		return "blocked by security policy"
+	case linkResultSkipped:
+		return reason
+	case linkResultTimeout:
+		return "timeout"
+	case linkResultNetworkError:
+		// Transport errors may embed credentials from request URLs or malformed redirect locations.
+		return "network error"
+	case linkResultHTTPStatus:
+		return fmt.Sprintf("HTTP status %d", httpStatus)
+	}
+	return reason
+}
+
+func addSkippedLinkNotice(xRefTable *model.XRefTable, page int, uri string, result linkCheckResult) {
+	location := fmt.Sprintf("page %d", page)
+	if page == 0 {
+		location = "document"
+	}
+	message := fmt.Sprintf(
+		"%s: %s - %s", location, redactedLinkURI(uri),
+		linkResultDescription(result.category, result.httpStatus, result.reason),
+	)
+	notice := model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeSkipped, message, nil)
+	notice.PageNumber = page
+	xRefTable.AddValidationNotice(notice)
+}
+
+type linkCheckResult struct {
+	status     string
+	category   linkResultCategory
+	httpStatus int
+	reason     string
+}
+
+func (result linkCheckResult) record(xRefTable *model.XRefTable, page int, uri string) {
+	xRefTable.URIs[page][uri] = result.status
+	if xRefTable.ValidationMode == model.ValidationRelaxed && result.failed() {
+		addSkippedLinkNotice(xRefTable, page, uri, result)
+	}
+}
+
+func (result linkCheckResult) failed() bool {
+	return result.category != linkResultOK
+}
+
+func linkURLFailure(err error) linkCheckResult {
+	status := "i"
+	category := linkResultInvalidURL
+	if errors.Is(err, errLinkTargetBlocked) {
+		status = "b"
+		category = linkResultBlocked
+	} else if errors.Is(err, errLinkSchemeSkipped) {
+		status = "k"
+		category = linkResultSkipped
+	}
+	return linkCheckResult{status: status, category: category, reason: err.Error()}
+}
+
+func linkRequestFailure(err error) linkCheckResult {
+	status := "s"
+	category := linkResultNetworkError
+	if errors.Is(err, errLinkTargetBlocked) {
+		status = "b"
+		category = linkResultBlocked
+	} else if e, ok := err.(net.Error); ok && e.Timeout() {
+		status = "t"
+		category = linkResultTimeout
+	}
+	return linkCheckResult{status: status, category: category, reason: err.Error()}
+}
+
+func linkRequestLimit(limit int) linkCheckResult {
+	reason := fmt.Sprintf("HTTP request limit reached (%d)", limit)
+	return linkCheckResult{status: "k", category: linkResultSkipped, reason: reason}
+}
+
+func skippedExternalTarget(target linkTarget) linkCheckResult {
+	reason := fmt.Sprintf("%s target is not opened", target.source)
+	if target.kind == linkTargetExecutable {
+		reason = fmt.Sprintf("%s target is not executed", target.source)
+	}
+	return linkCheckResult{status: "k", category: linkResultSkipped, reason: reason}
+}
+
+func skippedURIReference(target linkTarget) linkCheckResult {
+	return linkCheckResult{
+		status:   "k",
+		category: linkResultSkipped,
+		reason:   fmt.Sprintf("%s is not fetched", target.source),
+	}
+}
+
+func skippedInvalidLinkTarget() linkCheckResult {
+	return linkCheckResult{status: "k", category: linkResultSkipped, reason: "invalid link target metadata"}
+}
+
+func skippedOfflineLink() linkCheckResult {
+	return linkCheckResult{
+		status:   "k",
+		category: linkResultSkipped,
+		reason:   "offline mode: HTTP link was not checked",
+	}
+}
+
+func linkHTTPResult(res *http.Response) linkCheckResult {
+	reason := res.Status
+	if res.StatusCode == http.StatusOK {
+		if reason == "" {
+			reason = "200 OK"
+		}
+		return linkCheckResult{category: linkResultOK, httpStatus: res.StatusCode, reason: reason}
+	}
+	if reason == "" {
+		reason = fmt.Sprintf("HTTP status %d", res.StatusCode)
+	}
+	return linkCheckResult{
+		status:     strconv.Itoa(res.StatusCode),
+		category:   linkResultHTTPStatus,
+		httpStatus: res.StatusCode,
+		reason:     reason,
+	}
+}
+
+func checkLinks(c context.Context, xRefTable *model.XRefTable, client http.Client, pages []int) (bool, error) {
+	return checkLinksWithLimit(c, xRefTable, client, pages, maxLinkHTTPRequests)
+}
+
+func catalogURIBase(xRefTable *model.XRefTable) (string, error) {
+	if xRefTable.RootDict == nil {
+		return "", nil
+	}
+	rawURI, found := xRefTable.RootDict.Find("URI")
+	if !found {
+		return "", nil
+	}
+	d, err := xRefTable.DereferenceDict(rawURI)
+	if err != nil || d == nil {
+		return "", err
+	}
+	base, found, err := xRefTable.DereferenceStringEntry(d, "Base")
+	if err != nil || !found || base == nil {
+		return "", err
+	}
+	return *base, nil
+}
+
+func linkTargetRequestURL(xRefTable *model.XRefTable, uri string, target linkTarget) (string, error) {
+	if target.source != linkSourceURIAction {
+		return linkRequestURL(uri)
+	}
+	base, err := catalogURIBase(xRefTable)
+	if err != nil {
+		return "", fmt.Errorf("read catalog base URI: %w", err)
+	}
+	return linkRequestURLWithBase(uri, base)
+}
+
+func checkLinksOffline(c context.Context, xRefTable *model.XRefTable, pages []int) (bool, error) {
+	var linkErr bool
+	for _, page := range pages {
+		for _, uri := range slices.Sorted(maps.Keys(xRefTable.URIs[page])) {
+			if err := contextutil.Check(c); err != nil {
+				return linkErr, err
+			}
 			if log.CLIEnabled() {
 				log.CLI.Print(".")
 			}
-			_, err := url.ParseRequestURI(uri)
-			if err != nil {
-				httpErr = true
-				xRefTable.URIs[page][uri] = "i"
+			target, valid := decodeLinkTarget(xRefTable.URIs[page][uri])
+			if !valid {
+				skippedInvalidLinkTarget().record(xRefTable, page, uri)
+				linkErr = true
 				continue
 			}
-			res, err := client.Get(uri)
-			if err != nil {
-				if e, ok := err.(net.Error); ok && e.Timeout() {
-					xRefTable.URIs[page][uri] = "t"
-				} else {
-					xRefTable.URIs[page][uri] = "s"
-				}
-				httpErr = true
+			if target.kind == linkTargetFile || target.kind == linkTargetExecutable {
+				skippedExternalTarget(target).record(xRefTable, page, uri)
+				linkErr = true
 				continue
 			}
-			defer res.Body.Close()
-			if res.StatusCode != http.StatusOK {
-				httpErr = true
-				xRefTable.URIs[page][uri] = strconv.Itoa(res.StatusCode)
+			_, err := linkTargetRequestURL(xRefTable, uri, target)
+			if err != nil {
+				linkURLFailure(err).record(xRefTable, page, uri)
+				linkErr = true
 				continue
+			}
+			if target.kind == linkTargetURIReference {
+				skippedURIReference(target).record(xRefTable, page, uri)
+				linkErr = true
+				continue
+			}
+			skippedOfflineLink().record(xRefTable, page, uri)
+			linkErr = true
+		}
+	}
+	return linkErr, nil
+}
+
+func checkLink(c context.Context, xRefTable *model.XRefTable, client *http.Client, checked map[string]linkCheckResult, page int, uri string, requestLimit int) (bool, error) {
+	target, valid := decodeLinkTarget(xRefTable.URIs[page][uri])
+	if !valid {
+		skippedInvalidLinkTarget().record(xRefTable, page, uri)
+		return true, nil
+	}
+	if target.kind == linkTargetFile || target.kind == linkTargetExecutable {
+		skippedExternalTarget(target).record(xRefTable, page, uri)
+		return true, nil
+	}
+	requestURI, err := linkTargetRequestURL(xRefTable, uri, target)
+	if err != nil {
+		linkURLFailure(err).record(xRefTable, page, uri)
+		return true, nil
+	}
+	if target.kind == linkTargetURIReference {
+		skippedURIReference(target).record(xRefTable, page, uri)
+		return true, nil
+	}
+	if result, ok := checked[requestURI]; ok {
+		result.record(xRefTable, page, uri)
+		return result.failed(), nil
+	}
+	req, err := http.NewRequestWithContext(c, http.MethodGet, requestURI, nil)
+	if err != nil {
+		result := linkURLFailure(err)
+		checked[requestURI] = result
+		result.record(xRefTable, page, uri)
+		return true, nil
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		if cancelErr := contextutil.Check(c); cancelErr != nil {
+			return false, cancelErr
+		}
+		result := linkRequestFailure(err)
+		if errors.Is(err, errLinkRequestLimit) {
+			result = linkRequestLimit(requestLimit)
+		}
+		checked[requestURI] = result
+		result.record(xRefTable, page, uri)
+		return true, nil
+	}
+	result := linkHTTPResult(res)
+	res.Body.Close()
+	checked[requestURI] = result
+	result.record(xRefTable, page, uri)
+	return result.failed(), nil
+}
+
+func checkLinksWithLimit(c context.Context, xRefTable *model.XRefTable, client http.Client, pages []int, requestLimit int) (bool, error) {
+	client.Transport = newLinkRequestBudgetTransport(client.Transport, requestLimit)
+	checked := map[string]linkCheckResult{}
+	var httpErr bool
+	for _, page := range pages {
+		for _, uri := range slices.Sorted(maps.Keys(xRefTable.URIs[page])) {
+			if err := contextutil.Check(c); err != nil {
+				return httpErr, err
+			}
+			if log.CLIEnabled() {
+				log.CLI.Print(".")
+			}
+			failed, err := checkLink(c, xRefTable, &client, checked, page, uri, requestLimit)
+			if err != nil {
+				return httpErr, err
+			}
+			if failed {
+				httpErr = true
 			}
 		}
 	}
-	return httpErr
+	return httpErr, nil
 }
 
-func checkForBrokenLinks(ctx *model.Context) error {
+func checkForBrokenLinks(c context.Context, ctx *model.Context) error {
+	client := linkHTTPClient(time.Duration(ctx.Timeout) * time.Second)
+	return checkForBrokenLinksUsing(c, ctx, client)
+}
+
+func checkForBrokenLinksUsing(c context.Context, ctx *model.Context, client http.Client) error {
 	if !ctx.XRefTable.ValidateLinks {
 		return nil
 	}
-	if len(ctx.URIs) > 0 {
-		if ctx.Offline {
-			if log.CLIEnabled() {
-				log.CLI.Printf("pdfcpu is offline, can't validate Links")
-			}
-			return nil
-		}
+	if err := contextutil.Check(c); err != nil {
+		return err
 	}
-
-	if log.CLIEnabled() {
-		log.CLI.Println("validating URIs..")
-	}
-
 	xRefTable := ctx.XRefTable
 
 	pages := []int{}
@@ -1463,18 +1750,36 @@ func checkForBrokenLinks(ctx *model.Context) error {
 	}
 	sort.Ints(pages)
 
-	client := http.Client{
-		Timeout: time.Duration(ctx.Timeout) * time.Second,
+	if log.CLIEnabled() {
+		if ctx.Offline {
+			log.CLI.Println("assessing URIs offline..")
+		} else {
+			log.CLI.Println("validating URIs..")
+		}
 	}
 
-	httpErr := checkLinks(xRefTable, client, pages)
+	var linkErr bool
+	var err error
+	if ctx.Offline {
+		linkErr, err = checkLinksOffline(c, xRefTable, pages)
+	} else {
+		linkErr, err = checkLinks(c, xRefTable, client, pages)
+	}
+	if err != nil {
+		return err
+	}
 
 	if log.CLIEnabled() {
-		logURIError(xRefTable, pages)
+		if xRefTable.ValidationMode == model.ValidationRelaxed {
+			log.CLI.Println()
+		} else {
+			logURIError(xRefTable, pages)
+		}
 	}
+	logURISuccesses(xRefTable, pages)
 
-	if httpErr {
-		return errors.New("broken links detected")
+	if linkErr && xRefTable.ValidationMode != model.ValidationRelaxed {
+		return fmt.Errorf("%w: blocked or broken links detected", errLinkVerification)
 	}
 
 	return nil
@@ -1640,18 +1945,8 @@ func validateRootObject(c context.Context, ctx *model.Context, rootDict types.Di
 		}
 	}
 
-	// Validate links.
-	if err = contextutil.Check(c); err != nil {
-		return err
-	}
-	if err = checkForBrokenLinks(ctx); err == nil {
-		if log.ValidateEnabled() {
-			log.Validate.Println("*** validateRootObject end ***")
-		}
-	}
-
-	if err != nil {
-		return fmt.Errorf("uri link check: %w", err)
+	if log.ValidateEnabled() {
+		log.Validate.Println("*** validateRootObject end ***")
 	}
 
 	return nil

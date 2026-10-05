@@ -49,7 +49,7 @@ func validateAPNameTreeValue(c context.Context, xRefTable *model.XRefTable, o ty
 	return validateXObjectStreamDict(c, xRefTable, o)
 }
 
-func validateJavaScriptNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+func validateJavaScriptNameTreeValueContext(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
 	// Version check
 	err := xRefTable.ValidateVersion("JavaScriptNameTreeValue", sinceVersion)
 	if err != nil {
@@ -61,8 +61,28 @@ func validateJavaScriptNameTreeValue(xRefTable *model.XRefTable, o types.Object,
 		return fmt.Errorf("JavaScript name tree value: dereference dict: %w", err)
 	}
 
-	// Javascript Action:
-	return validateJavaScriptActionDict(xRefTable, d, "JavaScript")
+	// S, required, name
+	_, err = validateNameEntry(xRefTable, d, 0, "JavaScript", "S", REQUIRED, model.V10, func(s string) bool {
+		return s == "JavaScript"
+	})
+	if err != nil {
+		return err
+	}
+
+	origin := activeContentOrigin{owner: activeContentOwnerNameTree, source: activeContentSourceJavaScriptNameTree}
+	return validateActionDictObjectWithOrigin(c, xRefTable, d, o, "JavaScript name tree value", origin)
+}
+
+func validateJavaScriptNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+	return validateJavaScriptNameTreeValueContext(context.Background(), xRefTable, o, sinceVersion)
+}
+
+func validate3DResourcesNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+	if err := xRefTable.ValidateVersion("3DResourcesNameTreeValue", sinceVersion); err != nil {
+		return err
+	}
+	_, err := xRefTable.Dereference(o)
+	return err
 }
 
 func validatePagesNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
@@ -118,13 +138,16 @@ func validateURLAliasDict(xRefTable *model.XRefTable, d types.Dict) error {
 	dictName := "urlAliasDict"
 
 	// U, required, ASCII string
-	_, err := validateStringEntry(xRefTable, d, 0, dictName, "U", REQUIRED, model.V10, nil)
+	u, err := validateStringEntry(xRefTable, d, 0, dictName, "U", REQUIRED, model.V10, nil)
 	if err != nil {
 		return err
 	}
 
 	// C, optional, array of strings
 	_, err = validateStringArrayEntry(xRefTable, d, 0, dictName, "C", OPTIONAL, model.V10, nil)
+	if err == nil && u != nil {
+		collectDocumentLinkTarget(xRefTable, *u, linkSourceWebCaptureSource)
+	}
 
 	return err
 }
@@ -150,7 +173,7 @@ func validateCaptureCommandDict(xRefTable *model.XRefTable, d types.Dict, ownerO
 	dictName := "captureCommandDict"
 
 	// URL, required, string
-	_, err := validateStringEntry(xRefTable, d, 0, dictName, "URL", REQUIRED, model.V10, nil)
+	commandURL, err := validateStringEntry(xRefTable, d, 0, dictName, "URL", REQUIRED, model.V10, nil)
 	if err != nil {
 		return fmt.Errorf("%s.URL: %w", dictName, err)
 	}
@@ -196,6 +219,9 @@ func validateCaptureCommandDict(xRefTable *model.XRefTable, d types.Dict, ownerO
 			return fmt.Errorf("%s.S: %w", dictName, err)
 		}
 	}
+	if commandURL != nil {
+		collectDocumentLinkTarget(xRefTable, *commandURL, linkSourceWebCaptureCommand)
+	}
 
 	return nil
 }
@@ -209,7 +235,11 @@ func validateSourceInfoDictEntryAU(xRefTable *model.XRefTable, d types.Dict, dic
 	switch o := o.(type) {
 
 	case types.StringLiteral, types.HexLiteral:
-		// no further processing
+		s, err := model.Text(o)
+		if err != nil {
+			return fmt.Errorf("dict=%s entry=%s: %w", dictName, entryName, err)
+		}
+		collectDocumentLinkTarget(xRefTable, s, linkSourceWebCaptureSource)
 
 	case types.Dict:
 		err = validateURLAliasDict(xRefTable, o)
@@ -394,46 +424,56 @@ func validateWebCaptureContentSetDict(XRefTable *model.XRefTable, d types.Dict, 
 	return err
 }
 
-func validateIDSNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
-	// see 14.10.4
-
-	// Version check
-	err := xRefTable.ValidateVersion("IDSNameTreeValue", sinceVersion)
-	if err != nil {
-		return err
-	}
-
-	// Value is a web capture content set.
+func validateWebCaptureContentSet(xRefTable *model.XRefTable, o types.Object, ownerObjNr int) error {
 	d, err := xRefTable.DereferenceDict(o)
 	if err != nil {
-		return fmt.Errorf("IDS name tree value: dereference content set dict: %w", err)
+		return fmt.Errorf("dereference content set dict: %w", err)
 	}
 	if d == nil {
-		return errors.New("IDS name tree value: missing content set dict")
+		return errors.New("missing content set dict")
 	}
-
-	return validateWebCaptureContentSetDict(xRefTable, d, validationObjectNumber(0, o))
+	return validateWebCaptureContentSetDict(xRefTable, d, validationObjectNumber(ownerObjNr, o))
 }
 
-func validateURLSNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+func validateWebCaptureNameTreeValue(c context.Context, xRefTable *model.XRefTable, o types.Object, name string) error {
+	value, err := xRefTable.Dereference(o)
+	if err != nil {
+		return fmt.Errorf("%s name tree value: dereference: %w", name, err)
+	}
+	ownerObjNr := validationObjectNumber(0, o)
+	switch value := value.(type) {
+	case types.Dict:
+		return validateWebCaptureContentSet(xRefTable, value, ownerObjNr)
+	case types.Array:
+		for i, contentSet := range value {
+			if err := contextutil.Check(c); err != nil {
+				return err
+			}
+			if err := validateWebCaptureContentSet(xRefTable, contentSet, ownerObjNr); err != nil {
+				return fmt.Errorf("%s name tree value[%d]: %w", name, i, err)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("%s name tree value: expected content set dict or array, got %T", name, value)
+}
+
+func validateIDSNameTreeValue(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
 	// see 14.10.4
 
-	// Version check
-	err := xRefTable.ValidateVersion("URLSNameTreeValue", sinceVersion)
-	if err != nil {
+	if err := xRefTable.ValidateVersion("IDSNameTreeValue", sinceVersion); err != nil {
 		return err
 	}
+	return validateWebCaptureNameTreeValue(c, xRefTable, o, "IDS")
+}
 
-	// Value is a web capture content set.
-	d, err := xRefTable.DereferenceDict(o)
-	if err != nil {
-		return fmt.Errorf("URLS name tree value: dereference content set dict: %w", err)
-	}
-	if d == nil {
-		return errors.New("URLS name tree value: missing content set dict")
-	}
+func validateURLSNameTreeValue(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+	// see 14.10.4
 
-	return validateWebCaptureContentSetDict(xRefTable, d, validationObjectNumber(0, o))
+	if err := xRefTable.ValidateVersion("URLSNameTreeValue", sinceVersion); err != nil {
+		return err
+	}
+	return validateWebCaptureNameTreeValue(c, xRefTable, o, "URLS")
 }
 
 func validateEmbeddedFilesNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
@@ -450,58 +490,247 @@ func validateEmbeddedFilesNameTreeValue(xRefTable *model.XRefTable, o types.Obje
 		return err
 	}
 
-	if o == nil {
-		return nil
-	}
-
-	_, err = validateFileSpecification(xRefTable, o)
-
-	return err
-}
-
-func validateSlideShowResources(xRefTable *model.XRefTable, d types.Dict) error {
-	const (
-		dictName  = "slideShowDict"
-		entryName = "Resources"
-	)
-	a, err := validateArrayEntry(xRefTable, d, 0, dictName, entryName, REQUIRED, model.V14, nil)
+	objNr := validationObjectNumber(0, o)
+	f, err := validateFileSpecificationWithoutLinkCollection(xRefTable, o)
 	if err != nil {
-		return err
+		return fmt.Errorf("EmbeddedFiles name tree value: %w", err)
 	}
-	objNr := validationEntryObjectNumber(0, d, entryName)
-	if err = validateArrayPairs(a, objNr, dictName, entryName, 1); err != nil {
-		return err
-	}
-	for i, o := range a {
-		entryObjNr := validationObjectNumber(objNr, o)
-		if i%2 == 0 {
-			o, err = xRefTable.Dereference(o)
-			if err == nil {
-				_, err = types.StringOrHexLiteral(o)
+	if !isEmbeddedFileSpecification(xRefTable, f) {
+		if xRefTable.ValidationMode == model.ValidationRelaxed && isEmptyEmbeddedFileSpecification(xRefTable, f) {
+			target, found := fileSpecificationTarget(xRefTable, f)
+			if !found {
+				target = "unnamed"
 			}
-			if err != nil {
-				err = fmt.Errorf("%s.%s[%d]: expected string: %w", dictName, entryName, i, err)
-				return model.WithValidationErrorObject(err, entryObjNr)
-			}
-			continue
+			model.ShowSkipped(fmt.Sprintf(
+				`EmbeddedFiles name tree value %q (obj#:%d): empty EF dictionary`, target, objNr,
+			))
+			return nil
 		}
-		if _, ok := o.(types.IndirectRef); !ok {
-			err = fmt.Errorf("%s.%s[%d]: expected indirect reference", dictName, entryName, i)
-			return model.WithValidationErrorObject(err, entryObjNr)
-		}
-		o, err = xRefTable.Dereference(o)
-		if err != nil || o == nil {
-			if err == nil {
-				err = errors.New("missing referenced resource")
-			}
-			err = fmt.Errorf("%s.%s[%d]: %w", dictName, entryName, i, err)
-			return model.WithValidationErrorObject(err, entryObjNr)
-		}
+		return errors.New("EmbeddedFiles name tree value: expected matching embedded file stream")
 	}
 	return nil
 }
 
-func validateSlideShowDict(xRefTable *model.XRefTable, d types.Dict) error {
+func isEmptyEmbeddedFileSpecification(xRefTable *model.XRefTable, o types.Object) bool {
+	if isURLFileSpecification(xRefTable, o) {
+		return false
+	}
+	o, err := xRefTable.Dereference(o)
+	if err != nil {
+		return false
+	}
+	d, ok := o.(types.Dict)
+	if !ok {
+		return false
+	}
+	rawEF, found := d.Find("EF")
+	if !found {
+		return false
+	}
+	ef, err := xRefTable.DereferenceDict(rawEF)
+	return err == nil && ef != nil && len(ef) == 0
+}
+
+func validateRichMediaAssetNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+	if err := xRefTable.ValidateVersion("RichMediaAssetNameTreeValue", sinceVersion); err != nil {
+		return err
+	}
+
+	d, err := xRefTable.DereferenceDict(o)
+	if err != nil {
+		return fmt.Errorf("RichMedia Assets name tree value: dereference file specification: %w", err)
+	}
+	if d == nil {
+		return errors.New("RichMedia Assets name tree value: missing file specification")
+	}
+	if isURLFileSpecification(xRefTable, d) {
+		return errors.New("RichMedia Assets name tree value: expected embedded file specification")
+	}
+	if _, err = validateFileSpecificationWithoutLinkCollection(xRefTable, o); err != nil {
+		return fmt.Errorf("RichMedia Assets name tree value: %w", err)
+	}
+
+	rawEF, found := d.Find("EF")
+	if !found {
+		return errors.New("RichMedia Assets name tree value: missing EF dictionary")
+	}
+	ef, err := xRefTable.DereferenceDict(rawEF)
+	if err != nil {
+		return fmt.Errorf("RichMedia Assets name tree value EF: %w", err)
+	}
+	if ef == nil {
+		return errors.New("RichMedia Assets name tree value: missing EF dictionary")
+	}
+	for _, key := range []string{"F", "UF"} {
+		raw, found := ef.Find(key)
+		if !found {
+			continue
+		}
+		embeddedFile, err := xRefTable.Dereference(raw)
+		if err != nil {
+			return fmt.Errorf("RichMedia Assets name tree value EF.%s: %w", key, err)
+		}
+		if _, ok := embeddedFile.(types.StreamDict); ok {
+			return nil
+		}
+	}
+
+	return errors.New("RichMedia Assets name tree value: missing embedded file stream reference")
+}
+
+func validateSlideShowResource(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+	if err := xRefTable.ValidateVersion("SlideShowResource", sinceVersion); err != nil {
+		return err
+	}
+
+	resource, err := xRefTable.Dereference(o)
+	if err != nil {
+		return fmt.Errorf("slide show resource: dereference: %w", err)
+	}
+	if resource == nil {
+		return errors.New("slide show resource: missing object")
+	}
+
+	var d types.Dict
+	switch resource := resource.(type) {
+	case types.Dict:
+		d = resource
+	case types.StreamDict:
+		d = resource.Dict
+	default:
+		return fmt.Errorf("slide show resource: expected dictionary or stream, got %T", resource)
+	}
+
+	typeName, err := validateNameEntry(xRefTable, d, 0, "slideShowResource", "Type", REQUIRED, model.V10, nil)
+	if err != nil {
+		return err
+	}
+	isFileSpec := typeName.Value() == "Filespec" || typeName.Value() == "FileSpec"
+	if xRefTable.ValidationMode == model.ValidationRelaxed && typeName.Value() == "F" {
+		isFileSpec = true
+	}
+	if !isFileSpec {
+		return nil
+	}
+
+	f, err := validateFileSpecificationWithoutLinkCollection(xRefTable, o)
+	if err != nil {
+		return fmt.Errorf("slide show resource file specification: %w", err)
+	}
+	if !isEmbeddedFileSpecification(xRefTable, f) {
+		collectDocumentFileSpecificationTarget(
+			xRefTable, f, linkTargetFile, linkSourceAlternatePresentation,
+		)
+	}
+	return nil
+}
+
+func validateLegacySlideShowResource(xRefTable *model.XRefTable, o types.Object) error {
+	resource, err := xRefTable.Dereference(o)
+	if err != nil {
+		return fmt.Errorf("slide show resource: dereference: %w", err)
+	}
+	if resource == nil {
+		return errors.New("slide show resource: missing object")
+	}
+
+	var d types.Dict
+	switch resource := resource.(type) {
+	case types.Dict:
+		d = resource
+	case types.StreamDict:
+		d = resource.Dict
+	default:
+		return nil
+	}
+	if _, found := d.Find("Type"); !found {
+		return nil
+	}
+	return validateSlideShowResource(xRefTable, o, model.V14)
+}
+
+func validateLegacySlideShowResources(c context.Context, xRefTable *model.XRefTable, a types.Array, objNr int, startResource string) error {
+	const (
+		dictName  = "slideShowDict"
+		entryName = "Resources"
+	)
+	if err := validateArrayPairs(a, objNr, dictName, entryName, 1); err != nil {
+		return err
+	}
+	message := "slideShowDict.Resources: accepted legacy flat resource array"
+	cause := model.WithValidationErrorObject(errors.New(message), objNr)
+	xRefTable.AddValidationNotice(model.NewValidationNotice(
+		model.NoticePhaseValidate, model.NoticeSkipped, message, cause,
+	))
+	found := false
+	for i := 0; i < len(a); i += 2 {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		keyObjNr := validationObjectNumber(objNr, a[i])
+		o, err := xRefTable.Dereference(a[i])
+		if err != nil {
+			return model.WithValidationErrorObject(fmt.Errorf("%s.%s[%d]: dereference key: %w", dictName, entryName, i, err), keyObjNr)
+		}
+		key, err := types.StringOrHexLiteral(o)
+		if err != nil {
+			return model.WithValidationErrorObject(fmt.Errorf("%s.%s[%d]: expected string: %w", dictName, entryName, i, err), keyObjNr)
+		}
+		found = found || *key == startResource
+		resource := a[i+1]
+		resourceObjNr := validationObjectNumber(objNr, resource)
+		if _, ok := resource.(types.IndirectRef); !ok {
+			return model.WithValidationErrorObject(
+				fmt.Errorf("%s.%s[%d]: expected indirect reference", dictName, entryName, i+1), resourceObjNr,
+			)
+		}
+		if err = validateLegacySlideShowResource(xRefTable, resource); err != nil {
+			return model.WithValidationErrorObject(
+				fmt.Errorf("%s.%s[%d]: %w", dictName, entryName, i+1, err), resourceObjNr,
+			)
+		}
+	}
+	if !found {
+		return fmt.Errorf("%s.StartResource: resource %q not found", dictName, startResource)
+	}
+	return nil
+}
+
+func validateSlideShowResources(c context.Context, xRefTable *model.XRefTable, d types.Dict, startResource string) error {
+	const (
+		dictName  = "slideShowDict"
+		entryName = "Resources"
+	)
+	rawResources := d[entryName]
+	resourcesObjNr := validationObjectNumber(0, rawResources)
+	resources, err := validateEntry(xRefTable, d, 0, dictName, entryName, REQUIRED, model.V14)
+	if err != nil {
+		return err
+	}
+	if a, ok := resources.(types.Array); ok && xRefTable.ValidationMode == model.ValidationRelaxed {
+		return validateLegacySlideShowResources(c, xRefTable, a, resourcesObjNr, startResource)
+	}
+	resourcesDict, ok := resources.(types.Dict)
+	if !ok {
+		return model.WithValidationErrorObject(
+			fmt.Errorf("dict=%s entry=%s invalid type %T", dictName, entryName, resources), resourcesObjNr,
+		)
+	}
+	_, _, tree, err := validateNameTree(
+		c, xRefTable, "SlideShowResources", resourcesDict, resourcesObjNr, true, rawResources,
+	)
+	if err != nil {
+		return err
+	}
+	if _, found, err := tree.Value(c, startResource); err != nil {
+		return err
+	} else if !found {
+		return fmt.Errorf("%s.StartResource: resource %q not found", dictName, startResource)
+	}
+	return nil
+}
+
+func validateSlideShowDict(c context.Context, xRefTable *model.XRefTable, d types.Dict) error {
 	// see 13.5, table 297
 
 	dictName := "slideShowDict"
@@ -518,19 +747,17 @@ func validateSlideShowDict(xRefTable *model.XRefTable, d types.Dict) error {
 		return err
 	}
 
-	// Resources, required array of string and indirect-reference pairs, since V1.4
-	err = validateSlideShowResources(xRefTable, d)
+	// StartResource, required, byte string, since V1.4
+	startResource, err := validateStringEntry(xRefTable, d, 0, dictName, "StartResource", REQUIRED, model.V14, nil)
 	if err != nil {
 		return err
 	}
 
-	// StartResource, required, byte string, since V1.4
-	_, err = validateStringEntry(xRefTable, d, 0, dictName, "StartResource", REQUIRED, model.V14, nil)
-
-	return err
+	// Resources, required name tree, since V1.4
+	return validateSlideShowResources(c, xRefTable, d, *startResource)
 }
 
-func validateAlternatePresentationsNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+func validateAlternatePresentationsNameTreeValue(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
 	// see 13.5
 
 	// Value is a slide show dict.
@@ -547,7 +774,7 @@ func validateAlternatePresentationsNameTreeValue(xRefTable *model.XRefTable, o t
 	}
 
 	if d != nil {
-		err = validateSlideShowDict(xRefTable, d)
+		err = validateSlideShowDict(c, xRefTable, d)
 	}
 
 	return err
@@ -632,13 +859,26 @@ func validateNameTreeValue(c context.Context, name string, xRefTable *model.XRef
 		"AP": {func(x *model.XRefTable, o types.Object, version model.Version) error {
 			return validateAPNameTreeValue(c, x, o, version)
 		}, model.V13, model.V13},
-		"JavaScript":             {validateJavaScriptNameTreeValue, model.V13, model.V13},
-		"Pages":                  {validatePagesNameTreeValue, model.V13, model.V13},
-		"Templates":              {validateTemplatesNameTreeValue, model.V13, model.V13},
-		"IDS":                    {validateIDSNameTreeValue, model.V13, model.V13},
-		"URLS":                   {validateURLSNameTreeValue, model.V13, model.V13},
-		"EmbeddedFiles":          {validateEmbeddedFilesNameTreeValue, model.V14, model.V11},
-		"AlternatePresentations": {validateAlternatePresentationsNameTreeValue, model.V14, model.V14},
+		"JavaScript": {func(x *model.XRefTable, o types.Object, version model.Version) error {
+			return validateJavaScriptNameTreeValueContext(c, x, o, version)
+		}, model.V13, model.V13},
+		"3DResources": {validate3DResourcesNameTreeValue, model.V16, model.V16},
+		"Pages":       {validatePagesNameTreeValue, model.V13, model.V13},
+		"Templates":   {validateTemplatesNameTreeValue, model.V13, model.V13},
+		"IDS": {func(x *model.XRefTable, o types.Object, version model.Version) error {
+			return validateIDSNameTreeValue(c, x, o, version)
+		}, model.V13, model.V13},
+		"URLS": {func(x *model.XRefTable, o types.Object, version model.Version) error {
+			return validateURLSNameTreeValue(c, x, o, version)
+		}, model.V13, model.V13},
+		"EmbeddedFiles":   {validateEmbeddedFilesNameTreeValue, model.V14, model.V11},
+		"RichMediaAssets": {validateRichMediaAssetNameTreeValue, model.V10, model.V10},
+		"SlideShowResources": {func(x *model.XRefTable, o types.Object, version model.Version) error {
+			return validateSlideShowResource(x, o, version)
+		}, model.V14, model.V14},
+		"AlternatePresentations": {func(x *model.XRefTable, o types.Object, version model.Version) error {
+			return validateAlternatePresentationsNameTreeValue(c, x, o, version)
+		}, model.V14, model.V14},
 		"Renditions": {func(x *model.XRefTable, o types.Object, version model.Version) error {
 			return validateRenditionsNameTreeValue(c, x, o, version)
 		}, model.V15, model.V15},
@@ -731,6 +971,9 @@ func validateNameTreeDictNamesEntry(c context.Context, xRefTable *model.XRefTabl
 		err = validateNameTreeValueContext(c, name, xRefTable, o, namesObjNr)
 		if err != nil {
 			return "", "", fmt.Errorf("name tree %s key %q: %w", name, key, err)
+		}
+		if name == "URLS" {
+			collectDocumentLinkTarget(xRefTable, key, linkSourceWebCaptureURL)
 		}
 
 		node.AppendToNames(key, o)

@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/pdfcpu/pdfcpu v0.16.0
+	github.com/pdfcpu/pdfcpu v0.16.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/vsenko/gofpdf v1.5.0
 )
@@ -13,7 +13,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/hhrutter/tiff v1.0.6 // indirect
+	github.com/hhrutter/tiff v1.0.7 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-runewidth v0.0.30 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect

@@ -63,7 +63,7 @@ func validateReferenceDict(xRefTable *model.XRefTable, d types.Dict) error {
 	dictName := "refDict"
 
 	// F, file spec, required
-	_, err := validateFileSpecEntry(xRefTable, d, dictName, "F", REQUIRED, model.V10)
+	f, err := validateFileSpecEntry(xRefTable, d, dictName, "F", REQUIRED, model.V10)
 	if err != nil {
 		return fmt.Errorf("%s.F: %w", dictName, err)
 	}
@@ -84,6 +84,9 @@ func validateReferenceDict(xRefTable *model.XRefTable, d types.Dict) error {
 
 	if err != nil {
 		return fmt.Errorf("%s.ID: %w", dictName, err)
+	}
+	if !isEmbeddedFileSpecification(xRefTable, f) {
+		collectFileSpecificationTarget(xRefTable, f, linkTargetFile, linkSourceReferenceXObject)
 	}
 	return nil
 }
@@ -330,7 +333,14 @@ func validateOPIDictV13(xRefTable *model.XRefTable, d types.Dict) error {
 		return err
 	}
 
-	return validateOPIDictV13Part2(xRefTable, d, dictName)
+	if err = validateOPIDictV13Part2(xRefTable, d, dictName); err != nil {
+		return err
+	}
+	f := d["F"]
+	if !isEmbeddedFileSpecification(xRefTable, f) {
+		collectFileSpecificationTarget(xRefTable, f, linkTargetFile, linkSourceOPI)
+	}
+	return nil
 }
 
 func validateOPIInksArray(xRefTable *model.XRefTable, a types.Array, objNr int, dictName string) error {
@@ -454,8 +464,14 @@ func validateOPIDictV20(xRefTable *model.XRefTable, d types.Dict) error {
 	}
 
 	_, err = validateIntegerEntry(xRefTable, d, 0, dictName, "IncludedImageQuality", OPTIONAL, model.V10, func(i int) bool { return i >= 1 && i <= 3 })
-
-	return err
+	if err != nil {
+		return err
+	}
+	f := d["F"]
+	if !isEmbeddedFileSpecification(xRefTable, f) {
+		collectFileSpecificationTarget(xRefTable, f, linkTargetFile, linkSourceOPI)
+	}
+	return nil
 }
 
 func validateOPIVersionDict(xRefTable *model.XRefTable, d types.Dict) error {

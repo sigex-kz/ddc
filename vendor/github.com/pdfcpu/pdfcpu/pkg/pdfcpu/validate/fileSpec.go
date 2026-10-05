@@ -32,11 +32,13 @@ import (
 
 func validateFileSpecString(s string) bool {
 	// see 7.11.2
-	// The standard format for representing a simple file specification in string form divides the string into component substrings
-	// separated by the SOLIDUS character (2Fh) (/). The SOLIDUS is a generic component separator that shall be mapped to the appropriate
-	// platform-specific separator when generating a platform-dependent file name. Any of the components may be empty.
-	// If a component contains one or more literal SOLIDI, each shall be preceded by a REVERSE SOLIDUS (5Ch) (\), which in turn shall be
-	// preceded by another REVERSE SOLIDUS to indicate that it is part of the string and not an escape character.
+	// The standard format for representing a simple file specification in string form divides the string into component
+	// substrings separated by the SOLIDUS character (2Fh) (/). The SOLIDUS is a generic component separator that shall be
+	// mapped to the appropriate platform-specific separator when generating a platform-dependent file name. Any of the
+	// components may be empty.
+	// If a component contains one or more literal SOLIDI, each shall be preceded by a REVERSE SOLIDUS (5Ch) (\), which in
+	// turn shall be preceded by another REVERSE SOLIDUS to indicate that it is part of the string and not an escape
+	// character.
 	//
 	// EXAMPLE ( in\\/out )
 	// represents the file name in/out
@@ -462,7 +464,7 @@ func validateFileSpecDictPart2(xRefTable *model.XRefTable, d types.Dict, ownerOb
 	return nil
 }
 
-func validateFileSpecDict(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int) (err error) {
+func validateFileSpecDict(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, collectURL bool) (err error) {
 	defer func() {
 		err = model.WithValidationErrorObject(err, ownerObjNr)
 	}()
@@ -478,11 +480,14 @@ func validateFileSpecDict(xRefTable *model.XRefTable, d types.Dict, ownerObjNr i
 	if err := validateFileSpecDictPart2(xRefTable, d, ownerObjNr, dictName); err != nil {
 		return err
 	}
+	if collectURL && isURLFileSpecification(xRefTable, d) {
+		collectFileSpecificationTarget(xRefTable, d, linkTargetURI, linkSourceURLFileSpecification)
+	}
 
 	return nil
 }
 
-func validateFileSpecification(xRefTable *model.XRefTable, o types.Object) (result types.Object, err error) {
+func validateFileSpecificationInternal(xRefTable *model.XRefTable, o types.Object, collectURL bool) (result types.Object, err error) {
 	// See 7.11
 
 	rawObject := o
@@ -505,7 +510,7 @@ func validateFileSpecification(xRefTable *model.XRefTable, o types.Object) (resu
 		}
 
 	case types.Dict:
-		if err = validateFileSpecDict(xRefTable, o, objNr); err != nil {
+		if err = validateFileSpecDict(xRefTable, o, objNr, collectURL); err != nil {
 			return nil, fmt.Errorf("%s dict: %w", objectContext("file specification", rawObject), err)
 		}
 
@@ -515,6 +520,14 @@ func validateFileSpecification(xRefTable *model.XRefTable, o types.Object) (resu
 	}
 
 	return o, nil
+}
+
+func validateFileSpecification(xRefTable *model.XRefTable, o types.Object) (result types.Object, err error) {
+	return validateFileSpecificationInternal(xRefTable, o, true)
+}
+
+func validateFileSpecificationWithoutLinkCollection(xRefTable *model.XRefTable, o types.Object) (result types.Object, err error) {
+	return validateFileSpecificationInternal(xRefTable, o, false)
 }
 
 func validateURLSpecification(xRefTable *model.XRefTable, o types.Object) (result types.Object, err error) {
@@ -543,9 +556,12 @@ func validateURLSpecification(xRefTable *model.XRefTable, o types.Object) (resul
 	}
 
 	// F, required, string, URL (Internet RFC 1738)
-	_, err = validateStringEntry(xRefTable, d, 0, dictName, "F", REQUIRED, model.V10, validateURLString)
+	f, err := validateStringEntry(xRefTable, d, 0, dictName, "F", REQUIRED, model.V10, validateURLString)
 	if err != nil {
 		return nil, fmt.Errorf("%s F: %w", objectContext("URL specification", rawObject), err)
+	}
+	if f != nil {
+		collectLinkTarget(xRefTable, *f, linkTargetURI, linkSourceURLFileSpecification)
 	}
 
 	return o, nil
@@ -603,7 +619,7 @@ func validateURLSpecEntry(xRefTable *model.XRefTable, d types.Dict, dictName str
 	return o, nil
 }
 
-func validateFileSpecificationOrFormObject(c context.Context, xRefTable *model.XRefTable, obj types.Object) (err error) {
+func validateFileSpecificationOrFormObject(c context.Context, xRefTable *model.XRefTable, obj types.Object) (fileSpec bool, err error) {
 	objNr := validationObjectNumber(0, obj)
 	defer func() {
 		err = model.WithValidationErrorObject(err, objNr)
@@ -611,15 +627,34 @@ func validateFileSpecificationOrFormObject(c context.Context, xRefTable *model.X
 
 	o, err := xRefTable.Dereference(obj)
 	if err != nil {
-		return fmt.Errorf("%s: dereference: %w", objectContext("file specification or form object", obj), err)
+		return false, fmt.Errorf("%s: dereference: %w", objectContext("file specification or form object", obj), err)
 	}
 
-	sd, ok := o.(types.StreamDict)
-	if ok {
-		return validateFormStreamDict(c, xRefTable, &sd)
+	switch o := o.(type) {
+	case types.StreamDict:
+		if _, err = validateNameEntry(xRefTable, o.Dict, 0, "formStreamDict", "Type", REQUIRED, model.V10, func(s string) bool {
+			return s == "XObject"
+		}); err != nil {
+			return false, fmt.Errorf("%s Type: %w", objectContext("form XObject", obj), err)
+		}
+		if _, err = validateNameEntry(xRefTable, o.Dict, 0, "formStreamDict", "Subtype", REQUIRED, model.V10, func(s string) bool {
+			return s == "Form"
+		}); err != nil {
+			return false, fmt.Errorf("%s Subtype: %w", objectContext("form XObject", obj), err)
+		}
+		return false, validateFormStreamDict(c, xRefTable, &o)
+
+	case types.Dict:
+		if _, err = validateNameEntry(xRefTable, o, 0, "fileSpecDict", "Type", REQUIRED, model.V10, func(s string) bool {
+			return s == "Filespec"
+		}); err != nil {
+			return false, fmt.Errorf("%s Type: %w", objectContext("file specification", obj), err)
+		}
+		_, err = validateFileSpecification(xRefTable, obj)
+		return true, err
+
+	default:
+		return false, fmt.Errorf("%s: expected file specification dictionary or Form XObject, got %T",
+			objectContext("file specification or form object", obj), o)
 	}
-
-	_, err = validateFileSpecification(xRefTable, obj)
-
-	return err
 }
