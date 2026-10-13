@@ -106,7 +106,7 @@ type ttf struct {
 	LLx, LLy, URx, URy float64           // head: xMin, yMin, xMax, yMax (fontbox)
 	ItalicAngle        float64           // post: italicAngle
 	FixedPitch         bool              // post: isFixedPitch
-	Bold               bool              // OS/2: usWeightClass == 7
+	Bold               bool              // OS/2: fsSelection bit 5 (BOLD)
 	HorMetricsCount    int               // hhea: numOfLongHorMetrics
 	GlyphCount         int               // maxp: numGlyphs
 	GlyphWidths        []int             // hmtx: fd.HorMetricsCount.advanceWidth
@@ -452,7 +452,7 @@ func (t table) parseWindowsMetricsTable(fd *ttf) error {
 	}
 
 	fsSelection := t.uint16(62)
-	fd.Bold = fsSelection&0x40 > 0
+	fd.Bold = fsSelection&0x20 != 0 // bit 5 BOLD (bit 6 is REGULAR)
 
 	fsFirstCharIndex := t.uint16(64)
 	fd.FirstChar = fsFirstCharIndex
@@ -682,10 +682,17 @@ func (t table) parseCMapFormat4(fd *ttf) error {
 		return err
 	}
 	fd.Planes[0] = true
+	var prevEndCode uint16
 	for segment := range layout.segCount {
+		startCode := t.uint16(layout.startOff + segment*2)
+		// Disjoint segments bound decoding to the 16-bit code space.
+		if segment > 0 && startCode <= prevEndCode {
+			return invalidFontData("cmap format 4 segment %d: start code %d does not follow end code %d of the previous segment", segment, startCode, prevEndCode)
+		}
 		if err := parseCMapFormat4Segment(t, fd, layout, segment); err != nil {
 			return err
 		}
+		prevEndCode = t.uint16(layout.endOff + segment*2)
 	}
 	return nil
 }
@@ -760,6 +767,10 @@ func (t table) parseCMapFormat12(fd *ttf) error {
 		startCode, endCode, startGlyphID, err := cmapFormat12Group(t, fd, group)
 		if err != nil {
 			return err
+		}
+		// Disjoint groups bound decoding to the Unicode code space.
+		if group > 0 && startCode <= prevCode {
+			return invalidFontData("cmap format 12 group %d: start code %#x does not follow end code %#x of the previous group", group, startCode, prevCode)
 		}
 		recordCMapPlanes(fd.Planes, startCode, endCode, prevCode, group == 0)
 		prevCode = endCode

@@ -641,15 +641,31 @@ func fillRadioButtonGroup(
 	return nil
 }
 
-func checkBoxASNames(ctx *model.Context, d types.Dict, child bool) (types.Name, types.Name, error) {
+func checkBoxASNames(ctx *model.Context, d types.Dict, kid int) (types.Name, types.Name, error) {
 	offName, yesName, err := primitives.CalcCheckBoxASNames(ctx, d)
 	if err != nil {
-		if child {
-			return "", "", fmt.Errorf("kid 1: appearance: %w", err)
+		if kid > 0 {
+			return "", "", fmt.Errorf("kid %d: appearance: %w", kid, err)
 		}
 		return "", "", fmt.Errorf("appearance: %w", err)
 	}
 	return offName, yesName, nil
+}
+
+func checkBoxWidgets(ctx *model.Context, d types.Dict) ([]types.Dict, error) {
+	kids := d.ArrayEntry("Kids")
+	if len(kids) == 0 {
+		return []types.Dict{d}, nil
+	}
+	widgets := make([]types.Dict, 0, len(kids))
+	for i, kid := range kids {
+		widget, err := ctx.DereferenceDict(kid)
+		if err != nil {
+			return nil, fmt.Errorf("kid %d: dereference: %w", i+1, err)
+		}
+		widgets = append(widgets, widget)
+	}
+	return widgets, nil
 }
 
 func fillCheckBox(
@@ -692,18 +708,20 @@ func fillCheckBox(
 	}
 
 	d["V"] = v
-	d1 := d
-
-	kids := d.ArrayEntry("Kids")
-	if len(kids) == 1 {
-		d1, err = ctx.DereferenceDict(kids[0])
-		if err != nil {
-			return fmt.Errorf("kid 1: dereference: %w", err)
-		}
+	widgets, err := checkBoxWidgets(ctx, d)
+	if err != nil {
+		return err
 	}
 
-	if _, found := d1.Find("AS"); found {
-		offName, yesName, err := checkBoxASNames(ctx, d1, len(kids) == 1)
+	for i, widget := range widgets {
+		if _, found := widget.Find("AS"); !found {
+			continue
+		}
+		kid := 0
+		if len(d.ArrayEntry("Kids")) > 0 {
+			kid = i + 1
+		}
+		offName, yesName, err := checkBoxASNames(ctx, widget, kid)
 		if err != nil {
 			return err
 		}
@@ -711,7 +729,7 @@ func fillCheckBox(
 		if v == "Off" {
 			asName = offName
 		}
-		d1["AS"] = asName
+		widget["AS"] = asName
 		d["V"] = asName
 	}
 
@@ -727,7 +745,7 @@ func fillBtn(
 	format DataFormat,
 	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
 	ok *bool) error {
-	ff, _, err := ctx.XRefTable.DereferenceIntegerEntry(d, "Ff")
+	ff, err := inheritedFieldFlags(ctx.XRefTable, d)
 	if err != nil {
 		return err
 	}
@@ -740,7 +758,7 @@ func fillBtn(
 		return err
 	}
 
-	if len(d.ArrayEntry("Kids")) > 1 {
+	if isRadioButtonGroup(ff) {
 		if err := fillRadioButtonGroup(ctx, d, id, name, opts, locked, format, fillDetails, ok); err != nil {
 			return err
 		}
@@ -781,11 +799,13 @@ func fillComboBox(
 	}
 	if changed {
 		if lock {
-			if err := primitives.EnsureComboBoxAP(c, ctx, d, vNew, da, fonts); err != nil {
+			if err := ensureChoiceComboAP(c, ctx, d, vNew, da, fonts); err != nil {
 				return fmt.Errorf("appearance: %w", err)
 			}
 		} else {
-			d.Delete("AP")
+			if err := deleteChoiceAP(c, ctx.XRefTable, d); err != nil {
+				return fmt.Errorf("appearance: %w", err)
+			}
 		}
 		*ok = true
 	}
@@ -850,6 +870,12 @@ func updateListBoxValues(multi bool, d types.Dict, opts, vNew []string) (types.A
 			d.Delete("I")
 			d.Delete("V")
 		}
+		return ind, nil
+	}
+
+	if len(vNew) == 0 {
+		d.Delete("I")
+		d.Delete("V")
 		return ind, nil
 	}
 
@@ -934,7 +960,7 @@ func fillListBox(
 		return fmt.Errorf("entry DA: %w", err)
 	}
 
-	if err := primitives.EnsureListBoxAP(c, ctx, d, opts, ind, da, fonts); err != nil {
+	if err := ensureChoiceListAP(c, ctx, d, opts, ind, da, fonts); err != nil {
 		return fmt.Errorf("appearance: %w", err)
 	}
 
@@ -954,7 +980,7 @@ func fillCh(
 	fillDetails func(id, name string, fieldType FieldType, format DataFormat) ([]string, bool, bool),
 	ff *types.Integer,
 	ok *bool) error {
-	opts, err := parseOptions(ctx.XRefTable, d, OPTIONAL)
+	opts, err := parseChoiceOptions(ctx.XRefTable, d)
 	if err != nil {
 		return err
 	}

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"slices"
 	"sort"
@@ -42,9 +43,8 @@ import (
 )
 
 const (
-	defaultBufSize     = 1 << 10 // 1 KiB
-	maxBufSize         = 1 << 20 // 1 MiB
-	maxObjectBufferLen = 64 << 20
+	defaultBufSize = 1 << 10 // 1 KiB
+	maxBufSize     = 1 << 20 // 1 MiB
 )
 
 var (
@@ -78,6 +78,7 @@ var (
 	// ErrWrongPassword reports supplied PDF credentials that fail password authentication.
 	ErrWrongPassword = errors.New("please provide the correct password")
 
+	errCircularObjectReference      = errors.New("circular object reference")
 	errCorruptDecodeParms           = errors.New("corrupt decode parameters")
 	errCorruptDictObject            = errors.New("corrupt dict object")
 	errCorruptFilterArray           = errors.New("corrupt filter array")
@@ -110,6 +111,7 @@ var (
 	errMissingXRefStreamLength      = errors.New("missing xref stream Length")
 	errNilDereferencedObject        = errors.New("nil dereferenced object")
 	errObjectBufferLimit            = errors.New("object buffer limit exceeded")
+	errObjectReadBudget             = errors.New("object read budget exceeded")
 	errObjectStreamContainsStream   = errors.New("object stream contains stream object")
 	errObjectStreamObjectCountLimit = errors.New("object stream object count limit exceeded")
 	errTruncatedStreamMarker        = errors.New("truncated stream marker")
@@ -178,6 +180,10 @@ func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (*mode
 	if ctx.Read.FileSize == 0 {
 		return nil, ErrEmptyInput
 	}
+	// Share one parsing budget across xref construction and object loading.
+	c = context.WithValue(c, objectReadBudgetKey{}, &objectReadBudgetState{limit: objectReadBudgetLimit(ctx)})
+	// Share active-object tracking across nested reads.
+	c = context.WithValue(c, objectParseKey{}, types.IntSet{})
 
 	if log.InfoEnabled() {
 		if ctx.Reader15 {
@@ -538,15 +544,16 @@ func parseXRefTableSubSection(xRefTable *model.XRefTable, limits model.ResourceL
 }
 
 // Parse compressed object.
-func compressedObject(c context.Context, s string) (types.Object, error) {
+func compressedObject(c context.Context, s string, validationMode int) (types.Object, error) {
 	if log.ReadEnabled() {
 		log.Read.Println("compressedObject: begin")
 	}
 
-	o, err := model.ParseObject(c, &s, 0)
+	result, err := model.ParseObjectWithPolicy(c, &s, 0, validationMode)
 	if err != nil {
 		return nil, err
 	}
+	o := result.Object
 
 	d, ok := o.(types.Dict)
 	if !ok {
@@ -569,12 +576,7 @@ func compressedObject(c context.Context, s string) (types.Object, error) {
 	return nil, errObjectStreamContainsStream
 }
 
-func buildObjectArrayForObjectStream(
-	c context.Context,
-	osd *types.ObjectStreamDict,
-	objs []string,
-	fullContent bool,
-	decodedContent []byte) (types.Array, error) {
+func buildObjectArrayForObjectStream(c context.Context, osd *types.ObjectStreamDict, objs []string, fullContent bool, decodedContent []byte, decode types.DecodeLazyObjectStreamObjectFunc) (types.Array, error) {
 	var objArray types.Array
 	var offsetOld int
 
@@ -601,12 +603,12 @@ func buildObjectArrayForObjectStream(
 		}
 
 		if i > 0 {
-			o := types.NewLazyObjectStreamObject(osd, offsetOld, offset, compressedObject)
+			o := types.NewLazyObjectStreamObject(osd, offsetOld, offset, decode)
 			objArray = append(objArray, o)
 		}
 
 		if i == len(objs)-2 {
-			o := types.NewLazyObjectStreamObject(osd, offset, -1, compressedObject)
+			o := types.NewLazyObjectStreamObject(osd, offset, -1, decode)
 			objArray = append(objArray, o)
 		}
 
@@ -617,7 +619,7 @@ func buildObjectArrayForObjectStream(
 }
 
 // Parse all objects of an object stream and save them into objectStreamDict.ObjArray.
-func parseObjectStream(c context.Context, osd *types.ObjectStreamDict, limits model.ResourceLimits) error {
+func parseObjectStream(c context.Context, osd *types.ObjectStreamDict, limits model.ResourceLimits, validationMode int) error {
 	if log.ReadEnabled() {
 		log.Read.Printf("parseObjectStream begin: decoding %d objects.\n", osd.ObjCount)
 	}
@@ -670,7 +672,10 @@ func parseObjectStream(c context.Context, osd *types.ObjectStreamDict, limits mo
 
 	// e.g., 10 0 11 25 = 2 Objects: #10 @ offset 0, #11 @ offset 25
 
-	objArray, err := buildObjectArrayForObjectStream(c, osd, objs, fullContent, decodedContent)
+	decode := func(c context.Context, s string) (types.Object, error) {
+		return compressedObject(c, s, validationMode)
+	}
+	objArray, err := buildObjectArrayForObjectStream(c, osd, objs, fullContent, decodedContent, decode)
 	if err != nil {
 		return fmt.Errorf("build object stream object array: %w", err)
 	}
@@ -739,6 +744,15 @@ func createXRefTableEntryFromXRefStream(entryType int64, objNr int, c2, c3, offE
 				Incr:            incr}
 
 		objStreams[objNumberRef] = true
+
+	default:
+		// See 7.5.8.3: unknown entry types resolve to null, represented here by a free entry.
+		if log.ReadEnabled() {
+			log.Read.Printf("createXRefTableEntryFromXRefStream: Object #%d has unknown type %d, treated as null\n", objNr, entryType)
+		}
+		var next int64
+		var g int
+		xRefTableEntry = model.XRefTableEntry{Free: true, Offset: &next, Generation: &g, Incr: incr}
 	}
 
 	return xRefTableEntry
@@ -979,7 +993,7 @@ func parseXRefStream(c context.Context, ctx *model.Context, rd io.Reader, offset
 		log.Read.Printf("parseXRefStream: dereferencing object %d\n", *objNr)
 	}
 
-	o, err := model.ParseObject(c, &l, 0, recursionLimit(ctx))
+	o, err := parseObjectWithValidationPolicy(c, ctx, &l, *objNr)
 	if err != nil {
 		return nil, fmt.Errorf("parseXRefStream: no object: %w", err)
 	}
@@ -1030,15 +1044,22 @@ func parseTrailerSize(xRefTable *model.XRefTable, d types.Dict) error {
 	// Not reliable!
 	// Patched after all read in.
 	v := i.Value()
-	if v <= 0 {
-		return fmt.Errorf("invalid trailer Size %d: %w", v, errCorruptTrailerDict)
-	}
 	limit := model.DefaultResourceLimits().MaxObjectCount
 	if xRefTable.Conf != nil {
 		limit = xRefTable.Conf.Limits.MaxObjectCount
 	}
-	if v > limit {
-		return fmt.Errorf("trailer Size %d exceeds limit %d: %w", v, limit, errCorruptTrailerDict)
+	if v <= 0 {
+		err = fmt.Errorf("invalid trailer Size %d: %w", v, errCorruptTrailerDict)
+	} else if v > limit {
+		err = fmt.Errorf("trailer Size %d exceeds limit %d: %w", v, limit, errCorruptTrailerDict)
+	}
+	if err != nil {
+		if xRefTable.ValidationMode == model.ValidationStrict {
+			return err
+		}
+		// Leave Size unset so an older trailer or the completed object walk can supply it.
+		xRefTable.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseRead, model.NoticeRepaired, err.Error(), err))
+		return nil
 	}
 	xRefTable.Size = &v
 	return nil
@@ -1098,7 +1119,9 @@ func materializeDirectInfoDict(xRefTable *model.XRefTable) error {
 		return nil
 	}
 	if xRefTable.Size == nil {
-		return errMissingTrailerSize
+		// All existing objects have been read; allocate beyond their highest object number.
+		size := xRefTable.MaxObjNr + 1
+		xRefTable.Size = &size
 	}
 	if xRefTable.Table == nil {
 		xRefTable.Table = map[int]*model.XRefTableEntry{}
@@ -1337,9 +1360,6 @@ func parseTrailerDict(c context.Context, ctx *model.Context, trailerDict types.D
 	}
 	if offsetXRefStream == nil {
 		// No cross reference stream.
-		if !ctx.Reader15 && xRefTable.Version() >= model.V15 && !ctx.Read.Hybrid {
-			return nil, fmt.Errorf("parseTrailerDict: PDF1.4 conformant reader: found incompatible version: %s", xRefTable.VersionString())
-		}
 		if log.ReadEnabled() {
 			log.Read.Println("parseTrailerDict end")
 		}
@@ -1480,7 +1500,7 @@ func processTrailer(c context.Context, ctx *model.Context, s *bufio.Scanner, lin
 		log.Read.Printf("processTrailer: trailerString: (len:%d) <%s>\n", len(trailerString), trailerString)
 	}
 
-	o, err := model.ParseObject(c, &trailerString, 0, recursionLimit(ctx))
+	o, err := parseObjectWithValidationPolicy(c, ctx, &trailerString, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1547,21 +1567,26 @@ func parseXRefSection(c context.Context, ctx *model.Context, s *bufio.Scanner, f
 	return processTrailer(c, ctx, s, line, offCurXRef, offExtra, incr, false)
 }
 
+// scanForVersion finds the first prefix and returns at least 18 bytes from its start, plus its file offset.
 func scanForVersion(rs io.ReadSeeker, prefix string) ([]byte, int, error) {
-	bufSize := 100
+	const bufSize = 100
+	const headerScanLookahead = 18
 
 	if _, err := rs.Seek(0, io.SeekStart); err != nil {
 		return nil, 0, fmt.Errorf("seek header: %w", err)
 	}
 
 	buf := make([]byte, bufSize)
-	var curBuf []byte
 
+	// data holds the bytes not yet ruled out, starting at file offset off.
+	// Between blocks only a tail shorter than prefix is carried over, so a
+	// prefix spanning two blocks is still found and every candidate position
+	// is checked exactly once.
+	var data []byte
 	off := 0
-	found := false
-	var buf2 []byte
+	first := true
 
-	for !found {
+	for {
 		n, err := fillBuffer(rs, buf)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -1569,58 +1594,34 @@ func scanForVersion(rs io.ReadSeeker, prefix string) ([]byte, int, error) {
 			}
 			return nil, 0, ErrCorruptHeader
 		}
-		curBuf = buf[:n]
-		if off == 0 && hasPostScriptHeader(curBuf) {
+		if first && hasPostScriptHeader(buf[:n]) {
 			return nil, 0, ErrPostScriptInput
 		}
-		for {
-			i := bytes.IndexByte(curBuf, '%')
-			if i < 0 {
-				// no match, check next block
-				off += len(curBuf)
-				break
-			}
+		first = false
+		data = append(data, buf[:n]...)
 
-			// Check all occurrences
-			if i < len(curBuf)-18 {
-				if !bytes.HasPrefix(curBuf[i:], []byte(prefix)) {
-					// No match, keep checking
-					off += i + 1
-					curBuf = curBuf[i+1:]
-					continue
-				}
-				off += i
-				curBuf = curBuf[i:]
-				found = true
-				break
-			}
+		i := bytes.Index(data, []byte(prefix))
+		if i < 0 {
+			keep := min(len(prefix)-1, len(data))
+			off += len(data) - keep
+			data = append(data[:0], data[len(data)-keep:]...)
+			continue
+		}
 
-			// Partial match, need 2nd buffer
-			if len(buf2) == 0 {
-				buf2 = make([]byte, bufSize)
-			}
-			n, err := fillBuffer(rs, buf2)
+		off += i
+		data = data[i:]
+		for len(data) < headerScanLookahead {
+			n, err := fillBuffer(rs, buf)
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
 					return nil, 0, fmt.Errorf("read header: %w", err)
 				}
 				return nil, 0, ErrCorruptHeader
 			}
-			buf3 := append(curBuf[i:], buf2[:n]...)
-			if !bytes.HasPrefix(buf3, []byte(prefix)) {
-				// No match, keep checking
-				off += len(curBuf)
-				curBuf = buf2
-				continue
-			}
-			off += i
-			curBuf = buf3
-			found = true
-			break
+			data = append(data, buf[:n]...)
 		}
+		return data, off, nil
 	}
-
-	return curBuf, off, nil
 }
 
 // Get version from first line of file.
@@ -1768,23 +1769,23 @@ func isCatalogForRepair(c context.Context, ctx *model.Context, d types.Dict) (bo
 	return t != nil && t.Value() == "Catalog", nil
 }
 
-func processObject(c context.Context, ctx *model.Context, line string, offset *int64, incr int, offsetPrev *int64) (*bufio.Scanner, error) {
+// processObject returns a scanner and whether it resumes before the current object's endobj marker.
+func processObject(c context.Context, ctx *model.Context, line string, offset *int64, incr int, offsetPrev *int64) (*bufio.Scanner, bool, error) {
+	withinObj := true
 	endInd, err := parseAndLoad(c, ctx, line, offset, incr, offsetPrev)
 	if err != nil {
 		if ctx.XRefTable.ValidationMode != model.ValidationRelaxed || endInd < 0 {
-			return nil, err
+			return nil, false, err
 		}
 		model.ShowSkipped(fmt.Sprintf("malformed object at offset %d: %v", *offset, err))
 		*offset += int64(endInd + len("endobj"))
+		withinObj = false
 	}
 	rd, err := newPositionedReader(ctx.Read.RS, offset)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	s := bufio.NewScanner(rd)
-	s.Buffer(make([]byte, 0, defaultBufSize), maxObjectBufferLen)
-	s.Split(scan.LinesSingleEOL)
-	return s, nil
+	return newRepairScanner(ctx, rd), withinObj, nil
 }
 
 func objCandidate(withinObj bool, line string) bool {
@@ -1830,9 +1831,7 @@ func registerXRefObjects(ctx *model.Context, incr int) error {
 		return err
 	}
 
-	s := bufio.NewScanner(rd)
-	s.Buffer(make([]byte, 0, defaultBufSize), maxObjectBufferLen)
-	s.Split(scan.LinesSingleEOL)
+	s := newRepairScanner(ctx, rd)
 
 	withinObj := false
 	for s.Scan() {
@@ -1934,9 +1933,7 @@ func bypassXrefSection(c context.Context, ctx *model.Context, offExtra int64, wa
 		return err
 	}
 
-	s := bufio.NewScanner(rd)
-	s.Buffer(make([]byte, 0, defaultBufSize), maxObjectBufferLen)
-	s.Split(scan.LinesSingleEOL)
+	s := newRepairScanner(ctx, rd)
 	eolCount := 1
 
 	state := xrefRepairState{scanner: s}
@@ -1972,8 +1969,7 @@ func bypassXrefSection(c context.Context, ctx *model.Context, offExtra int64, wa
 		checkEndObj(&state.withinObj, &line)
 		if objCandidate(state.withinObj, line) {
 			if !strings.HasSuffix(line, "obj") {
-				state.withinObj = true
-				state.scanner, err = processObject(c, ctx, line, &state.offset, incr, state.offsetPrev)
+				state.scanner, state.withinObj, err = processObject(c, ctx, line, &state.offset, incr, state.offsetPrev)
 				if err != nil {
 					return err
 				}
@@ -2304,6 +2300,15 @@ func objectBufferLimit(ctx *model.Context) int64 {
 	return ctx.Configuration.Limits.MaxObjectBytes
 }
 
+func newRepairScanner(ctx *model.Context, rd io.Reader) *bufio.Scanner {
+	limit := int(max(0, min(objectBufferLimit(ctx), int64(math.MaxInt))))
+	s := bufio.NewScanner(rd)
+	// Scanner can use the full initial capacity even when it exceeds the configured maximum.
+	s.Buffer(make([]byte, 0, min(defaultBufSize, limit)), limit)
+	s.Split(scan.LinesSingleEOL)
+	return s
+}
+
 func growObjectBuffer(buf []byte, growSize int, rd io.Reader, maxObjectBytes int64) ([]byte, error) {
 	remaining := maxObjectBytes - int64(len(buf))
 	if remaining <= 0 {
@@ -2564,7 +2569,8 @@ func singleFilter(c context.Context, ctx *model.Context, filterName string, d ty
 
 func filterArraySupportsDecodeParms(ctx *model.Context, names []string) bool {
 	for _, name := range names {
-		if filter.SupportsDecodeParms(streamFilterName(ctx, name)) {
+		name = streamFilterName(ctx, name)
+		if name == "Crypt" || filter.SupportsDecodeParms(name) {
 			return true
 		}
 	}
@@ -2666,10 +2672,8 @@ func streamDictForObject(c context.Context, ctx *model.Context, d types.Dict, ob
 }
 
 func dict(c context.Context, ctx *model.Context, d1 types.Dict, objNr, genNr, endInd, streamInd int) (d2 types.Dict, err error) {
-	if ctx.EncKey != nil {
-		if _, err := decryptDeepObject(c, d1, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R); err != nil {
-			return nil, err
-		}
+	if _, err := decryptObjectStrings(c, ctx, d1, objNr, genNr); err != nil {
+		return nil, err
 	}
 
 	if endInd >= 0 && (streamInd < 0 || streamInd > endInd) {
@@ -2702,6 +2706,75 @@ func parseObjectWithValidationPolicy(c context.Context, ctx *model.Context, line
 	return result.Object, nil
 }
 
+// Allow room for repair passes while bounding repeated reads of the same input.
+const objectReadBudgetFactor = 8
+
+type objectReadBudgetKey struct{}
+
+type objectReadBudgetState struct {
+	used  int64
+	limit int64
+}
+
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.n += int64(n)
+	return n, err
+}
+
+func objectReadBudgetLimit(ctx *model.Context) int64 {
+	limit := objectBufferLimit(ctx)
+	if ctx.Read.FileSize > (math.MaxInt64-limit)/objectReadBudgetFactor {
+		return math.MaxInt64
+	}
+	return limit + objectReadBudgetFactor*ctx.Read.FileSize
+}
+
+func objectExtent(bufLen, endInd, streamInd int, streamOffset int64) int64 {
+	if endInd >= 0 && (streamInd < 0 || streamInd > endInd) {
+		return int64(min(endInd+len("endobj"), bufLen))
+	}
+	if streamInd >= 0 {
+		return min(streamOffset, int64(bufLen))
+	}
+	return int64(bufLen)
+}
+
+func chargeObjectRead(c context.Context, ctx *model.Context, n int64) error {
+	state, ok := c.Value(objectReadBudgetKey{}).(*objectReadBudgetState)
+	if !ok {
+		return nil
+	}
+	if n > state.limit-state.used {
+		return fmt.Errorf("object parsing exceeded %d-byte budget for %d-byte input (%d counted, %d more): %w",
+			state.limit, ctx.Read.FileSize, state.used, n, errObjectReadBudget)
+	}
+	state.used += n
+	return nil
+}
+
+func bufferedObject(c context.Context, ctx *model.Context, rd io.Reader) ([]byte, int, int, int64, error) {
+	cr := &countingReader{r: rd}
+	buf, endInd, streamInd, streamOffset, err := buffer(c, cr, objectBufferLimit(ctx))
+	if err != nil {
+		// Failed reads can be retried in relaxed mode, so charge everything read.
+		if budgetErr := chargeObjectRead(c, ctx, cr.n); budgetErr != nil {
+			return nil, 0, 0, 0, budgetErr
+		}
+		return nil, 0, 0, 0, err
+	}
+	// Ignore read-ahead beyond this object's end.
+	if err := chargeObjectRead(c, ctx, objectExtent(len(buf), endInd, streamInd, streamOffset)); err != nil {
+		return nil, 0, 0, 0, err
+	}
+	return buf, endInd, streamInd, streamOffset, nil
+}
+
 func object(c context.Context, ctx *model.Context, offset int64, objNr, genNr int) (o types.Object, endInd, streamInd int, streamOffset int64, err error) {
 	var rd io.Reader
 
@@ -2715,7 +2788,7 @@ func object(c context.Context, ctx *model.Context, offset int64, objNr, genNr in
 	//                                    streamInd                        endInd
 	//                                  -1 if absent                    -1 if absent
 	var buf []byte
-	if buf, endInd, streamInd, streamOffset, err = buffer(c, rd, objectBufferLimit(ctx)); err != nil {
+	if buf, endInd, streamInd, streamOffset, err = bufferedObject(c, ctx, rd); err != nil {
 		return nil, 0, 0, 0, err
 	}
 
@@ -2796,46 +2869,40 @@ func resolveObject(c context.Context, ctx *model.Context, obj types.Object, offs
 			return d, err
 		}
 		// StreamDict.
-		return streamDictForObject(c, ctx, o, objNr, streamInd, streamOffset, offset)
-
-	case types.Array:
-		if ctx.EncKey != nil {
-			if _, err := decryptDeepObject(c, o, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R); err != nil {
-				return nil, err
-			}
+		sd, err := streamDictForObject(c, ctx, o, objNr, streamInd, streamOffset, offset)
+		if err != nil {
+			return nil, err
 		}
-		return o, nil
+		return sd, nil
 
-	case types.StringLiteral:
-		if ctx.EncKey != nil {
-			sl, err := decryptStringLiteral(o, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
-			if err != nil {
-				return nil, err
-			}
-			return *sl, nil
-		}
-		return o, nil
-
-	case types.HexLiteral:
-		if ctx.EncKey != nil {
-			hl, err := decryptHexLiteral(o, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
-			if err != nil {
-				return nil, err
-			}
-			return *hl, nil
-		}
-		return o, nil
+	case types.Array, types.StringLiteral, types.HexLiteral:
+		return decryptObjectStrings(c, ctx, o, objNr, genNr)
 
 	default:
 		return o, nil
 	}
 }
 
+type objectParseKey struct{}
+
 // ParseObject parses an object at offset using c for cancellation.
 func ParseObject(c context.Context, ctx *model.Context, offset int64, objNr, genNr int) (types.Object, error) {
 	if log.ReadEnabled() {
 		log.Read.Printf("ParseObject: begin, obj#%d, offset:%d\n", objNr, offset)
 	}
+	inParse, ok := c.Value(objectParseKey{}).(types.IntSet)
+	if !ok {
+		inParse = types.IntSet{}
+		c = context.WithValue(c, objectParseKey{}, inParse)
+	}
+	if inParse[objNr] {
+		return nil, fmt.Errorf("obj#%d: %w", objNr, errCircularObjectReference)
+	}
+	if err := model.CheckRecursionDepth("ParseObject", len(inParse)+1, recursionLimit(ctx)); err != nil {
+		return nil, err
+	}
+	inParse[objNr] = true
+	defer delete(inParse, objNr)
 
 	obj, endInd, streamInd, streamOffset, err := object(c, ctx, offset, objNr, genNr)
 	if err != nil {
@@ -3280,7 +3347,14 @@ func decryptStreamContent(ctx *model.Context, sd *types.StreamDict, objNr, genNr
 		return nil
 	}
 
-	raw, err := decryptStream(sd.Raw, objNr, genNr, ctx.EncKey, ctx.AES4Streams, ctx.E.R)
+	encrypted, aes, err := streamCryptMethod(ctx, sd)
+	if err != nil {
+		return err
+	}
+	if !encrypted {
+		return nil
+	}
+	raw, err := decryptStream(sd.Raw, objNr, genNr, ctx.EncKey, aes, ctx.E.R)
 	if err != nil {
 		if repairablePlaintextMetadata(ctx, metadata, err) && validPlaintextMetadata(ctx, sd) {
 			model.ShowRepaired(fmt.Sprintf("plaintext metadata obj#%d", objNr))
@@ -3320,14 +3394,6 @@ func saveDecodedStreamContent(ctx *model.Context, sd *types.StreamDict, objNr, g
 		log.Read.Printf("saveDecodedStreamContent: begin decode=%t\n", decode)
 	}
 
-	// If the "Identity" crypt filter is used we do not need to decrypt.
-	if ctx != nil && ctx.EncKey != nil {
-		if len(sd.FilterPipeline) == 1 && sd.FilterPipeline[0].Name == "Crypt" {
-			sd.Content = sd.Raw
-			return nil
-		}
-	}
-
 	// Special case: If the length of the encoded data is 0, we do not need to decode anything.
 	if len(sd.Raw) == 0 {
 		sd.Content = sd.Raw
@@ -3338,6 +3404,12 @@ func saveDecodedStreamContent(ctx *model.Context, sd *types.StreamDict, objNr, g
 	// XRefStreams are not encrypted.
 	if err := decryptStreamContent(ctx, sd, objNr, genNr); err != nil {
 		return fmt.Errorf("decrypt stream content: %w", err)
+	}
+
+	// A sole Crypt filter needs no further decoding once its crypt method has been applied.
+	if ctx != nil && ctx.EncKey != nil && len(sd.FilterPipeline) == 1 && sd.FilterPipeline[0].Name == "Crypt" {
+		sd.Content = sd.Raw
+		return nil
 	}
 
 	if !decode {
@@ -3463,7 +3535,7 @@ func decodeObjectStreamObjects(c context.Context, ctx *model.Context, sd *types.
 	}
 
 	// Parse all objects of this object stream and save them to ObjectStreamDict.ObjArray.
-	if err = parseObjectStream(c, osd, ctx.Configuration.Limits); err != nil {
+	if err = parseObjectStream(c, osd, ctx.Configuration.Limits, ctx.XRefTable.ValidationMode); err != nil {
 		return nil, fmt.Errorf("object stream obj#%d: parse objects: %w", objNr, err)
 	}
 
@@ -3479,8 +3551,9 @@ func decodeObjectStreamObjects(c context.Context, ctx *model.Context, sd *types.
 }
 
 func decodeObjectStream(c context.Context, ctx *model.Context, objNr int) error {
+	// Stream objects cannot reside in object streams (7.5.7).
 	entry := ctx.Table[objNr]
-	if entry == nil {
+	if entry == nil || entry.Free || entry.Compressed || entry.Offset == nil || entry.Generation == nil {
 		return fmt.Errorf("object stream obj#%d: %w", objNr, errMissingObjectStreamEntry)
 	}
 
@@ -3724,6 +3797,13 @@ func updateBinaryTotalSize(ctx *model.Context, o types.Object) {
 	}
 }
 
+func unrecoverableObjectReadError(err error) bool {
+	return errors.Is(err, model.ErrCorruptObjectOffset) ||
+		errors.Is(err, errUnregisteredObject) ||
+		errors.Is(err, errObjectReadBudget) ||
+		errors.Is(err, errCircularObjectReference)
+}
+
 func dereferenceAndLoad(c context.Context, ctx *model.Context, objNr int, entry *model.XRefTableEntry) error {
 	if log.ReadEnabled() {
 		log.Read.Printf("dereferenceAndLoad: dereferencing object %d\n", objNr)
@@ -3741,7 +3821,7 @@ func dereferenceAndLoad(c context.Context, ctx *model.Context, objNr int, entry 
 		if err != nil {
 			model.ShowSkipped(fmt.Sprintf("obj #%d reason: %v", objNr, err))
 		}
-		if errors.Is(err, model.ErrCorruptObjectOffset) || errors.Is(err, errUnregisteredObject) {
+		if unrecoverableObjectReadError(err) {
 			return err
 		}
 	}
@@ -4056,14 +4136,6 @@ func identifyRootVersion(xRefTable *model.XRefTable) error {
 		return nil
 	}
 
-	// Since PDF 1.4 the header version may be overridden by a Version entry in the catalog.
-	if *xRefTable.HeaderVersion < model.V14 {
-		if log.InfoEnabled() {
-			log.Info.Printf("identifyRootVersion: PDF version is %s - will ignore root version: %s\n", xRefTable.HeaderVersion, *rootVersionStr)
-		}
-		return nil
-	}
-
 	// Validate version and save corresponding constant to xRefTable.
 	rootVersion, err := model.PDFVersion(*rootVersionStr)
 	if err != nil {
@@ -4113,6 +4185,9 @@ func dereferenceXRefTable(c context.Context, ctx *model.Context) error {
 	if err := identifyRootVersion(xRefTable); err != nil {
 		return err
 	}
+	if err := validateInputVersion(c, ctx); err != nil {
+		return err
+	}
 	if err := materializeDirectInfoDict(xRefTable); err != nil {
 		return err
 	}
@@ -4122,6 +4197,14 @@ func dereferenceXRefTable(c context.Context, ctx *model.Context) error {
 	}
 
 	return nil
+}
+
+func validateInputVersion(c context.Context, ctx *model.Context) error {
+	// see 7.7.2
+	if !ctx.Reader15 && ctx.XRefTable.Version() >= model.V15 && !ctx.Read.Hybrid {
+		return fmt.Errorf("PDF1.4 conformant reader: found incompatible version: %s", ctx.XRefTable.VersionString())
+	}
+	return validateEncryptionVersion(c, ctx)
 }
 
 func handleUnencryptedFile(ctx *model.Context) error {

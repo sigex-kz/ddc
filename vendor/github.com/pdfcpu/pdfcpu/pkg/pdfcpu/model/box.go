@@ -959,9 +959,7 @@ func (ctx *Context) RemovePageBoundaries(c context.Context, selectedPages types.
 			return fmt.Errorf("page %d: page dictionary: %w", pageNr, err)
 		}
 		if pb.Crop != nil {
-			if oldVal := d.Delete("CropBox"); oldVal == nil {
-				d.Insert("CropBox", inhPAttrs.MediaBox.Array())
-			}
+			d["CropBox"] = inhPAttrs.MediaBox.Array()
 		}
 		if pb.Trim != nil {
 			d.Delete("TrimBox")
@@ -1126,9 +1124,11 @@ func applyBoxDefinitions(d types.Dict, pb *PageBoundaries, b *boxes) {
 		b.cropBox = ApplyBox("CropBox", pb.Crop, d, parentBox)
 	}
 
-	if b.cropBox != nil {
-		parentBox = b.cropBox
+	if b.cropBox == nil {
+		// An absent crop box defaults to the effective media box.
+		b.cropBox = b.mediaBox
 	}
+	parentBox = b.cropBox
 	if pb.Trim != nil && pb.Trim.RefBox == "" {
 		//fmt.Println("add tb")
 		b.trimBox = ApplyBox("TrimBox", pb.Trim, d, parentBox)

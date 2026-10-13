@@ -232,17 +232,35 @@ func validateDARelaxed(s string) bool {
 	return true
 }
 
+func formFieldDARequired(xRefTable *model.XRefTable, terminalNode bool, outFieldType *types.Name, requiresDA bool) bool {
+	if xRefTable.ValidationMode != model.ValidationRelaxed {
+		return requiresDA
+	}
+	if outFieldType != nil && (*outFieldType).Value() == "Ch" {
+		return OPTIONAL
+	}
+	if terminalNode && outFieldType == nil {
+		return OPTIONAL
+	}
+	return requiresDA
+}
+
+func reportMissingChoiceFieldDA(xRefTable *model.XRefTable, choiceField, terminalNode, requiresDA, hasDA bool) {
+	if choiceField && xRefTable.ValidationMode == model.ValidationRelaxed && terminalNode && requiresDA && !hasDA {
+		model.ShowDigestedSpecViolation("choice field without required entry DA")
+	}
+}
+
 func validateFormFieldDA(xRefTable *model.XRefTable, d types.Dict, dictName string, terminalNode bool, outFieldType *types.Name, requiresDA bool) (bool, error) {
+	// see 12.7.4.3
 	validate := validateDA
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		validate = validateDARelaxed
 	}
 
-	if outFieldType == nil || (*outFieldType).Value() == "Tx" {
-		required := requiresDA
-		if terminalNode && outFieldType == nil && xRefTable.ValidationMode == model.ValidationRelaxed {
-			required = OPTIONAL
-		}
+	choiceField := outFieldType != nil && (*outFieldType).Value() == "Ch"
+	if outFieldType == nil || (*outFieldType).Value() == "Tx" || choiceField {
+		required := formFieldDARequired(xRefTable, terminalNode, outFieldType, requiresDA)
 		da, err := validateStringEntry(xRefTable, d, 0, dictName, "DA", required, model.V10, validate)
 		if err != nil {
 			if !terminalNode && requiresDA {
@@ -255,7 +273,9 @@ func validateFormFieldDA(xRefTable *model.XRefTable, d types.Dict, dictName stri
 			d["DA"] = types.StringLiteral(*da)
 		}
 
-		return da != nil && *da != "", nil
+		hasDA := da != nil && *da != ""
+		reportMissingChoiceFieldDA(xRefTable, choiceField, terminalNode, requiresDA, hasDA)
+		return hasDA, nil
 	}
 
 	return false, nil
@@ -383,6 +403,7 @@ func validateFormFieldType(xRefTable *model.XRefTable) func(string) bool {
 }
 
 func validateFormFieldDictEntries(c context.Context, xRefTable *model.XRefTable, objNr, incr int, d types.Dict, terminalNode, oneKid bool, inFieldType *types.Name, requiresDA bool) (outFieldType *types.Name, hasDA bool, err error) {
+	// see 12.7.3
 	dictName := "formFieldDict"
 
 	// FT: name, Btn,Tx,Ch,Sig
@@ -443,14 +464,16 @@ func validateFormFieldDictEntries(c context.Context, xRefTable *model.XRefTable,
 	}
 
 	// AA, optional, dict, since V1.2
-	err = validateAdditionalActionsWithOwner(
-		c, xRefTable, d, objNr, dictName, "AA", OPTIONAL, model.V12, "fieldOrAnnot",
-	)
+	err = validateFormActionsOnPage(c, xRefTable, objNr, d, terminalNode, func() error {
+		return validateAdditionalActionsWithOwner(
+			c, xRefTable, d, objNr, dictName, "AA", OPTIONAL, model.V12, "fieldOrAnnot",
+		)
+	})
 	if err != nil {
 		return nil, false, err
 	}
 
-	// DA, required for text fields, since ?
+	// DA, required for variable-text fields if not inherited or supplied by the AcroForm dictionary.
 	// The default appearance string contains valid page-content graphics or text-state operators
 	// that define properties such as the field's text size and colour.
 	hasDA, err = validateFormFieldDA(xRefTable, d, dictName, terminalNode, outFieldType, requiresDA)
@@ -459,6 +482,7 @@ func validateFormFieldDictEntries(c context.Context, xRefTable *model.XRefTable,
 }
 
 func validateFormFieldParts(c context.Context, xRefTable *model.XRefTable, objNr, incr int, d types.Dict, inFieldType *types.Name, requiresDA bool) (err error) {
+	// see 12.7.3
 	defer func() {
 		err = model.WithValidationErrorObject(err, objNr)
 	}()
@@ -478,11 +502,10 @@ func validateFormFieldParts(c context.Context, xRefTable *model.XRefTable, objNr
 	}
 
 	// Validate widget annotation - Validation of AA redundant because of merged acrofield with widget annotation.
-	if _, err = validateAnnotationDict(c, xRefTable, d, objNr); err != nil {
+	return validateFormActionsOnPage(c, xRefTable, objNr, d, true, func() error {
+		_, err := validateAnnotationDict(c, xRefTable, d, objNr)
 		return err
-	}
-
-	return nil
+	})
 }
 
 func formFieldCycleError(err error) error {
@@ -907,12 +930,7 @@ func handleSelfReferentialAcroForm(xRefTable *model.XRefTable, rootDict types.Di
 	return false, nil
 }
 
-func acroFormFieldsArray(
-	xRefTable *model.XRefTable,
-	d types.Dict,
-	o types.Object,
-	formObjNr int,
-) (types.Array, error) {
+func acroFormFieldsArray(xRefTable *model.XRefTable, d types.Dict, o types.Object, formObjNr int) (types.Array, error) {
 	arr, err := xRefTable.DereferenceArray(o)
 	if err != nil {
 		err = fmt.Errorf("Fields: dereference array: %w", err)
@@ -930,7 +948,9 @@ func acroFormFieldsArray(
 }
 
 func validateFormContext(c context.Context, xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {
+	// see 12.7.2
 	// => 12.7.2 Interactive Form Dictionary
+	c = withFormActionPages(c)
 
 	handled, err := handleSelfReferentialAcroForm(xRefTable, rootDict)
 	if handled {

@@ -926,7 +926,38 @@ func validateMoviePoster(c context.Context, xRefTable *model.XRefTable, d types.
 	return validateImageStreamDict(c, xRefTable, &sd, posterObjNr, isNoAlternateImageStreamDict)
 }
 
+func validateMovieAspect(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int) error {
+	// see 13.4
+	a, err := validateIntegerArrayEntry(xRefTable, d, ownerObjNr, "movieDict", "Aspect", OPTIONAL, model.V10,
+		func(a types.Array) bool { return len(a) == 2 })
+	if err != nil {
+		return err
+	}
+	objNr := validationEntryObjectNumber(ownerObjNr, d, "Aspect")
+	negative := false
+	for _, value := range a {
+		i, err := xRefTable.DereferenceInteger(value)
+		if err != nil {
+			return model.WithValidationErrorObject(err, objNr)
+		}
+		if i == nil {
+			return model.WithValidationErrorObject(errors.New("movieDict.Aspect: expected two integers"), objNr)
+		}
+		negative = negative || i.Value() < 0
+	}
+	if !negative {
+		return nil
+	}
+	err = model.WithValidationErrorObject(errors.New("movieDict.Aspect: negative dimension"), objNr)
+	if xRefTable.ValidationMode == model.ValidationStrict {
+		return err
+	}
+	recordMultimediaCompatibility(xRefTable, err)
+	return nil
+}
+
 func validateMovieDict(c context.Context, xRefTable *model.XRefTable, d types.Dict, ownerObjNr int) error {
+	// see 13.4
 	dictName := "movieDict"
 
 	// F, required, file specification
@@ -939,7 +970,7 @@ func validateMovieDict(c context.Context, xRefTable *model.XRefTable, d types.Di
 	}
 
 	// Aspect, optional, integer array, length 2
-	if err := validateMoviePositiveIntegerArrayEntry(xRefTable, d, dictName, "Aspect"); err != nil {
+	if err := validateMovieAspect(xRefTable, d, ownerObjNr); err != nil {
 		return err
 	}
 
@@ -1352,6 +1383,7 @@ func validateAnnotationDictRedact(xRefTable *model.XRefTable, d types.Dict, dict
 }
 
 func validateRichMediaAnnotation(c context.Context, xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+	// see 13.7.2.1
 	// See Adobe Supplement to ISO 32000, extension level 3, 9.6.1.
 	rawContent := d["RichMediaContent"]
 	contentObjNr := validationObjectNumber(0, rawContent)
@@ -1359,7 +1391,15 @@ func validateRichMediaAnnotation(c context.Context, xRefTable *model.XRefTable, 
 	if err != nil {
 		return err
 	}
-	if _, err = validateNameEntry(
+	_, err = validateMediaObject(c, rawContent, richMediaContentValidation, func() error {
+		return validateRichMediaContent(c, xRefTable, content, contentObjNr)
+	})
+	return err
+}
+
+func validateRichMediaContent(c context.Context, xRefTable *model.XRefTable, content types.Dict, contentObjNr int) error {
+	// see 13.7.2.3
+	if _, err := validateNameEntry(
 		xRefTable,
 		content,
 		contentObjNr,
@@ -1380,7 +1420,10 @@ func validateRichMediaAnnotation(c context.Context, xRefTable *model.XRefTable, 
 	if err != nil || assets == nil {
 		return err
 	}
-	_, _, _, err = validateNameTree(c, xRefTable, "RichMediaAssets", assets, assetsObjNr, true, rawAssets)
+	_, err = validateMediaObject(c, rawAssets, richMediaAssetsValidation, func() error {
+		_, _, _, err := validateNameTree(c, xRefTable, "RichMediaAssets", assets, assetsObjNr, true, rawAssets)
+		return err
+	})
 	return err
 }
 
@@ -1620,11 +1663,7 @@ func validateAppearDictEntry(c context.Context, xRefTable *model.XRefTable, d ty
 }
 
 func validateDashPatternArray(xRefTable *model.XRefTable, arr types.Array) bool {
-	// len must be 0,1,2,3 numbers (dont'allow only 0s)
-
-	if len(arr) > 3 {
-		return false
-	}
+	// see 8.4.3.6
 
 	all0 := true
 	for j := 0; j < len(arr); j++ {
@@ -1682,8 +1721,7 @@ func validateBorderArray(xRefTable *model.XRefTable, a types.Array) bool {
 	for i := 0; i < len(a); i++ {
 
 		if i == 3 {
-			// validate dash pattern array
-			// len must be 0,1,2,3 numbers (dont'allow only 0s)
+			// Validate the optional dash array (see 12.5.2, Table 166).
 			dpa, err := xRefTable.DereferenceArray(a[i])
 			if err != nil || dpa == nil {
 				return xRefTable.ValidationMode == model.ValidationRelaxed
@@ -1869,9 +1907,17 @@ func validateAnnotationDictGeneralPart2(c context.Context, xRefTable *model.XRef
 }
 
 func validateAnnotationDictGeneral(c context.Context, xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, dictName string) (*types.Name, error) {
+	// see 12.5.2
 	subType, err := validateAnnotationDictGeneralPart1(xRefTable, d, dictName)
 	if err != nil {
 		return nil, err
+	}
+	if err := xRefTable.CheckAnnotationAppearance(d); err != nil {
+		if xRefTable.ValidationMode != model.ValidationRelaxed {
+			return nil, model.WithValidationErrorObject(err, validationEntryObjectNumber(ownerObjNr, d, "AP"))
+		}
+		xRefTable.AddValidationNotice(model.NewValidationNotice(
+			model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
 	}
 
 	return subType, validateAnnotationDictGeneralPart2(c, xRefTable, d, ownerObjNr, dictName)
@@ -2228,6 +2274,9 @@ func validateAnnotationsArray(c context.Context, xRefTable *model.XRefTable, a t
 }
 
 func validatePageAnnotations(c context.Context, xRefTable *model.XRefTable, d types.Dict, ownerObjNr int) error {
+	// see 12.5
+	// Annotation validation may repair the array.
+	defer clearRenditionPageAnnotations(c, ownerObjNr)
 	annotsObjNr := validationEntryObjectNumber(ownerObjNr, d, "Annots")
 	a, err := validateArrayEntry(xRefTable, d, ownerObjNr, "pageDict", "Annots", OPTIONAL, model.V10, nil)
 	if err != nil || a == nil {

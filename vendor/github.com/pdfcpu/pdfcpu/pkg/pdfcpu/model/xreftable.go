@@ -238,11 +238,10 @@ func (xRefTable *XRefTable) FontRepository() *font.Repository {
 	return font.RepositoryForDir(dir)
 }
 
-// Version returns the PDF version of the PDF writer that created this file.
-// Before V1.4 this is the header version.
-// Since V1.4 the catalog may contain a Version entry which takes precedence over the header version.
+// Version returns the effective PDF version.
+// A catalog Version entry takes precedence only when it is later than the header version (7.7.2).
 func (xRefTable *XRefTable) Version() Version {
-	if xRefTable.RootVersion != nil {
+	if xRefTable.RootVersion != nil && (xRefTable.HeaderVersion == nil || *xRefTable.RootVersion > *xRefTable.HeaderVersion) {
 		return *xRefTable.RootVersion
 	}
 
@@ -302,10 +301,13 @@ func (xRefTable *XRefTable) IsMerging() bool {
 	return cmd == MERGECREATE || cmd == MERGEAPPEND
 }
 
-// EnsureVersionForWriting sets the version to the highest supported PDF Version 1.7.
+// EnsureVersionForWriting raises the effective version to at least PDF 1.7.
 // This is necessary to allow validation after adding features not supported
 // by the original version of a document as during watermarking.
 func (xRefTable *XRefTable) EnsureVersionForWriting() {
+	if (xRefTable.HeaderVersion != nil || xRefTable.RootVersion != nil) && xRefTable.Version() >= V17 {
+		return
+	}
 	v := V17
 	xRefTable.RootVersion = &v
 }
@@ -1627,7 +1629,8 @@ func (xRefTable *XRefTable) bindNameTreeNodeDict(name string, n *Node, root bool
 
 func bindNameTreeNodeLimits(dict types.Dict, n *Node, root bool) {
 	if !root {
-		dict.Update("Limits", types.NewHexLiteralArray(n.Kmin, n.Kmax))
+		lo, hi := n.rawLimits()
+		dict.Update("Limits", types.NewHexLiteralArray(lo, hi))
 		return
 	}
 	dict.Delete("Limits")
@@ -1636,7 +1639,7 @@ func bindNameTreeNodeLimits(dict types.Dict, n *Node, root bool) {
 func bindNameTreeLeafNode(dict types.Dict, n *Node) {
 	a := types.Array{}
 	for _, e := range n.Names {
-		a = append(a, types.NewHexLiteral([]byte(e.k)))
+		a = append(a, types.NewHexLiteral([]byte(e.key())))
 		a = append(a, e.v)
 	}
 	dict.Update("Names", a)
@@ -2049,9 +2052,12 @@ func (xRefTable *XRefTable) consolidateResources(obj types.Object, pAttrs *Inher
 			if err != nil {
 				return fmt.Errorf("resource %s: %w", k, err)
 			}
-			if o != nil {
-				pAttrs.Resources[k] = o.Clone()
+			if o == nil {
+				// A missing reference is null, equivalent to an omitted entry (PDF 2.0 7.3.9).
+				delete(pAttrs.Resources, k)
+				continue
 			}
+			pAttrs.Resources[k] = o.Clone()
 		}
 		if log.WriteEnabled() {
 			log.Write.Printf("pA:\n%s\n", pAttrs.Resources)
@@ -2228,31 +2234,32 @@ func (xRefTable *XRefTable) PageContent(d types.Dict, pageNr int) ([]byte, error
 }
 
 func (xRefTable *XRefTable) consolidateResourceSubDict(d types.Dict, key string, prn PageResourceNames, pageNr int) error {
-	o := d[key]
-	if o == nil {
-		if prn.HasResources(key) {
-			resources := make([]string, 0, len(prn.Resources(key)))
-			for resourceName := range prn.Resources(key) {
-				resources = append(resources, resourceName)
-			}
-			sort.Strings(resources)
-			s := fmt.Sprintf(
-				"missing required %s resource dictionary (referenced resources: %s)",
-				key,
-				strings.Join(resources, ", "),
-			)
-			if xRefTable.ValidationMode == ValidationStrict {
-				return errors.New(s)
-			}
-			ShowSkipped(fmt.Sprintf("page %d: %s", pageNr, s))
-		}
-		return nil
-	}
 	if !prn.HasResources(key) {
 		d.Delete(key)
 		return nil
 	}
-	d1 := o.(types.Dict)
+	d1, err := xRefTable.DereferenceDict(d[key])
+	if err != nil {
+		return fmt.Errorf("page %d: resource %s: %w", pageNr, key, err)
+	}
+	if d1 == nil {
+		d.Delete(key)
+		resources := make([]string, 0, len(prn.Resources(key)))
+		for resourceName := range prn.Resources(key) {
+			resources = append(resources, resourceName)
+		}
+		sort.Strings(resources)
+		s := fmt.Sprintf(
+			"missing required %s resource dictionary (referenced resources: %s)",
+			key,
+			strings.Join(resources, ", "),
+		)
+		if xRefTable.ValidationMode == ValidationStrict {
+			return errors.New(s)
+		}
+		ShowSkipped(fmt.Sprintf("page %d: %s", pageNr, s))
+		return nil
+	}
 	set := types.StringSet{}
 	res := prn.Resources(key)
 	// Iterate over inherited resource sub dict and remove any entries not required.
@@ -2342,7 +2349,7 @@ func (xRefTable *XRefTable) consolidateResourcesWithContent(pageDict, resDict ty
 	}
 
 	// Calculate resources required by the content stream of this page.
-	prn, err := parseContent(string(bb))
+	prn, err := parseContent(string(bb), xRefTable.ValidationMode == ValidationRelaxed, xRefTable.PDF20())
 	if err != nil {
 		return fmt.Errorf("%s: %w", contentContext, &contentParseError{err})
 	}
@@ -3440,14 +3447,30 @@ func weaveInPage(c context.Context, ctx *Context, parent types.IndirectRef, page
 	if err != nil {
 		return nil, err
 	}
+	materializeInheritedPageAttrs(d1, inhPAttrs)
 	d1["Parent"] = parent
-	if _, found := d1["Rotate"]; !found {
-		d1["Rotate"] = types.Integer(inhPAttrs.Rotate)
-	}
-	if _, found := d1["MediaBox"]; !found {
-		d1["MediaBox"] = inhPAttrs.MediaBox.Array()
-	}
 	return indRef, nil
+}
+
+// materializeInheritedPageAttrs preserves effective attributes before a page acquires new ancestors.
+// See PDF 2.0, 7.7.3.4 and Table 31.
+func materializeInheritedPageAttrs(d types.Dict, attrs *InheritedPageAttrs) {
+	if _, found := d["Rotate"]; !found {
+		d["Rotate"] = types.Integer(attrs.Rotate)
+	}
+	if _, found := d["MediaBox"]; !found {
+		d["MediaBox"] = attrs.MediaBox.Array()
+	}
+	if _, found := d["CropBox"]; !found {
+		crop := attrs.CropBox
+		if crop == nil {
+			crop = attrs.MediaBox
+		}
+		d["CropBox"] = crop.Array()
+	}
+	if _, found := d["Resources"]; !found && attrs.Resources != nil {
+		d["Resources"] = attrs.Resources.Clone()
+	}
 }
 
 // Weave in ctx's pages: for each page weave in the corresponding ctx page as long as there is one.
@@ -3585,13 +3608,8 @@ func (xRefTable *XRefTable) AppendPages(c context.Context, rootPageIndRef *types
 		if err != nil {
 			return 0, err
 		}
+		materializeInheritedPageAttrs(d, inhPAttrs)
 		d["Parent"] = *indRef1
-		if _, found := d["Rotate"]; !found {
-			d["Rotate"] = types.Integer(inhPAttrs.Rotate)
-		}
-		if _, found := d["MediaBox"]; !found {
-			d["MediaBox"] = inhPAttrs.MediaBox.Array()
-		}
 		kids1 = append(kids1, *indRef2)
 	}
 	d1["Kids"] = kids1

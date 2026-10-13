@@ -23,6 +23,7 @@ import (
 	"maps"
 	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
@@ -406,7 +407,21 @@ func validateFileSpecDictPart1(xRefTable *model.XRefTable, d types.Dict, dictNam
 	return nil
 }
 
+func isSecondClassName(s string) bool {
+	// see Annex E.2, including the 2020 prefix clarification
+	if len(s) < 4 {
+		return false
+	}
+	for i := range 4 {
+		if s[i] > 127 {
+			return false
+		}
+	}
+	return strings.ContainsAny(s[:min(5, len(s))], "_:")
+}
+
 func validateFileSpecDictPart2(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, dictName string) error {
+	// see 7.11.3
 	// ID, optional, array of strings
 	if _, err := validateStringArrayEntry(xRefTable, d, 0, dictName, "ID", OPTIONAL, model.V11, func(a types.Array) bool { return len(a) == 2 }); err != nil {
 		return err
@@ -451,6 +466,9 @@ func validateFileSpecDictPart2(xRefTable *model.XRefTable, d types.Dict, ownerOb
 
 	// AFRelationship, optional, associated file semantics, since V2.0
 	validateAFRelationship := func(s string) bool {
+		if xRefTable.PDF20() && isSecondClassName(s) {
+			return true
+		}
 		return types.MemberOf(s, []string{"Source", "Data", "Alternative", "Supplement", "EncryptedPayload", "FormData", "Schema", "Unspecified"})
 	}
 	sinceVersion = model.V20
@@ -619,10 +637,34 @@ func validateURLSpecEntry(xRefTable *model.XRefTable, d types.Dict, dictName str
 	return o, nil
 }
 
+func validateMediaClipDataType(xRefTable *model.XRefTable, obj types.Object) error {
+	// see 13.2.4.2
+	var d types.Dict
+	var dictName, typeName string
+	switch o := obj.(type) {
+	case types.StreamDict:
+		d, dictName, typeName = o.Dict, "formStreamDict", "XObject"
+	case types.Dict:
+		d, dictName, typeName = o, "fileSpecDict", "Filespec"
+	default:
+		return nil
+	}
+	_, err := validateNameEntry(xRefTable, d, 0, dictName, "Type", REQUIRED, model.V10, func(s string) bool {
+		return s == typeName
+	})
+	return err
+}
+
 func validateFileSpecificationOrFormObject(c context.Context, xRefTable *model.XRefTable, obj types.Object) (fileSpec bool, err error) {
+	// see 13.2.4.2
 	objNr := validationObjectNumber(0, obj)
+	var strictFailure error
 	defer func() {
 		err = model.WithValidationErrorObject(err, objNr)
+		if err == nil && strictFailure != nil {
+			xRefTable.AddValidationNotice(model.NewValidationNotice(
+				model.NoticePhaseValidate, model.NoticeDigested, strictFailure.Error(), strictFailure))
+		}
 	}()
 
 	o, err := xRefTable.Dereference(obj)
@@ -630,11 +672,14 @@ func validateFileSpecificationOrFormObject(c context.Context, xRefTable *model.X
 		return false, fmt.Errorf("%s: dereference: %w", objectContext("file specification or form object", obj), err)
 	}
 
+	strictFailure = model.WithValidationErrorObject(validateMediaClipDataType(xRefTable, o), objNr)
+	if strictFailure != nil && xRefTable.ValidationMode == model.ValidationStrict {
+		return false, strictFailure
+	}
+
 	switch o := o.(type) {
 	case types.StreamDict:
-		if _, err = validateNameEntry(xRefTable, o.Dict, 0, "formStreamDict", "Type", REQUIRED, model.V10, func(s string) bool {
-			return s == "XObject"
-		}); err != nil {
+		if err = validateXObjectType(xRefTable, &o); err != nil {
 			return false, fmt.Errorf("%s Type: %w", objectContext("form XObject", obj), err)
 		}
 		if _, err = validateNameEntry(xRefTable, o.Dict, 0, "formStreamDict", "Subtype", REQUIRED, model.V10, func(s string) bool {
@@ -645,13 +690,18 @@ func validateFileSpecificationOrFormObject(c context.Context, xRefTable *model.X
 		return false, validateFormStreamDict(c, xRefTable, &o)
 
 	case types.Dict:
-		if _, err = validateNameEntry(xRefTable, o, 0, "fileSpecDict", "Type", REQUIRED, model.V10, func(s string) bool {
-			return s == "Filespec"
-		}); err != nil {
-			return false, fmt.Errorf("%s Type: %w", objectContext("file specification", obj), err)
-		}
 		_, err = validateFileSpecification(xRefTable, obj)
 		return true, err
+
+	case types.StringLiteral, types.HexLiteral:
+		strictFailure = model.WithValidationErrorObject(errors.New("media clip data D: expected full file specification dictionary, got string"), objNr)
+		if xRefTable.ValidationMode == model.ValidationStrict {
+			return false, strictFailure
+		}
+		if _, err = validateFileSpecification(xRefTable, obj); err != nil {
+			return true, err
+		}
+		return true, nil
 
 	default:
 		return false, fmt.Errorf("%s: expected file specification dictionary or Form XObject, got %T",

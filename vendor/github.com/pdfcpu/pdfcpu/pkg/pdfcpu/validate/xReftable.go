@@ -240,17 +240,11 @@ func setRootVersion(xRefTable *model.XRefTable, s string) error {
 
 	xRefTable.RootVersion = &rootVersion
 
-	// since V1.4 the header version may be overridden by a Version entry in the catalog.
-	if *xRefTable.HeaderVersion < model.V14 {
-		if log.InfoEnabled() {
-			log.Info.Printf("identifyRootVersion: PDF version is %s - will ignore root version: %s\n", xRefTable.HeaderVersion, s)
-		}
-	}
-
 	return nil
 }
 
 func validateRootVersion(xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) (err error) {
+	// see 7.7.2
 	rootObjNr := validationRootObjectNumber(xRefTable)
 	defer func() {
 		err = model.WithValidationErrorObject(err, rootObjNr)
@@ -364,37 +358,61 @@ func validateExtensions(xRefTable *model.XRefTable, rootDict types.Dict, require
 	return nil
 }
 
-func validatePageLabels(c context.Context, xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {
+func validatePageLabels(c context.Context, xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) (err error) {
+	// see 12.4.2
 	// optional since PDF 1.3
 	// => 7.9.7 Number Trees, 12.4.2 Page Labels
 
 	// Dict or indirect ref to Dict
 
-	ir := rootDict.IndirectRefEntry("PageLabels")
-	if ir == nil {
+	o, found := rootDict.Find("PageLabels")
+	if !found || o == nil {
 		if required {
 			err := errors.New("dict=rootDict required entry=PageLabels missing")
 			return model.WithValidationErrorObject(err, validationRootObjectNumber(xRefTable))
 		}
 		return nil
 	}
+	objNr := validationObjectNumber(validationRootObjectNumber(xRefTable), o)
+	_, indirect := o.(types.IndirectRef)
+	defer func() {
+		err = model.WithValidationErrorObject(err, objNr)
+		if !indirect && err != nil && c.Err() == nil {
+			err = handlePageLabelValidationError(xRefTable, err)
+		}
+	}()
 
 	dictName := "PageLabels"
 
 	// Version check
-	err := xRefTable.ValidateVersion(dictName, sinceVersion)
+	err = xRefTable.ValidateVersion(dictName, sinceVersion)
 	if err != nil {
-		return model.WithValidationErrorObject(err, ir.ObjectNumber.Value())
+		return err
 	}
 
-	d, err := xRefTable.DereferenceDict(*ir)
+	d, err := xRefTable.DereferenceDict(o)
 	if err != nil {
-		return model.WithValidationErrorObject(err, ir.ObjectNumber.Value())
+		return fmt.Errorf("PageLabels: %w", err)
 	}
 
-	_, _, err = validateNumberTree(c, xRefTable, "PageLabel", d, ir.ObjectNumber.Value(), true, false, *ir)
+	first, last, err := validateNumberTree(c, xRefTable, "PageLabel", d, objNr, true, false, o)
+	if err != nil {
+		return err
+	}
+	if first != 0 || last < 0 || last >= xRefTable.PageCount {
+		err = fmt.Errorf("PageLabels: page indices must include 0 and be within 0..%d, got %d..%d", xRefTable.PageCount-1, first, last)
+		return handlePageLabelValidationError(xRefTable, model.WithValidationErrorObject(err, objNr))
+	}
 
-	return err
+	return nil
+}
+
+func handlePageLabelValidationError(xRefTable *model.XRefTable, err error) error {
+	if xRefTable.ValidationMode == model.ValidationStrict {
+		return err
+	}
+	xRefTable.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
+	return nil
 }
 
 func validateNames(c context.Context, xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {
@@ -1856,9 +1874,12 @@ func validateRootEntries(
 }
 
 func validateRootObject(c context.Context, ctx *model.Context, rootDict types.Dict) (err error) {
+	// see 7.7.2
 	if err := contextutil.Check(c); err != nil {
 		return err
 	}
+	c, renditionPages := withRenditionPageIndex(c)
+	c = withMediaValidation(c)
 	if log.ValidateEnabled() {
 		log.Validate.Println("*** validateRootObject begin ***")
 	}
@@ -1924,6 +1945,9 @@ func validateRootObject(c context.Context, ctx *model.Context, rootDict types.Di
 	rootPageNodeDict, err := validatePages(c, xRefTable, rootDict)
 	if err != nil {
 		return fmt.Errorf("pages: %w", err)
+	}
+	if err := renditionPages.finish(c); err != nil {
+		return err
 	}
 
 	if err = validateRootEntries(c, xRefTable, rootDict, rootObjNr); err != nil {

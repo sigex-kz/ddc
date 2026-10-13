@@ -45,8 +45,6 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"golang.org/x/text/secure/precis"
-	"golang.org/x/text/unicode/norm"
 )
 
 var (
@@ -195,11 +193,8 @@ func newEncryptDict(pdf20, needAES bool, keyLength int, permissions int16) types
 			}
 		}
 		d1.Insert("CFM", types.Name(cfm))
-		kl := keyLength
-		if pdf20 {
-			kl /= 8
-		}
-		d1.Insert("Length", types.Integer(kl))
+		// Standard security handler crypt-filter lengths are in bytes (Table 25).
+		d1.Insert("Length", types.Integer(keyLength/8))
 
 		d2 := types.NewDict()
 		d2.Insert("StdCF", d1)
@@ -466,9 +461,17 @@ func keySalt(bb []byte) []byte {
 	return bb[40:48]
 }
 
+// userEntry48 returns the U bytes used by R5/R6 owner-password algorithms (PDF 2.0, 7.6.4.3.3 and 7.6.4.4.8).
+func userEntry48(u []byte) []byte {
+	if len(u) > 48 {
+		return u[:48:48]
+	}
+	return u
+}
+
 func decryptOE(ctx *model.Context, opw []byte) error {
 	b := append(opw, keySalt(ctx.E.O)...)
-	b = append(b, ctx.E.U...)
+	b = append(b, userEntry48(ctx.E.U)...)
 	key := sha256.Sum256(b)
 
 	cb, err := aes.NewCipher(key[:])
@@ -490,18 +493,14 @@ func validateOwnerPasswordAES256(ctx *model.Context) (ok bool, err error) {
 		return false, nil
 	}
 
-	opw, err := processInput(ctx.OwnerPW)
+	opw, err := preparePassword(ctx.OwnerPW, false)
 	if err != nil {
 		return false, err
 	}
 
-	if len(opw) > 127 {
-		opw = opw[:127]
-	}
-
 	// Algorithm 3.2a 3.
 	b := append(opw, validationSalt(ctx.E.O)...)
-	b = append(b, ctx.E.U...)
+	b = append(b, userEntry48(ctx.E.U)...)
 	s := sha256.Sum256(b)
 
 	if !passwordHashPrefixEqual(ctx.E.O, s[:]) {
@@ -533,13 +532,9 @@ func decryptUE(ctx *model.Context, upw []byte) error {
 }
 
 func validateUserPasswordAES256(ctx *model.Context) (ok bool, err error) {
-	upw, err := processInput(ctx.UserPW)
+	upw, err := preparePassword(ctx.UserPW, false)
 	if err != nil {
 		return false, err
-	}
-
-	if len(upw) > 127 {
-		upw = upw[:127]
 	}
 
 	// Algorithm 3.2a 4,
@@ -554,21 +549,6 @@ func validateUserPasswordAES256(ctx *model.Context) (ok bool, err error) {
 	}
 
 	return true, nil
-}
-
-func processInput(input string) ([]byte, error) {
-	// Create a new Precis profile for SASLprep
-	p := precis.NewIdentifier(
-		precis.BidiRule,
-		precis.Norm(norm.NFKC),
-	)
-
-	output, err := p.String(input)
-	if err != nil {
-		return nil, err
-	}
-
-	return []byte(output), nil
 }
 
 func hashRev6(input, pw, U []byte) ([]byte, int, error) {
@@ -628,19 +608,16 @@ func validateOwnerPasswordAES256Rev6(ctx *model.Context) (ok bool, err error) {
 	}
 
 	// Process PW with SASLPrep profile (RFC 4013) of stringprep (RFC 3454).
-	opw, err := processInput(ctx.OwnerPW)
+	opw, err := preparePassword(ctx.OwnerPW, false)
 	if err != nil {
 		return false, err
 	}
 
-	if len(opw) > 127 {
-		opw = opw[:127]
-	}
-
 	// Algorithm 12
+	u := userEntry48(ctx.E.U)
 	bb := append(opw, validationSalt(ctx.E.O)...)
-	bb = append(bb, ctx.E.U...)
-	s, _, err := hashRev6(bb, opw, ctx.E.U)
+	bb = append(bb, u...)
+	s, _, err := hashRev6(bb, opw, u)
 	if err != nil {
 		return false, err
 	}
@@ -650,8 +627,8 @@ func validateOwnerPasswordAES256Rev6(ctx *model.Context) (ok bool, err error) {
 	}
 
 	bb = append(opw, keySalt(ctx.E.O)...)
-	bb = append(bb, ctx.E.U...)
-	key, _, err := hashRev6(bb, opw, ctx.E.U)
+	bb = append(bb, u...)
+	key, _, err := hashRev6(bb, opw, u)
 	if err != nil {
 		return false, err
 	}
@@ -675,12 +652,9 @@ func validateUserPasswordAES256Rev6(ctx *model.Context) (bool, error) {
 		return false, errors.New("UE: invalid length")
 	}
 
-	upw, err := processInput(ctx.UserPW)
+	upw, err := preparePassword(ctx.UserPW, false)
 	if err != nil {
 		return false, err
-	}
-	if len(upw) > 127 {
-		upw = upw[:127]
 	}
 
 	// Validate U prefix
@@ -928,18 +902,13 @@ func logP(enc *model.Enc) {
 
 }
 
-func maskExtract(mode model.CommandMode, secHandlerRev int) int {
+// maskExtract returns the general copy/extract permission bit required by mode.
+func maskExtract(mode model.CommandMode) int {
 	p, ok := perm[mode]
 
 	// no permissions defined or don't need extract permission
 	if !ok || p.extract == 0 {
 		return 0
-	}
-
-	// need extract permission
-
-	if secHandlerRev >= 3 {
-		return 0x0200 // need bit 10
 	}
 
 	return 0x0010 // need bit 5
@@ -967,10 +936,13 @@ func encryptionIntegerEntry(ctx *model.Context, d types.Dict, key, dictName stri
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s entry %q: %w", ErrMalformedEncryption, dictName, key, err)
 	}
+
 	if i == nil {
 		return nil, nil
 	}
+
 	v := i.Value()
+
 	return &v, nil
 }
 
@@ -980,7 +952,7 @@ func hasNeededPermissions(mode model.CommandMode, enc *model.Enc) bool {
 
 	logP(enc)
 
-	m := maskExtract(mode, enc.R)
+	m := maskExtract(mode)
 	if m > 0 {
 		if enc.P&m == 0 {
 			return false
@@ -998,21 +970,22 @@ func hasNeededPermissions(mode model.CommandMode, enc *model.Enc) bool {
 }
 
 func getR(ctx *model.Context, d types.Dict) (int, error) {
-	maxR := 6
-	if ctx.XRefTable.Version() == model.V20 || ctx.XRefTable.ValidationMode == model.ValidationRelaxed {
-		maxR = 7
-	}
+	// Algorithm support is determined before the catalog and effective PDF version are available.
+	const maxR = 7
 
 	r, err := encryptionIntegerEntry(ctx, d, "R", "encrypt dict")
 	if err != nil {
 		return 0, err
 	}
+
 	if r == nil {
 		return 0, fmt.Errorf("%w: required entry \"R\" missing", ErrMalformedEncryption)
 	}
+
 	if *r < 2 || *r > maxR {
 		return 0, fmt.Errorf("%w: invalid encrypt \"R\" %d", ErrMalformedEncryption, *r)
 	}
+
 	if *r == 7 {
 		return 0, fmt.Errorf("%w: encrypt \"R\" 7", ErrUnsupportedEncryptionFeature)
 	}
@@ -1069,17 +1042,12 @@ func validateAES256Parameters(d types.Dict, r int) (oe, ue, perms []byte, err er
 	return oe, ue, perms, nil
 }
 
-func validatePasswordEntry(
-	d types.Dict,
-	key string,
-	minLen int,
-	digestShort bool,
-	specViolations *[]error,
-) ([]byte, error) {
+func validatePasswordEntry(d types.Dict, key string, minLen int, digestShort bool, specViolations *[]error) ([]byte, error) {
 	b, err := d.StringEntryBytes(key)
 	if err != nil {
 		return nil, fmt.Errorf("%w: entry %q: %w", ErrMalformedEncryption, key, err)
 	}
+
 	if len(b) < minLen {
 		err := fmt.Errorf("%w: required entry %q shorter than %d bytes", ErrMalformedEncryption, key, minLen)
 		if !digestShort {
@@ -1087,15 +1055,11 @@ func validatePasswordEntry(
 		}
 		appendSpecViolation(specViolations, err)
 	}
+
 	return b, nil
 }
 
-func validateOAndU(
-	d types.Dict,
-	r int,
-	relaxed bool,
-	specViolations *[]error,
-) (o, u []byte, err error) {
+func validateOAndU(d types.Dict, r int, relaxed bool, specViolations *[]error) (o, u []byte, err error) {
 	minLen := 32
 	digestShort := relaxed
 	if r >= 5 {
@@ -1115,11 +1079,7 @@ func validateOAndU(
 }
 
 func checkCFLengthV2(length int, pdf20, relaxed bool) (specViolation, err error) {
-	bitLen := length
-	if pdf20 {
-		bitLen *= 8
-	}
-	if bitLen >= 40 && bitLen <= 128 && bitLen%8 == 0 {
+	if length >= 5 && length <= 16 {
 		return nil, nil
 	}
 
@@ -1128,8 +1088,8 @@ func checkCFLengthV2(length int, pdf20, relaxed bool) (specViolation, err error)
 		return nil, err
 	}
 
-	bitLen = length * 8
-	if bitLen < 40 || bitLen > 128 || bitLen%8 != 0 {
+	// Accept legacy bit counts only for earlier PDFs in relaxed mode.
+	if length < 40 || length > 128 || length%8 != 0 {
 		return nil, err
 	}
 
@@ -1137,18 +1097,14 @@ func checkCFLengthV2(length int, pdf20, relaxed bool) (specViolation, err error)
 }
 
 func checkCFLengthAESV2(length int, pdf20, relaxed bool) (specViolation, err error) {
-	const aesV2KeyLength = 128
+	const aesV2KeyLength = 16
 
-	bitLen := length
-	if pdf20 {
-		bitLen *= 8
-	}
-	if bitLen == aesV2KeyLength {
+	if length == aesV2KeyLength {
 		return nil, nil
 	}
 
 	err = fmt.Errorf("%w: invalid CF length, got %d want %d", ErrMalformedEncryption, length, aesV2KeyLength)
-	if pdf20 || !relaxed || length*8 != aesV2KeyLength {
+	if pdf20 || !relaxed || length != aesV2KeyLength*8 {
 		return nil, err
 	}
 
@@ -1156,8 +1112,10 @@ func checkCFLengthAESV2(length int, pdf20, relaxed bool) (specViolation, err err
 }
 
 func validateCFLength(length *int, cfm *string, pdf20, relaxed bool) (specViolation, err error) {
+	// see 7.6.6
 	// See table 25 Length
-	// v = 4
+	// The Standard security handler uses bytes in earlier versions too (PDF 1.7 errata, page 134).
+	// v = 4,5
 
 	if length == nil || cfm == nil {
 		return nil, nil
@@ -1169,6 +1127,15 @@ func validateCFLength(length *int, cfm *string, pdf20, relaxed bool) (specViolat
 
 	case "AESV2":
 		return checkCFLengthAESV2(*length, pdf20, relaxed)
+
+	case "AESV3":
+		if *length != 32 {
+			err := fmt.Errorf("%w: invalid CF length, got %d want 32", ErrMalformedEncryption, *length)
+			if relaxed {
+				return err, nil
+			}
+			return nil, err
+		}
 	}
 
 	return nil, nil
@@ -1178,11 +1145,13 @@ func appendSpecViolation(specViolations *[]error, err error) {
 	if err == nil {
 		return
 	}
+
 	for _, specViolation := range *specViolations {
 		if specViolation.Error() == err.Error() {
 			return
 		}
 	}
+
 	*specViolations = append(*specViolations, err)
 }
 
@@ -1190,11 +1159,13 @@ func validateCryptFilterRecipients(ctx *model.Context, d types.Dict, cfm *string
 	if cfm == nil {
 		return nil
 	}
+
 	switch *cfm {
 	case "V2", "AESV2", "AESV3", "AESV4":
 	default:
 		return nil
 	}
+
 	obj, ok := d.Find("Recipients")
 	if !ok {
 		return fmt.Errorf("%w: crypt filter missing entry \"Recipients\"", ErrMalformedEncryption)
@@ -1231,11 +1202,13 @@ func checkCryptFilterCFM(cfm string, v int) error {
 	case 6:
 		ss = []string{"AESV4"}
 	}
+
 	if len(ss) > 0 {
 		if !types.MemberOf(cfm, ss) {
 			return fmt.Errorf("%w: crypt filter invalid entry \"CFM\": %s", ErrMalformedEncryption, cfm)
 		}
 	}
+
 	return nil
 }
 
@@ -1244,9 +1217,11 @@ func validateCryptFilterAuthEvent(ctx *model.Context, d types.Dict, allowEFOpen 
 	if err != nil {
 		return fmt.Errorf("%w: crypt filter entry \"AuthEvent\": %w", ErrMalformedEncryption, err)
 	}
+
 	if n != nil && n.Value() != "DocOpen" && (!allowEFOpen || n.Value() != "EFOpen") {
 		return fmt.Errorf("%w: crypt filter invalid entry \"AuthEvent\"", ErrMalformedEncryption)
 	}
+
 	return nil
 }
 
@@ -1255,25 +1230,21 @@ func cryptFilterCFM(ctx *model.Context, d types.Dict, v int) (*string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: crypt filter entry \"CFM\": %w", ErrMalformedEncryption, err)
 	}
+
 	if n == nil {
 		return nil, nil
 	}
+
 	s := n.Value()
 	if err := checkCryptFilterCFM(s, v); err != nil {
 		return nil, err
 	}
+
 	return &s, nil
 }
 
-func validateCryptFilter(
-	ctx *model.Context,
-	d types.Dict,
-	v int,
-	pubKeySecHandler,
-	relaxed bool,
-	allowEFOpen bool,
-	specViolations *[]error,
-) (bool, error) {
+func cryptFilterForDecryption(ctx *model.Context, d types.Dict, v int, pubKeySecHandler, allowEFOpen bool) (bool, error) {
+	// see 7.6.6
 	// v = 4,5,6
 	// 4 AESV2, V2
 	// 5 AESV3
@@ -1284,20 +1255,9 @@ func validateCryptFilter(
 		return false, err
 	}
 
-	length, err := encryptionIntegerEntry(ctx, d, "Length", "crypt filter")
-	if err != nil {
+	// Check representation now; version-dependent length requirements are checked after catalog discovery.
+	if _, err := encryptionIntegerEntry(ctx, d, "Length", "crypt filter"); err != nil {
 		return false, err
-	}
-	pdf20 := ctx.PDF20()
-	if length == nil && !pdf20 && v != 5 {
-		return false, fmt.Errorf("%w: crypt filter missing entry \"Length\"", ErrMalformedEncryption)
-	}
-	if v == 4 {
-		specViolation, err := validateCFLength(length, cfm, pdf20, relaxed)
-		if err != nil {
-			return false, err
-		}
-		appendSpecViolation(specViolations, specViolation)
 	}
 
 	if err := validateCryptFilterAuthEvent(ctx, d, allowEFOpen); err != nil {
@@ -1315,36 +1275,169 @@ func validateCryptFilter(
 	return aes, nil
 }
 
-func locateCFEntry(
-	ctx *model.Context,
-	d types.Dict,
-	v int,
-	key string,
-	pubKeySecHandler,
-	relaxed bool,
-	allowEFOpen bool,
-	specViolations *[]error,
-) (bool, error) {
+func validateCryptFilter(ctx *model.Context, d types.Dict, v int, pubKeySecHandler, relaxed bool, allowEFOpen bool, specViolations *[]error) (bool, error) {
+	// see 7.6.6
+	aes, err := cryptFilterForDecryption(ctx, d, v, pubKeySecHandler, allowEFOpen)
+	if err != nil {
+		return false, err
+	}
+	cfm, err := cryptFilterCFM(ctx, d, v)
+	if err != nil {
+		return false, err
+	}
+
+	length, err := encryptionIntegerEntry(ctx, d, "Length", "crypt filter")
+	if err != nil {
+		return false, err
+	}
+
+	pdf20 := ctx.PDF20()
+	if length == nil && pdf20 {
+		return false, fmt.Errorf("%w: crypt filter missing entry \"Length\"", ErrMalformedEncryption)
+	}
+
+	if v == 4 || v == 5 {
+		specViolation, err := validateCFLength(length, cfm, pdf20, relaxed)
+		if err != nil {
+			return false, err
+		}
+		appendSpecViolation(specViolations, specViolation)
+	}
+
+	return aes, nil
+}
+
+func validateEncryptionVersion(c context.Context, ctx *model.Context) (err error) {
+	// see 7.6.6
+	if ctx.E == nil || ctx.E.V < 4 {
+		return nil
+	}
+	defer func() {
+		err = attributeEncryptionError(ctx, err)
+	}()
+
+	d, err := ctx.EncryptDict()
+	if err != nil {
+		return classifyEncryptionDictionaryError(err)
+	}
+	var violations []error
+	if err := validateCryptFilters(ctx, d, ctx.E.V, false, &violations); err != nil {
+		return err
+	}
+	if ctx.PDF20() || ctx.E.V == 5 {
+		if err := validateCryptFilterLengths(c, ctx, d.DictEntry("CF"), &violations); err != nil {
+			// Earlier inputs did not check unselected filters here; retain their relaxed acceptance.
+			if ctx.PDF20() || ctx.XRefTable.ValidationMode != model.ValidationRelaxed || c.Err() != nil {
+				return err
+			}
+			appendSpecViolation(&violations, err)
+		}
+	}
+	for _, violation := range violations {
+		violation = attributeEncryptionError(ctx, violation)
+		if ctx.E.V == 5 {
+			ctx.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseRead, model.NoticeDigested, violation.Error(), violation))
+		} else {
+			model.ShowDigestedSpecViolationError(violation)
+		}
+	}
+	return nil
+}
+
+func validateCryptFilterLengths(c context.Context, ctx *model.Context, cf types.Dict, specViolations *[]error) error {
+	// see 7.6.6
+	// PDF 2.0 also requires Length for filters not selected through StmF, StrF or EFF.
+
+	for _, name := range slices.Sorted(maps.Keys(cf)) {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+
+		// The standard Identity filter cannot be redefined by a CF entry (Table 20).
+		if name == "Identity" {
+			continue
+		}
+
+		filter, err := ctx.DereferenceDict(cf[name])
+		if err != nil {
+			return fmt.Errorf("%w: crypt filter %q: %w", ErrMalformedEncryption, name, err)
+		}
+
+		length, err := encryptionIntegerEntry(ctx, filter, "Length", "crypt filter")
+		if err != nil {
+			return fmt.Errorf("crypt filter %q: %w", name, err)
+		}
+
+		if length == nil && ctx.PDF20() {
+			return fmt.Errorf("%w: crypt filter %q missing entry \"Length\"", ErrMalformedEncryption, name)
+		}
+		if ctx.E.V == 5 {
+			// Method checks belong to filter selection; this pass only adds AESV3 length validation.
+			cfm, _, err := ctx.DereferenceNameEntry(filter, "CFM")
+			if err != nil || cfm == nil || cfm.Value() != "AESV3" {
+				continue
+			}
+			method := cfm.Value()
+			violation, err := validateCFLength(length, &method, ctx.PDF20(), ctx.XRefTable.ValidationMode == model.ValidationRelaxed)
+			if err != nil {
+				return fmt.Errorf("crypt filter %q: %w", name, err)
+			}
+			appendSpecViolation(specViolations, violation)
+		}
+	}
+
+	return nil
+}
+
+// prepareCryptFilters selects methods for decryption before the effective PDF version is available.
+func prepareCryptFilters(ctx *model.Context, d types.Dict, v int, pubKey bool) error {
+	cf := d.DictEntry("CF")
+	if cf == nil {
+		return fmt.Errorf("%w: encrypt dict, required entry \"CF\" missing", ErrMalformedEncryption)
+	}
+	for _, entry := range []struct {
+		key string
+		aes *bool
+	}{
+		{"StmF", &ctx.AES4Streams},
+		{"StrF", &ctx.AES4Strings},
+		{"EFF", &ctx.AES4EmbeddedStreams},
+	} {
+		name, _, err := ctx.DereferenceNameEntry(d, entry.key)
+		if err != nil {
+			return fmt.Errorf("%w: encrypt dict entry %q: %w", ErrMalformedEncryption, entry.key, err)
+		}
+		if name == nil || name.Value() == "Identity" {
+			continue
+		}
+		filter := cf.DictEntry(name.Value())
+		if filter == nil {
+			return fmt.Errorf("%w: entry %q missing in CF", ErrMalformedEncryption, name.Value())
+		}
+		aes, err := cryptFilterForDecryption(ctx, filter, v, pubKey, entry.key == "EFF")
+		if err != nil {
+			return fmt.Errorf("encrypt dict entry %q: %w", entry.key, err)
+		}
+		*entry.aes = aes
+	}
+	return nil
+}
+
+func locateCFEntry(ctx *model.Context, d types.Dict, v int, key string, pubKeySecHandler, relaxed bool, allowEFOpen bool, specViolations *[]error) (bool, error) {
 	d1 := d.DictEntry(key)
 	if d1 == nil {
 		return false, fmt.Errorf("%w: entry \"%s\" missing in \"CF\"", ErrMalformedEncryption, key)
 	}
+
 	return validateCryptFilter(ctx, d1, v, pubKeySecHandler, relaxed, allowEFOpen, specViolations)
 }
 
-func validateStmf(
-	ctx *model.Context,
-	d,
-	cfDict types.Dict,
-	v int,
-	pubKeySecHandler,
-	relaxed bool,
-	specViolations *[]error,
-) error {
+func validateStmf(ctx *model.Context, d, cfDict types.Dict, v int, pubKeySecHandler, relaxed bool, specViolations *[]error) error {
 	n, _, err := ctx.DereferenceNameEntry(d, "StmF")
 	if err != nil {
 		return fmt.Errorf("%w: encrypt dict entry \"StmF\": %w", ErrMalformedEncryption, err)
 	}
+
 	if n != nil && n.Value() != "Identity" {
 		aes, err := locateCFEntry(ctx, cfDict, v, n.Value(), pubKeySecHandler, relaxed, false, specViolations)
 		if err != nil {
@@ -1352,22 +1445,16 @@ func validateStmf(
 		}
 		ctx.AES4Streams = aes
 	}
+
 	return nil
 }
 
-func validateStrf(
-	ctx *model.Context,
-	d,
-	cfDict types.Dict,
-	v int,
-	pubKeySecHandler,
-	relaxed bool,
-	specViolations *[]error,
-) error {
+func validateStrf(ctx *model.Context, d, cfDict types.Dict, v int, pubKeySecHandler, relaxed bool, specViolations *[]error) error {
 	n, _, err := ctx.DereferenceNameEntry(d, "StrF")
 	if err != nil {
 		return fmt.Errorf("%w: encrypt dict entry \"StrF\": %w", ErrMalformedEncryption, err)
 	}
+
 	if n != nil && n.Value() != "Identity" {
 		aes, err := locateCFEntry(ctx, cfDict, v, n.Value(), pubKeySecHandler, relaxed, false, specViolations)
 		if err != nil {
@@ -1375,22 +1462,16 @@ func validateStrf(
 		}
 		ctx.AES4Strings = aes
 	}
+
 	return nil
 }
 
-func validateEFF(
-	ctx *model.Context,
-	d,
-	cfDict types.Dict,
-	v int,
-	pubKeySecHandler,
-	relaxed bool,
-	specViolations *[]error,
-) error {
+func validateEFF(ctx *model.Context, d, cfDict types.Dict, v int, pubKeySecHandler, relaxed bool, specViolations *[]error) error {
 	n, _, err := ctx.DereferenceNameEntry(d, "EFF")
 	if err != nil {
 		return fmt.Errorf("%w: encrypt dict entry \"EFF\": %w", ErrMalformedEncryption, err)
 	}
+
 	if n != nil && n.Value() != "Identity" {
 		aes, err := locateCFEntry(ctx, cfDict, v, n.Value(), pubKeySecHandler, relaxed, true, specViolations)
 		if err != nil {
@@ -1398,16 +1479,11 @@ func validateEFF(
 		}
 		ctx.AES4EmbeddedStreams = aes
 	}
+
 	return nil
 }
 
-func validateCryptFilters(
-	ctx *model.Context,
-	d types.Dict,
-	v int,
-	pubKeySecHandler bool,
-	specViolations *[]error,
-) error {
+func validateCryptFilters(ctx *model.Context, d types.Dict, v int, pubKeySecHandler bool, specViolations *[]error) error {
 	// validate CF, StmF, StrF, EFF
 	// v = 4,5,6
 
@@ -1435,14 +1511,17 @@ func validateEncryptFilter(ctx *model.Context, d types.Dict) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: encrypt dict entry \"Filter\": %w", ErrMalformedEncryption, err)
 	}
+
 	if filter == nil {
 		return "", fmt.Errorf("%w: required entry \"Filter\" missing", ErrMalformedEncryption)
 	}
+
 	s := filter.Value()
 	// TODO support "Adobe.PubSec"
 	if !types.MemberOf(s, []string{"Standard"}) {
 		return "", fmt.Errorf("%w: filter %s", ErrUnsupportedEncryptionFeature, s)
 	}
+
 	return s, nil
 }
 
@@ -1451,6 +1530,7 @@ func validateEncryptSubFilter(ctx *model.Context, d types.Dict, pubKeySecHandler
 	if err != nil {
 		return "", fmt.Errorf("%w: encrypt dict entry \"SubFilter\": %w", ErrMalformedEncryption, err)
 	}
+
 	if subFilter != nil && pubKeySecHandler {
 		s := subFilter.Value()
 		if !types.MemberOf(s, []string{"adbe.pkcs7.s3", "adbe.pkcs7.s4", "adbe.pkcs7.s5"}) {
@@ -1458,6 +1538,7 @@ func validateEncryptSubFilter(ctx *model.Context, d types.Dict, pubKeySecHandler
 		}
 		return s, nil
 	}
+
 	return "", nil
 }
 
@@ -1466,6 +1547,7 @@ func validateEncryptV(ctx *model.Context, d types.Dict) (int, error) {
 	if err != nil {
 		return -1, err
 	}
+
 	if v == nil {
 		return -1, fmt.Errorf("%w: required entry \"V\" missing", ErrMalformedEncryption)
 	}
@@ -1527,16 +1609,12 @@ func validatePubKeySecHandler(ctx *model.Context, d types.Dict, pubKeySecHandler
 	return nil
 }
 
-func validateEncryptPermissions(
-	ctx *model.Context,
-	d types.Dict,
-	pubKeySecHandler bool,
-	subFilter string,
-) (int, bool, error, error) {
+func validateEncryptPermissions(ctx *model.Context, d types.Dict, pubKeySecHandler bool, subFilter string) (int, bool, error, error) {
 	p, err := encryptionIntegerEntry(ctx, d, "P", "encrypt dict")
 	if err != nil {
 		return 0, false, nil, err
 	}
+
 	if p == nil {
 		return 0, false, nil, fmt.Errorf("%w: required entry \"P\" missing", ErrMalformedEncryption)
 	}
@@ -1556,6 +1634,7 @@ func validateEncryptPermissions(
 			err,
 		)
 	}
+
 	if emd != nil {
 		encMeta = emd.Value()
 	}
@@ -1563,6 +1642,7 @@ func validateEncryptPermissions(
 	if err := validatePubKeySecHandler(ctx, d, pubKeySecHandler, subFilter); err != nil {
 		return 0, false, nil, err
 	}
+
 	return normalizedP, encMeta, specViolation, nil
 }
 
@@ -1571,6 +1651,36 @@ func attributeEncryptionError(ctx *model.Context, err error) error {
 		return err
 	}
 	return model.WithValidationErrorObject(err, ctx.Encrypt.ObjectNumber.Value())
+}
+
+func encryptionVersionParameters(ctx *model.Context, d types.Dict, pubKey bool) (int, int, int, error) {
+	v, err := validateEncryptV(ctx, d)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	l, err := validateEncryptLength(ctx, d, v)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	if v == 4 || v == 5 || v == 6 {
+		if err := prepareCryptFilters(ctx, d, v, pubKey); err != nil {
+			return 0, 0, 0, err
+		}
+	}
+
+	r, err := getR(ctx, d)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	// Revisions 5 and 6 require V=5's 256-bit key; older revisions use smaller keys.
+	if (v == 5 && r < 5) || (v < 5 && r >= 5) {
+		return 0, 0, 0, fmt.Errorf("%w: encrypt \"R\" %d inconsistent with \"V\" %d", ErrMalformedEncryption, r, v)
+	}
+
+	return v, l, r, nil
 }
 
 // supportedEncryption returns a pointer to a struct encapsulating used encryption.
@@ -1594,27 +1704,7 @@ func supportedEncryption(ctx *model.Context, d types.Dict) (enc *model.Enc, err 
 		return nil, err
 	}
 
-	// V
-	v, err := validateEncryptV(ctx, d)
-	if err != nil {
-		return nil, err
-	}
-
-	// Length
-	l, err := validateEncryptLength(ctx, d, v)
-	if err != nil {
-		return nil, err
-	}
-
-	// CF, StmF, StrF, EFF
-	if v == 4 || v == 5 || v == 6 {
-		if err := validateCryptFilters(ctx, d, v, pubKeySecHandler, &specViolations); err != nil {
-			return nil, err
-		}
-	}
-
-	// R
-	r, err := getR(ctx, d)
+	v, l, r, err := encryptionVersionParameters(ctx, d, pubKeySecHandler)
 	if err != nil {
 		return nil, err
 	}
@@ -1652,11 +1742,121 @@ func supportedEncryption(ctx *model.Context, d types.Dict) (enc *model.Enc, err 
 	if specViolation != nil {
 		appendSpecViolation(&specViolations, specViolation)
 	}
+
 	for _, specViolation := range specViolations {
 		model.ShowDigestedSpecViolationError(attributeEncryptionError(ctx, specViolation))
 	}
 
 	return enc, nil
+}
+
+// defaultCryptFilterEncrypted reports whether the selected default filter transforms data.
+func defaultCryptFilterEncrypted(ctx *model.Context, key string) (bool, error) {
+	if ctx.E == nil || ctx.E.V < 4 {
+		return true, nil
+	}
+
+	d, err := ctx.EncryptDict()
+	if err != nil {
+		return false, classifyEncryptionDictionaryError(err)
+	}
+
+	n, _, err := ctx.DereferenceNameEntry(d, key)
+	if err != nil {
+		return false, fmt.Errorf("%w: encrypt dict entry %q: %w", ErrMalformedEncryption, key, err)
+	}
+
+	// StmF and StrF default to Identity (PDF 2.0, Table 20).
+	return n != nil && n.Value() != "Identity", nil
+}
+
+func stringsEncrypted(ctx *model.Context) (bool, error) {
+	if ctx.EncKey == nil {
+		return false, nil
+	}
+	return defaultCryptFilterEncrypted(ctx, "StrF")
+}
+
+func decryptObjectStrings(c context.Context, ctx *model.Context, obj types.Object, objNr, genNr int) (types.Object, error) {
+	encrypted, err := stringsEncrypted(ctx)
+	if err != nil || !encrypted {
+		return obj, err
+	}
+
+	o, err := decryptDeepObject(c, obj, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
+	if o != nil || err != nil {
+		return o, err
+	}
+
+	return obj, nil
+}
+
+func streamCryptFilterName(ctx *model.Context, sd *types.StreamDict) (string, bool, error) {
+	if len(sd.FilterPipeline) == 0 || sd.FilterPipeline[0].Name != "Crypt" {
+		return "", false, nil
+	}
+
+	dp := sd.FilterPipeline[0].DecodeParms
+	if dp == nil {
+		return "Identity", true, nil
+	}
+
+	n, _, err := ctx.DereferenceNameEntry(dp, "Name")
+	if err != nil {
+		return "", true, fmt.Errorf("%w: stream Crypt filter Name: %w", ErrMalformedEncryption, err)
+	}
+
+	if n == nil {
+		return "Identity", true, nil
+	}
+
+	return n.Value(), true, nil
+}
+
+func streamCryptMethod(ctx *model.Context, sd *types.StreamDict) (encrypted, aes bool, err error) {
+	name, hasCrypt, err := streamCryptFilterName(ctx, sd)
+	if err != nil {
+		return false, false, err
+	}
+
+	if !hasCrypt {
+		encrypted, err := defaultCryptFilterEncrypted(ctx, "StmF")
+		return encrypted, ctx.AES4Streams, err
+	}
+
+	if name == "Identity" {
+		return false, false, nil
+	}
+
+	d, err := ctx.EncryptDict()
+	if err != nil {
+		return false, false, classifyEncryptionDictionaryError(err)
+	}
+
+	cfd := d.DictEntry("CF").DictEntry(name)
+	if cfd == nil {
+		return false, false, fmt.Errorf("%w: stream crypt filter %q missing from CF", ErrMalformedEncryption, name)
+	}
+
+	cfm, _, err := ctx.DereferenceNameEntry(cfd, "CFM")
+	if err != nil {
+		return false, false, fmt.Errorf("%w: stream crypt filter %q CFM: %w", ErrMalformedEncryption, name, err)
+	}
+
+	if cfm == nil || cfm.Value() == "None" {
+		return false, false, fmt.Errorf("%w: stream crypt filter %q uses security-handler decryption", ErrUnsupportedEncryptionFeature, name)
+	}
+
+	switch cfm.Value() {
+	case "V2", "AESV2", "AESV3":
+		// Explicit filters obey the same method restrictions as default filters (7.6.4.1, Table 25).
+		if err := checkCryptFilterCFM(cfm.Value(), ctx.E.V); err != nil {
+			return false, false, fmt.Errorf("stream crypt filter %q: %w", name, err)
+		}
+		return true, cfm.Value() != "V2", nil
+	}
+
+	return false, false, fmt.Errorf("%w: stream crypt filter %q CFM %s", ErrUnsupportedEncryptionFeature, name, cfm.Value())
 }
 
 func decryptKey(objNumber, generation int, key []byte, aes bool) ([]byte, error) {
@@ -1765,16 +1965,19 @@ func encryptDict(c context.Context, d types.Dict, objNr, genNr int, key []byte, 
 	if err := contextutil.Check(c); err != nil {
 		return err
 	}
+
 	isSig := false
 	ft := d["FT"]
 	if ft == nil {
 		ft = d["Type"]
 	}
+
 	if ft != nil {
 		if ftv, ok := ft.(types.Name); ok && (ftv == "Sig" || ftv == "DocTimeStamp") {
 			isSig = true
 		}
 	}
+
 	for k, v := range d {
 		if err := contextutil.Check(c); err != nil {
 			return err
@@ -1816,6 +2019,7 @@ func decryptStringLiteral(sl types.StringLiteral, objNr, genNr int, key []byte, 
 	if sl.Value() == "" {
 		return &sl, nil
 	}
+
 	bb, err := types.Unescape(sl.Value())
 	if err != nil {
 		return nil, err
@@ -1856,6 +2060,7 @@ func decryptHexLiteral(hl types.HexLiteral, objNr, genNr int, key []byte, needAE
 	if hl.Value() == "" {
 		return &hl, nil
 	}
+
 	bb, err := hl.Bytes()
 	if err != nil {
 		return nil, err
@@ -1877,6 +2082,7 @@ func encryptDeepObject(c context.Context, objIn types.Object, objNr, genNr int, 
 	if err := contextutil.Check(c); err != nil {
 		return nil, err
 	}
+
 	_, ok := objIn.(types.IndirectRef)
 	if ok {
 		return nil, nil
@@ -1932,16 +2138,20 @@ func decryptDict(c context.Context, d types.Dict, objNr, genNr int, key []byte, 
 	if err := contextutil.Check(c); err != nil {
 		return err
 	}
+
 	isSig := false
 	ft := d["FT"]
+
 	if ft == nil {
 		ft = d["Type"]
 	}
+
 	if ft != nil {
 		if ftv, ok := ft.(types.Name); ok && (ftv == "Sig" || ftv == "DocTimeStamp") {
 			isSig = true
 		}
 	}
+
 	for _, k := range slices.Sorted(maps.Keys(d)) {
 		if err := contextutil.Check(c); err != nil {
 			return err
@@ -1957,6 +2167,7 @@ func decryptDict(c context.Context, d types.Dict, objNr, genNr int, key []byte, 
 			d[k] = s
 		}
 	}
+
 	return nil
 }
 
@@ -1966,6 +2177,7 @@ func decryptDeepObject(c context.Context, objIn types.Object, objNr, genNr int, 
 	if err := contextutil.Check(c); err != nil {
 		return nil, err
 	}
+
 	_, ok := objIn.(types.IndirectRef)
 	if ok {
 		return nil, nil
@@ -2184,7 +2396,10 @@ func calcOAndUAES256(ctx *model.Context, d types.Dict) (err error) {
 	}
 
 	u := append(make([]byte, 32), b...)
-	upw := []byte(ctx.UserPW)
+	upw, err := preparePassword(ctx.UserPW, true)
+	if err != nil {
+		return fmt.Errorf("user password: %w", err)
+	}
 	h := sha256.Sum256(append(upw, validationSalt(u)...))
 
 	ctx.E.U = append(h[:], b...)
@@ -2199,7 +2414,10 @@ func calcOAndUAES256(ctx *model.Context, d types.Dict) (err error) {
 	}
 
 	o := append(make([]byte, 32), b...)
-	opw := []byte(ctx.OwnerPW)
+	opw, err := preparePassword(ctx.OwnerPW, true)
+	if err != nil {
+		return fmt.Errorf("owner password: %w", err)
+	}
 	c := append(opw, validationSalt(o)...)
 	h = sha256.Sum256(append(c, ctx.E.U...))
 	ctx.E.O = append(h[:], b...)
@@ -2248,7 +2466,10 @@ func calcOAndUAES256Rev6(ctx *model.Context, d types.Dict) (err error) {
 	}
 
 	u := append(make([]byte, 32), b...)
-	upw := []byte(ctx.UserPW)
+	upw, err := preparePassword(ctx.UserPW, true)
+	if err != nil {
+		return fmt.Errorf("user password: %w", err)
+	}
 	h, _, err := hashRev6(append(upw, validationSalt(u)...), upw, nil)
 	if err != nil {
 		return err
@@ -2266,7 +2487,10 @@ func calcOAndUAES256Rev6(ctx *model.Context, d types.Dict) (err error) {
 	}
 
 	o := append(make([]byte, 32), b...)
-	opw := []byte(ctx.OwnerPW)
+	opw, err := preparePassword(ctx.OwnerPW, true)
+	if err != nil {
+		return fmt.Errorf("owner password: %w", err)
+	}
 	c := append(opw, validationSalt(o)...)
 	h, _, err = hashRev6(append(c, ctx.E.U...), opw, ctx.E.U)
 	if err != nil {

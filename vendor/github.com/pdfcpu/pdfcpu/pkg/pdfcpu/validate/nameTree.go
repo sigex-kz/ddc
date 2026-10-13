@@ -17,6 +17,7 @@ limitations under the License.
 package validate
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -49,11 +50,40 @@ func validateAPNameTreeValue(c context.Context, xRefTable *model.XRefTable, o ty
 	return validateXObjectStreamDict(c, xRefTable, o)
 }
 
-func validateJavaScriptNameTreeValueContext(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+type javaScriptNameTreeVisitKey struct{}
+
+type javaScriptNameTreeVisit struct {
+	actions *model.ActionVisit
+	// Name-tree values have stricter subtype and payload checks than generic Next actions.
+	values map[int]bool
+}
+
+func newJavaScriptNameTreeVisit() *javaScriptNameTreeVisit {
+	return &javaScriptNameTreeVisit{actions: model.NewActionVisit(), values: map[int]bool{}}
+}
+
+func javaScriptNameTreeTraversal(c context.Context) *javaScriptNameTreeVisit {
+	if visit, ok := c.Value(javaScriptNameTreeVisitKey{}).(*javaScriptNameTreeVisit); ok {
+		return visit
+	}
+	return newJavaScriptNameTreeVisit()
+}
+
+func validateJavaScriptNameTreeValue(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
+	// see 12.6.4.17
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
 	// Version check
 	err := xRefTable.ValidateVersion("JavaScriptNameTreeValue", sinceVersion)
 	if err != nil {
 		return err
+	}
+
+	visit := javaScriptNameTreeTraversal(c)
+	objNr := validationObjectNumber(0, o)
+	if visit.values[objNr] {
+		return nil
 	}
 
 	d, err := xRefTable.DereferenceDict(o)
@@ -61,20 +91,31 @@ func validateJavaScriptNameTreeValueContext(c context.Context, xRefTable *model.
 		return fmt.Errorf("JavaScript name tree value: dereference dict: %w", err)
 	}
 
-	// S, required, name
-	_, err = validateNameEntry(xRefTable, d, 0, "JavaScript", "S", REQUIRED, model.V10, func(s string) bool {
+	// S, required in strict mode, name
+	required := xRefTable.ValidationMode == model.ValidationStrict
+	s, err := validateNameEntry(xRefTable, d, 0, "JavaScript", "S", required, model.V10, func(s string) bool {
 		return s == "JavaScript"
 	})
 	if err != nil {
 		return err
 	}
+	if s == nil {
+		if err := validateJavaScriptActionDict(xRefTable, d, "JavaScript"); err != nil {
+			return err
+		}
+	}
 
 	origin := activeContentOrigin{owner: activeContentOwnerNameTree, source: activeContentSourceJavaScriptNameTree}
-	return validateActionDictObjectWithOrigin(c, xRefTable, d, o, "JavaScript name tree value", origin)
-}
-
-func validateJavaScriptNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
-	return validateJavaScriptNameTreeValueContext(context.Background(), xRefTable, o, sinceVersion)
+	if err := validateActionDictObjectDepth(c, xRefTable, d, o, "JavaScript name tree value", 0, visit.actions, origin); err != nil {
+		return err
+	}
+	if s == nil && hasJavaScriptPayload(xRefTable, d) {
+		addActionActiveContent(xRefTable, activeContentJavaScript, origin.source, o, 0, origin)
+	}
+	if objNr > 0 {
+		visit.values[objNr] = true
+	}
+	return nil
 }
 
 func validate3DResourcesNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
@@ -424,7 +465,31 @@ func validateWebCaptureContentSetDict(XRefTable *model.XRefTable, d types.Dict, 
 	return err
 }
 
-func validateWebCaptureContentSet(xRefTable *model.XRefTable, o types.Object, ownerObjNr int) error {
+type webCaptureNameTreeVisitKey struct{}
+
+// Tree values may be arrays, but their members must validate as content-set dictionaries.
+type webCaptureNameTreeVisit struct {
+	values      map[int]bool
+	contentSets map[int]bool
+}
+
+func newWebCaptureNameTreeVisit() *webCaptureNameTreeVisit {
+	return &webCaptureNameTreeVisit{values: map[int]bool{}, contentSets: map[int]bool{}}
+}
+
+func webCaptureNameTreeTraversal(c context.Context) *webCaptureNameTreeVisit {
+	if visit, ok := c.Value(webCaptureNameTreeVisitKey{}).(*webCaptureNameTreeVisit); ok {
+		return visit
+	}
+	return newWebCaptureNameTreeVisit()
+}
+
+func validateWebCaptureContentSet(xRefTable *model.XRefTable, o types.Object, ownerObjNr int, validated map[int]bool) error {
+	// see 14.10.4
+	objNr := validationObjectNumber(0, o)
+	if validated[objNr] {
+		return nil
+	}
 	d, err := xRefTable.DereferenceDict(o)
 	if err != nil {
 		return fmt.Errorf("dereference content set dict: %w", err)
@@ -432,30 +497,50 @@ func validateWebCaptureContentSet(xRefTable *model.XRefTable, o types.Object, ow
 	if d == nil {
 		return errors.New("missing content set dict")
 	}
-	return validateWebCaptureContentSetDict(xRefTable, d, validationObjectNumber(ownerObjNr, o))
+	if err := validateWebCaptureContentSetDict(xRefTable, d, validationObjectNumber(ownerObjNr, o)); err != nil {
+		return err
+	}
+	if objNr > 0 {
+		validated[objNr] = true
+	}
+	return nil
 }
 
 func validateWebCaptureNameTreeValue(c context.Context, xRefTable *model.XRefTable, o types.Object, name string) error {
+	// see 14.10.3.1
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	visit := webCaptureNameTreeTraversal(c)
+	ownerObjNr := validationObjectNumber(0, o)
+	if visit.values[ownerObjNr] {
+		return nil
+	}
 	value, err := xRefTable.Dereference(o)
 	if err != nil {
 		return fmt.Errorf("%s name tree value: dereference: %w", name, err)
 	}
-	ownerObjNr := validationObjectNumber(0, o)
 	switch value := value.(type) {
 	case types.Dict:
-		return validateWebCaptureContentSet(xRefTable, value, ownerObjNr)
+		if err := validateWebCaptureContentSet(xRefTable, o, ownerObjNr, visit.contentSets); err != nil {
+			return err
+		}
 	case types.Array:
 		for i, contentSet := range value {
 			if err := contextutil.Check(c); err != nil {
 				return err
 			}
-			if err := validateWebCaptureContentSet(xRefTable, contentSet, ownerObjNr); err != nil {
+			if err := validateWebCaptureContentSet(xRefTable, contentSet, ownerObjNr, visit.contentSets); err != nil {
 				return fmt.Errorf("%s name tree value[%d]: %w", name, i, err)
 			}
 		}
-		return nil
+	default:
+		return fmt.Errorf("%s name tree value: expected content set dict or array, got %T", name, value)
 	}
-	return fmt.Errorf("%s name tree value: expected content set dict or array, got %T", name, value)
+	if ownerObjNr > 0 {
+		visit.values[ownerObjNr] = true
+	}
+	return nil
 }
 
 func validateIDSNameTreeValue(c context.Context, xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
@@ -491,24 +576,64 @@ func validateEmbeddedFilesNameTreeValue(xRefTable *model.XRefTable, o types.Obje
 	}
 
 	objNr := validationObjectNumber(0, o)
+	value, err := xRefTable.Dereference(o)
+	if err != nil {
+		return model.WithValidationErrorObject(fmt.Errorf("EmbeddedFiles name tree value: dereference: %w", err), objNr)
+	}
+	if value == nil && xRefTable.ValidationMode == model.ValidationRelaxed {
+		model.ShowSkipped("EmbeddedFiles name tree value: null")
+		return nil
+	}
 	f, err := validateFileSpecificationWithoutLinkCollection(xRefTable, o)
 	if err != nil {
 		return fmt.Errorf("EmbeddedFiles name tree value: %w", err)
 	}
-	if !isEmbeddedFileSpecification(xRefTable, f) {
-		if xRefTable.ValidationMode == model.ValidationRelaxed && isEmptyEmbeddedFileSpecification(xRefTable, f) {
-			target, found := fileSpecificationTarget(xRefTable, f)
-			if !found {
-				target = "unnamed"
-			}
+	if isEmbeddedFileSpecification(xRefTable, f) {
+		return nil
+	}
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		target, found := fileSpecificationTarget(xRefTable, f)
+		if !found {
+			target = "unnamed"
+		}
+		if isEmptyEmbeddedFileSpecification(xRefTable, f) {
 			model.ShowSkipped(fmt.Sprintf(
 				`EmbeddedFiles name tree value %q (obj#:%d): empty EF dictionary`, target, objNr,
 			))
 			return nil
 		}
-		return errors.New("EmbeddedFiles name tree value: expected matching embedded file stream")
+		if hasEmbeddedFileStream(xRefTable, f) {
+			model.ShowDigestedSpecViolation(fmt.Sprintf(
+				`EmbeddedFiles name tree value %q (obj#:%d): EF entry does not match a file name entry`, target, objNr,
+			))
+			return nil
+		}
 	}
-	return nil
+	return errors.New("EmbeddedFiles name tree value: expected matching embedded file stream")
+}
+
+func hasEmbeddedFileStream(xRefTable *model.XRefTable, o types.Object) bool {
+	if isURLFileSpecification(xRefTable, o) {
+		return false
+	}
+	d, ok := o.(types.Dict)
+	if !ok {
+		return false
+	}
+	ef, err := xRefTable.DereferenceDict(d["EF"])
+	if err != nil {
+		return false
+	}
+	for _, key := range []string{"UF", "F", "DOS", "Mac", "Unix"} {
+		o, err := xRefTable.Dereference(ef[key])
+		if err != nil {
+			return false
+		}
+		if _, ok := o.(types.StreamDict); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func isEmptyEmbeddedFileSpecification(xRefTable *model.XRefTable, o types.Object) bool {
@@ -697,6 +822,7 @@ func validateLegacySlideShowResources(c context.Context, xRefTable *model.XRefTa
 }
 
 func validateSlideShowResources(c context.Context, xRefTable *model.XRefTable, d types.Dict, startResource string) error {
+	// see 13.5
 	const (
 		dictName  = "slideShowDict"
 		entryName = "Resources"
@@ -721,6 +847,9 @@ func validateSlideShowResources(c context.Context, xRefTable *model.XRefTable, d
 	)
 	if err != nil {
 		return err
+	}
+	if tree == nil {
+		return fmt.Errorf("%s.StartResource: resource %q not found", dictName, startResource)
 	}
 	if _, found, err := tree.Value(c, startResource); err != nil {
 		return err
@@ -860,7 +989,7 @@ func validateNameTreeValue(c context.Context, name string, xRefTable *model.XRef
 			return validateAPNameTreeValue(c, x, o, version)
 		}, model.V13, model.V13},
 		"JavaScript": {func(x *model.XRefTable, o types.Object, version model.Version) error {
-			return validateJavaScriptNameTreeValueContext(c, x, o, version)
+			return validateJavaScriptNameTreeValue(c, x, o, version)
 		}, model.V13, model.V13},
 		"3DResources": {validate3DResourcesNameTreeValue, model.V16, model.V16},
 		"Pages":       {validatePagesNameTreeValue, model.V13, model.V13},
@@ -902,7 +1031,41 @@ func validateNameTreeValueContext(c context.Context, name string, x *model.XRefT
 	return validateNameTreeValue(c, name, x, o, owner)
 }
 
+// validateNameTreeKey compares decoded string bytes before converting the key to display text.
+func validateNameTreeKey(xRefTable *model.XRefTable, o types.Object, previous []byte, havePrevious bool) (string, []byte, types.Object, error) {
+	// see 7.9.6
+	o, err := xRefTable.Dereference(o)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("dereference key: %w", err)
+	}
+	var raw []byte
+	switch key := o.(type) {
+	case types.StringLiteral:
+		raw, err = types.Unescape(key.Value())
+	case types.HexLiteral:
+		raw, err = key.Bytes()
+	default:
+		return "", nil, nil, fmt.Errorf("expected string key, got %T", o)
+	}
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("decode key bytes: %w", err)
+	}
+	// Lexical ordering uses the string bytes, regardless of their text encoding.
+	if havePrevious && bytes.Compare(raw, previous) < 0 {
+		if xRefTable.ValidationMode == model.ValidationStrict {
+			return "", nil, nil, fmt.Errorf("key %q not in lexical order after %q", raw, previous)
+		}
+		model.ShowDigestedSpecViolation("name tree keys not sorted in lexical order")
+	}
+	key, err := types.StringOrHexLiteral(o)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("expected string key: %w", err)
+	}
+	return *key, raw, o, nil
+}
+
 func validateNameTreeDictNamesEntry(c context.Context, xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, name string, node *model.Node) (string, string, error) {
+	// see 7.9.6
 	//fmt.Printf("validateNameTreeDictNamesEntry begin %s\n", d)
 
 	// Names: array of the form [key1 value1 key2 value2 ... key n value n]
@@ -922,6 +1085,8 @@ func validateNameTreeDictNamesEntry(c context.Context, xRefTable *model.XRefTabl
 		err = fmt.Errorf("name tree %s: missing Names array", name)
 		return "", "", model.WithValidationErrorObject(err, namesObjNr)
 	}
+	// Keep resolved key objects available to the model when it retains their original string bytes.
+	d["Names"] = a
 
 	// arr length needs to be even because of contained key value pairs.
 	entries := len(a)
@@ -934,6 +1099,8 @@ func validateNameTreeDictNamesEntry(c context.Context, xRefTable *model.XRefTabl
 	}
 
 	var key, firstKey, lastKey string
+	var haveFirstKey bool
+	var previous []byte
 
 	for i := 0; i < entries; i++ {
 		if err := contextutil.Check(c); err != nil {
@@ -944,26 +1111,20 @@ func validateNameTreeDictNamesEntry(c context.Context, xRefTable *model.XRefTabl
 		if i%2 == 0 {
 			keyObjNr := validationObjectNumber(namesObjNr, o)
 
-			// TODO Do we really need to process indRefs here?
-			o, err = xRefTable.Dereference(o)
+			key, previous, a[i], err = validateNameTreeKey(xRefTable, o, previous, haveFirstKey)
 			if err != nil {
-				err = fmt.Errorf("name tree %s Names[%d]: dereference key: %w", name, i, err)
+				err = fmt.Errorf("name tree %s Names[%d]: %w", name, i, err)
 				return "", "", model.WithValidationErrorObject(err, keyObjNr)
 			}
 
-			k, err := types.StringOrHexLiteral(o)
-			if err != nil {
-				err = fmt.Errorf("name tree %s Names[%d]: expected string key: %w", name, i, err)
-				return "", "", model.WithValidationErrorObject(err, keyObjNr)
+			if !haveFirstKey {
+				firstKey = string(previous)
+				node.Kmin = key
+				haveFirstKey = true
 			}
 
-			key = *k
-
-			if firstKey == "" {
-				firstKey = key
-			}
-
-			lastKey = key
+			lastKey = string(previous)
+			node.Kmax = key
 
 			continue
 		}
@@ -984,6 +1145,7 @@ func validateNameTreeDictNamesEntry(c context.Context, xRefTable *model.XRefTabl
 }
 
 func validateNameTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, firstKey, lastKey string) error {
+	// see 7.9.6
 	a, err := validateStringArrayEntry(
 		xRefTable, d, ownerObjNr, "nameTreeDict", "Limits", REQUIRED, model.V10,
 		func(a types.Array) bool { return len(a) == 2 },
@@ -996,21 +1158,21 @@ func validateNameTreeDictLimitsEntry(xRefTable *model.XRefTable, d types.Dict, o
 	if err != nil {
 		return fmt.Errorf("name tree Limits[0]: dereference: %w", err)
 	}
-	s, err := types.StringOrHexLiteral(o)
+	_, raw, _, err := validateNameTreeKey(xRefTable, o, nil, false)
 	if err != nil {
 		return fmt.Errorf("name tree Limits[0]: expected string: %w", err)
 	}
-	fkv := *s
+	fkv := string(raw)
 
 	o, err = xRefTable.Dereference(a[1])
 	if err != nil {
 		return fmt.Errorf("name tree Limits[1]: dereference: %w", err)
 	}
-	s, err = types.StringOrHexLiteral(o)
+	_, raw, _, err = validateNameTreeKey(xRefTable, o, nil, false)
 	if err != nil {
 		return fmt.Errorf("name tree Limits[1]: expected string: %w", err)
 	}
-	lkv := *s
+	lkv := string(raw)
 
 	if xRefTable.ValidationMode == model.ValidationRelaxed {
 		if fkv != firstKey {
@@ -1041,8 +1203,10 @@ func nameTreeKidContext(name string, o types.Object, i int) string {
 }
 
 func validateNameTreeKids(c context.Context, xRefTable *model.XRefTable, name string, a types.Array, ownerObjNr int, node *model.Node, depth int, specViolations *[]error, visits ...*treeVisit) (string, string, error) {
+	// see 7.9.6
 	visit := treeTraversal(visits, true)
 	var kmin, kmax string
+	var haveKmin bool
 
 	for i, o := range a {
 		if err := contextutil.Check(c); err != nil {
@@ -1080,9 +1244,15 @@ func validateNameTreeKids(c context.Context, xRefTable *model.XRefTable, name st
 			}
 			continue
 		}
+		if kidNode == nil {
+			continue
+		}
 		kmax = kmaxKid
-		if kmin == "" {
+		node.Kmax = kidNode.Kmax
+		if !haveKmin {
 			kmin = kminKid
+			node.Kmin = kidNode.Kmin
+			haveKmin = true
 		}
 
 		node.Kids = append(node.Kids, kidNode)
@@ -1092,6 +1262,13 @@ func validateNameTreeKids(c context.Context, xRefTable *model.XRefTable, name st
 }
 
 func validateNameTreeDepth(c context.Context, xRefTable *model.XRefTable, name string, d types.Dict, ownerObjNr int, root bool, depth int, rootObject ...types.Object) (string, string, *model.Node, error) {
+	// see 7.9.6
+	if name == "JavaScript" && c != nil {
+		c = context.WithValue(c, javaScriptNameTreeVisitKey{}, newJavaScriptNameTreeVisit())
+	}
+	if (name == "IDS" || name == "URLS") && c != nil {
+		c = context.WithValue(c, webCaptureNameTreeVisitKey{}, newWebCaptureNameTreeVisit())
+	}
 	var specViolations []error
 	kmin, kmax, node, err := validateNameTreeDepthWithViolations(c,
 		xRefTable,
@@ -1179,9 +1356,7 @@ func validateNameTreeDepthWithViolations(c context.Context, xRefTable *model.XRe
 		}
 	}
 
-	// We track limits for all nodes internally.
-	node.Kmin = kmin
-	node.Kmax = kmax
+	// Node limits retain decoded text for callers; validation above compares the original PDF bytes.
 
 	//fmt.Println("validateNameTree end")
 

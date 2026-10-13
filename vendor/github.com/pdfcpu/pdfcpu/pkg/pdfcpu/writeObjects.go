@@ -318,7 +318,11 @@ func writeStringLiteralObject(ctx *model.Context, objNumber, genNumber int, sl t
 		return nil
 	}
 
-	if ctx.EncKey != nil {
+	encrypted, err := stringsEncrypted(ctx)
+	if err != nil {
+		return err
+	}
+	if encrypted {
 		sl1, err := encryptStringLiteral(sl, objNumber, genNumber, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
 		if err != nil {
 			return err
@@ -340,7 +344,11 @@ func writeHexLiteralObject(ctx *model.Context, objNumber, genNumber int, hl type
 		return nil
 	}
 
-	if ctx.EncKey != nil {
+	encrypted, err := stringsEncrypted(ctx)
+	if err != nil {
+		return err
+	}
+	if encrypted {
 		hl1, err := encryptHexLiteral(hl, objNumber, genNumber, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
 		if err != nil {
 			return err
@@ -451,7 +459,11 @@ func writeDictObject(c context.Context, ctx *model.Context, objNr, genNr int, d 
 		return nil
 	}
 
-	if ctx.EncKey != nil {
+	encrypted, err := stringsEncrypted(ctx)
+	if err != nil {
+		return err
+	}
+	if encrypted {
 		_, err := encryptDeepObject(c, d, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R)
 		if err != nil {
 			return err
@@ -479,7 +491,11 @@ func writeArrayObject(c context.Context, ctx *model.Context, objNumber, genNumbe
 		return nil
 	}
 
-	if ctx.EncKey != nil {
+	encrypted, err := stringsEncrypted(ctx)
+	if err != nil {
+		return err
+	}
+	if encrypted {
 		if _, err := encryptDeepObject(c, a, objNumber, genNumber, ctx.EncKey, ctx.AES4Strings, ctx.E.R); err != nil {
 			return err
 		}
@@ -578,19 +594,22 @@ func writeStreamDictObject(ctx *model.Context, objNr, genNr int, sd types.Stream
 
 	var err error
 
-	// Unless the "Identity" crypt filter is used we have to encrypt.
+	// Use the stream's explicit crypt filter, if any, rather than the default stream filter.
 	isXRefStreamDict := sd.Type() != nil && *sd.Type() == "XRef"
-	if ctx.EncKey != nil &&
-		!isXRefStreamDict &&
-		!(len(sd.FilterPipeline) == 1 && sd.FilterPipeline[0].Name == "Crypt") {
-
-		if sd.Raw, err = encryptStream(sd.Raw, objNr, genNr, ctx.EncKey, ctx.AES4Streams, ctx.E.R); err != nil {
+	if ctx.EncKey != nil && !isXRefStreamDict {
+		encrypted, aes, err := streamCryptMethod(ctx, &sd)
+		if err != nil {
 			return err
 		}
+		if encrypted {
+			if sd.Raw, err = encryptStream(sd.Raw, objNr, genNr, ctx.EncKey, aes, ctx.E.R); err != nil {
+				return err
+			}
 
-		l := int64(len(sd.Raw))
-		sd.StreamLength = &l
-		sd.Update("Length", types.Integer(l))
+			l := int64(len(sd.Raw))
+			sd.StreamLength = &l
+			sd.Update("Length", types.Integer(l))
+		}
 	}
 
 	ctx.Write.SetWriteOffset(objNr)
@@ -626,7 +645,7 @@ func writeDirectDict(c context.Context, ctx *model.Context, d types.Dict) error 
 		if ctx.WritingPages && (k == "Dest" || k == "D") {
 			ctx.Dest = true
 		}
-		if _, _, err := writeDeepObject(c, ctx, v); err != nil {
+		if _, _, err := writeAnnotationAwareEntry(c, ctx, d, k, v); err != nil {
 			return err
 		}
 		ctx.Dest = false
@@ -720,7 +739,7 @@ func writeDeepDict(c context.Context, ctx *model.Context, d types.Dict, objNr, g
 		if ctx.WritingPages && (k == "Dest" || k == "D") {
 			ctx.Dest = true
 		}
-		if _, _, err := writeDeepObject(c, ctx, v); err != nil {
+		if _, _, err := writeAnnotationAwareEntry(c, ctx, d, k, v); err != nil {
 			return err
 		}
 		ctx.Dest = false
@@ -733,7 +752,11 @@ func writeDeepStreamDict(c context.Context, ctx *model.Context, sd *types.Stream
 	if err := contextutil.Check(c); err != nil {
 		return err
 	}
-	if ctx.EncKey != nil {
+	encrypted, err := stringsEncrypted(ctx)
+	if err != nil {
+		return err
+	}
+	if encrypted {
 		if _, err := encryptDeepObject(c, *sd, objNr, genNr, ctx.EncKey, ctx.AES4Strings, ctx.E.R); err != nil {
 			return err
 		}
@@ -844,7 +867,8 @@ func writeIndirectObject(c context.Context, ctx *model.Context, ir types.Indirec
 		return nil
 	}
 
-	o, err := ctx.DereferenceForWrite(ir)
+	// Decode compressed objects so their references are traversed and their strings can be encrypted.
+	o, err := ctx.Dereference(ir)
 	if err != nil {
 		return fmt.Errorf("unable to dereference indirect object #%d: %w", objNr, err)
 	}
@@ -873,7 +897,29 @@ func writeIndirectObject(c context.Context, ctx *model.Context, ir types.Indirec
 	return err
 }
 
-func writeDeepObject(c context.Context, ctx *model.Context, objIn types.Object) (objOut types.Object, written bool, err error) {
+func writeDeepObject(c context.Context, ctx *model.Context, objIn types.Object) (types.Object, bool, error) {
+	if err := contextutil.Check(c); err != nil {
+		return nil, false, err
+	}
+	if ctx.PDF20() && !ctx.Write.Increment {
+		o, err := ctx.Dereference(objIn)
+		if err != nil {
+			return nil, false, err
+		}
+		if d, ok := o.(types.Dict); ok {
+			annotation, err := checkWrittenAnnotation(ctx, d)
+			if err != nil {
+				return nil, false, err
+			}
+			previous := ctx.WritingAnnotation
+			ctx.WritingAnnotation = annotation
+			defer func() { ctx.WritingAnnotation = previous }()
+		}
+	}
+	return writeDeepObjectUnchecked(c, ctx, objIn)
+}
+
+func writeDeepObjectUnchecked(c context.Context, ctx *model.Context, objIn types.Object) (objOut types.Object, written bool, err error) {
 	if err := contextutil.Check(c); err != nil {
 		return nil, false, err
 	}
@@ -912,7 +958,7 @@ func writeEntry(c context.Context, ctx *model.Context, d types.Dict, dictName, e
 		log.Write.Printf("writeEntry begin: dict=%s entry=%s offset=%d\n", dictName, entryName, ctx.Write.Offset)
 	}
 
-	o, _, err := writeDeepObject(c, ctx, o)
+	o, _, err := writeAnnotationAwareEntry(c, ctx, d, entryName, o)
 	if err != nil {
 		return nil, err
 	}

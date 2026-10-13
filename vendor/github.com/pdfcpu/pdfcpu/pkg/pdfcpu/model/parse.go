@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
@@ -40,6 +39,7 @@ var (
 	errArrayNotTerminated      = errors.New("parse: unterminated array")
 	errDictionaryNotTerminated = fmt.Errorf("parse: unterminated dictionary: %w", ErrDictionaryCorrupt)
 	errDictionaryDuplicateKey  = errors.New("parse: duplicate key")
+	errInvalidBooleanOrNull    = errors.New("parse: invalid boolean or null keyword")
 	errHexLiteralCorrupt       = errors.New("parse: corrupt hex literal")
 	errHexLiteralNotTerminated = errors.New("parse: hex literal not terminated")
 	errNameObjectCorrupt       = errors.New("parse: corrupt name object")
@@ -68,9 +68,18 @@ func (e *dictionaryKeyError) Unwrap() error {
 	return e.err
 }
 
+// pdfWhitespace reports whether b is one of the six PDF whitespace bytes (7.2.3).
+func pdfWhitespace(b byte) bool {
+	switch b {
+	case 0x00, '\t', '\n', '\f', '\r', ' ':
+		return true
+	}
+	return false
+}
+
 func positionToNextWhitespace(s string) (int, string) {
-	for i, c := range s {
-		if unicode.IsSpace(c) || c == 0x00 {
+	for i := 0; i < len(s); i++ {
+		if pdfWhitespace(s[i]) {
 			return i, s[i:]
 		}
 	}
@@ -84,11 +93,9 @@ func positionToNextWhitespaceOrChar(s, chars string) (int, string) {
 		return positionToNextWhitespace(s)
 	}
 
-	for i, c := range s {
-		for _, m := range chars {
-			if c == m || unicode.IsSpace(c) || c == 0x00 {
-				return i, s[i:]
-			}
+	for i := 0; i < len(s); i++ {
+		if pdfWhitespace(s[i]) || strings.IndexByte(chars, s[i]) >= 0 {
+			return i, s[i:]
 		}
 	}
 
@@ -107,31 +114,22 @@ func positionToNextEOL(s string) (string, int) {
 }
 
 // trimLeftSpace trims leading whitespace and trailing comment.
-func trimLeftSpace(s string, relaxed bool) (string, bool) {
+func trimLeftSpace(s string, repair bool) (string, bool) {
 	if log.ParseEnabled() {
 		log.Parse.Printf("TrimLeftSpace: begin %s\n", s)
-	}
-
-	whitespace := func(c rune) bool { return unicode.IsSpace(c) || c == 0x00 }
-
-	whitespaceNoEol := func(r rune) bool {
-		switch r {
-		case '\t', '\v', '\f', ' ', 0x85, 0xA0, 0x00:
-			return true
-		}
-		return false
 	}
 
 	var eol bool
 
 	for {
-		if relaxed {
-			s = strings.TrimLeftFunc(s, whitespaceNoEol)
-			if len(s) >= 1 && (s[0] == '\n' || s[0] == '\r') {
+		i := 0
+		for i < len(s) && pdfWhitespace(s[i]) {
+			if repair && (s[i] == '\n' || s[i] == '\r') {
 				eol = true
 			}
+			i++
 		}
-		s = strings.TrimLeftFunc(s, whitespace)
+		s = s[i:]
 		if log.ParseEnabled() {
 			log.Parse.Printf("1 outstr: <%s>\n", s)
 		}
@@ -152,7 +150,7 @@ func trimLeftSpace(s string, relaxed bool) (string, bool) {
 	return s, eol
 }
 
-// HexString validates and formats a hex string to be of even length.
+// hexString validates and formats a hex string to be of even length.
 func hexString(s string) (*string, bool) {
 	if len(s) == 0 {
 		s1 := ""
@@ -163,11 +161,8 @@ func hexString(s string) (*string, bool) {
 	i := 0
 
 	for _, c := range strings.ToUpper(s) {
-		if strings.ContainsRune(" \x09\x0A\x0C\x0D", c) {
-			if i%2 > 0 {
-				sb.WriteString("0")
-				i = 0
-			}
+		if strings.ContainsRune("\x00\x09\x0A\x0C\x0D ", c) {
+			// Ignore whitespace within digit pairs (PDF 2.0, 7.3.4.3).
 			continue
 		}
 		isHexChar := false
@@ -270,8 +265,12 @@ func cleanObjProlog(s string) (string, error) {
 
 	var b strings.Builder
 	for _, r := range s {
-		if r >= '0' && r <= '9' || r == ' ' {
+		switch {
+		case r >= '0' && r <= '9' || r == ' ':
 			b.WriteRune(r)
+		case r == 0x00 || r == '\t' || r == '\n' || r == '\f' || r == '\r':
+			// Preserve PDF whitespace as a separator between numbers (7.2.3).
+			b.WriteRune(' ')
 		}
 	}
 	return b.String(), nil
@@ -339,7 +338,7 @@ func ParseObjectAttributes(line *string) (*int, *int, error) {
 	return &objNr, &genNr, nil
 }
 
-func parseArray(c context.Context, line *string, level, maxDepth int, relaxed bool) (*types.Array, error) {
+func parseArray(c context.Context, line *string, level, maxDepth, validationMode int, repair bool) (*types.Array, error) {
 	if err := CheckRecursionDepth("parse object", level, maxDepth); err != nil {
 		return nil, err
 	}
@@ -379,7 +378,7 @@ func parseArray(c context.Context, line *string, level, maxDepth int, relaxed bo
 
 	for !strings.HasPrefix(l, "]") {
 
-		obj, err := parseObject(c, &l, level+1, maxDepth, relaxed)
+		obj, err := parseObject(c, &l, level+1, maxDepth, validationMode, repair)
 		if err != nil {
 			return nil, err
 		}
@@ -555,18 +554,16 @@ func parseName(line *string) (*types.Name, error) {
 	return &nameObj, nil
 }
 
-func insertKey(d types.Dict, key string, val types.Object, relaxed bool) error {
+func insertKey(d types.Dict, key string, val types.Object, validationMode int) error {
 	if _, found := d[key]; !found {
 		d[key] = val
 	} else {
-
-		// was: for now we ignore duplicate keys - config flag ?
-
-		// if !relaxed {
-		// 	return errDictionaryDuplicateKey
-		// }
-
-		d[key] = val
+		if validationMode != ValidationRelaxed {
+			return fmt.Errorf("%w: %q", errDictionaryDuplicateKey, key)
+		}
+		if val != nil {
+			d[key] = val
+		}
 		ShowDigestedSpecViolation(fmt.Sprintf("duplicate key \"%s\"", key))
 	}
 
@@ -581,7 +578,7 @@ func dictString(l string) bool {
 	return len(l) > 0 && !strings.HasPrefix(l, ">>")
 }
 
-func processDictKeys(c context.Context, line *string, level, maxDepth int, relaxed bool) (types.Dict, error) {
+func processDictKeys(c context.Context, line *string, level, maxDepth, validationMode int, repair bool) (types.Dict, error) {
 	l := *line
 	var eol bool
 	d := types.NewDict()
@@ -594,7 +591,7 @@ func processDictKeys(c context.Context, line *string, level, maxDepth int, relax
 
 		keyName, err := parseName(&l)
 		if err != nil {
-			if !relaxed {
+			if !repair {
 				return nil, &dictionaryKeyError{err: err}
 			}
 			// Skip junk.
@@ -606,9 +603,9 @@ func processDictKeys(c context.Context, line *string, level, maxDepth int, relax
 		}
 
 		// Position to first non whitespace after key.
-		l, eol = trimLeftSpace(l, relaxed)
+		l, eol = trimLeftSpace(l, repair)
 
-		if err != nil && relaxed {
+		if err != nil && repair {
 			// Skip junk.
 			continue
 		}
@@ -624,17 +621,16 @@ func processDictKeys(c context.Context, line *string, level, maxDepth int, relax
 			// #252: For dicts with kv pairs terminated by eol we accept a missing value as an empty string.
 			val = types.StringLiteral("")
 		} else {
-			if val, err = parseObject(c, &l, level+1, maxDepth, relaxed); err != nil {
+			if val, err = parseObject(c, &l, level+1, maxDepth, validationMode, repair); err != nil {
 				return nil, err
 			}
 		}
 
 		// Specifying the null object as the value of a dictionary entry (7.3.7, "Dictionary Objects")
 		// shall be equivalent to omitting the entry entirely.
-		if val != nil {
-			if err := insertKey(d, string(*keyName), val, relaxed); err != nil {
-				return nil, err
-			}
+		// Retain null entries until duplicate keys have been checked.
+		if err := insertKey(d, string(*keyName), val, validationMode); err != nil {
+			return nil, err
 		}
 
 		// We are positioned on the char behind the last parsed dict value.
@@ -653,7 +649,7 @@ func processDictKeys(c context.Context, line *string, level, maxDepth int, relax
 	return d, nil
 }
 
-func parseDict(c context.Context, line *string, level, maxDepth int, relaxed bool) (types.Dict, error) {
+func parseDict(c context.Context, line *string, level, maxDepth, validationMode int, repair bool) (types.Dict, error) {
 	if line == nil || len(*line) == 0 {
 		return nil, errNoDictionary
 	}
@@ -679,9 +675,14 @@ func parseDict(c context.Context, line *string, level, maxDepth int, relaxed boo
 		return nil, errDictionaryNotTerminated
 	}
 
-	d, err := processDictKeys(c, &l, level, maxDepth, relaxed)
+	d, err := processDictKeys(c, &l, level, maxDepth, validationMode, repair)
 	if err != nil {
 		return nil, err
+	}
+	for key, val := range d {
+		if val == nil {
+			delete(d, key)
+		}
 	}
 
 	// position behind '>>'
@@ -782,23 +783,38 @@ func parseIndRef(s, l, l1 string, line *string, i, i2 int) (types.Object, error)
 	return types.Integer(i), nil
 }
 
+// isPDFReal reports whether s contains decimal digits, an optional sign, and at most one period (7.3.3).
+func isPDFReal(s string) bool {
+	digits, period := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digits = true
+		case c == '.' && !period:
+			period = true
+		case (c == '+' || c == '-') && i == 0:
+		default:
+			return false
+		}
+	}
+	return digits
+}
+
 func parseFloat(s string) (types.Object, error) {
 	// Replace ',' with '.' to accept comma as decimal separator
 	s = strings.Replace(s, ",", ".", 1)
 
-	f, n := strconv.ParseFloat(s, 64)
-	if n != nil {
-		// Fallback: handle ".-" case (e.g., ".-5")
-		s = strings.Replace(s, ".-", ".", 1)
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			// Skip junk
-			return nil, nil
-		}
-		if log.ParseEnabled() {
-			log.Parse.Printf("parseFloat: value is: %f\n", f)
-		}
-		return types.Float(f), nil
+	// Preserve the existing tolerance for ".-" (e.g., ".-5").
+	s = strings.Replace(s, ".-", ".", 1)
+	if !isPDFReal(s) {
+		return nil, nil
+	}
+
+	// With decimal syntax established, ParseFloat reports overflow as a range error.
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil, nil
 	}
 
 	if log.ParseEnabled() {
@@ -874,7 +890,7 @@ func parseNumericOrIndRef(line *string) (types.Object, error) {
 	return parseIndRef(s, l, l1, line, i, i2)
 }
 
-func parseHexLiteralOrDict(c context.Context, l *string, level, maxDepth int, relaxed bool) (val types.Object, err error) {
+func parseHexLiteralOrDict(c context.Context, l *string, level, maxDepth, validationMode int, repair bool) (val types.Object, err error) {
 	if len(*l) < 2 {
 		return nil, errBufNotAvailable
 	}
@@ -887,7 +903,7 @@ func parseHexLiteralOrDict(c context.Context, l *string, level, maxDepth int, re
 		if err := CheckRecursionDepth("parse object", level, maxDepth); err != nil {
 			return nil, err
 		}
-		d, err := parseDict(c, l, level, maxDepth, relaxed)
+		d, err := parseDict(c, l, level, maxDepth, validationMode, repair)
 		if err != nil {
 			return nil, err
 		}
@@ -953,11 +969,11 @@ func parseObjectDepthLimit(maxDepth []int) int {
 	return depthLimit
 }
 
-func parseObjectValue(c context.Context, l *string, level, depthLimit int, relaxed bool) (types.Object, error) {
+func parseObjectValue(c context.Context, l *string, level, depthLimit, validationMode int, repair bool) (types.Object, error) {
 	switch (*l)[0] {
 
 	case '[': // array
-		a, err := parseArray(c, l, level, depthLimit, relaxed)
+		a, err := parseArray(c, l, level, depthLimit, validationMode, repair)
 		if err != nil {
 			return nil, err
 		}
@@ -971,7 +987,7 @@ func parseObjectValue(c context.Context, l *string, level, depthLimit int, relax
 		return *nameObj, nil
 
 	case '<': // hex literal or dict
-		return parseHexLiteralOrDict(c, l, level, depthLimit, relaxed)
+		return parseHexLiteralOrDict(c, l, level, depthLimit, validationMode, repair)
 
 	case '(': // string literal
 		return parseStringLiteral(l)
@@ -979,6 +995,12 @@ func parseObjectValue(c context.Context, l *string, level, depthLimit int, relax
 	default:
 		value, valStr, ok := parseBooleanOrNull(*l)
 		if ok {
+			if token := (*l)[:len(valStr)]; token != valStr {
+				if validationMode != ValidationRelaxed {
+					return nil, fmt.Errorf("%w: %q", errInvalidBooleanOrNull, token)
+				}
+				ShowDigestedSpecViolation(fmt.Sprintf("noncanonical keyword %q", token))
+			}
 			*l = forwardParseBuf(*l, len(valStr))
 			return value, nil
 		}
@@ -990,7 +1012,8 @@ func parseObjectValue(c context.Context, l *string, level, depthLimit int, relax
 	}
 }
 
-func parseObject(c context.Context, line *string, level, depthLimit int, relaxed bool) (types.Object, error) {
+// parseObject applies validationMode independently of the missing-value and junk recovery enabled by repair.
+func parseObject(c context.Context, line *string, level, depthLimit, validationMode int, repair bool) (types.Object, error) {
 	if noBuf(line) {
 		return nil, errBufNotAvailable
 	}
@@ -1015,7 +1038,7 @@ func parseObject(c context.Context, line *string, level, depthLimit int, relaxed
 		return nil, errBufNotAvailable
 	}
 
-	value, err := parseObjectValue(c, &l, level, depthLimit, relaxed)
+	value, err := parseObjectValue(c, &l, level, depthLimit, validationMode, repair)
 	if err != nil {
 		return nil, err
 	}
@@ -1054,16 +1077,20 @@ func ParseObjectWithPolicy(c context.Context, line *string, level, validationMod
 
 	depthLimit := parseObjectDepthLimit(maxDepth)
 	original := *line
-	value, err := parseObject(c, line, level, depthLimit, false)
+	value, err := parseObject(c, line, level, depthLimit, validationMode, false)
 	if err == nil {
 		return ParseObjectResult{Object: value}, nil
 	}
 	if errors.Is(err, ErrMaxRecursionDepthExceeded) || c.Err() != nil {
 		return ParseObjectResult{}, err
 	}
+	if validationMode != ValidationRelaxed &&
+		(errors.Is(err, errDictionaryDuplicateKey) || errors.Is(err, errInvalidBooleanOrNull)) {
+		return ParseObjectResult{StrictFailure: err}, err
+	}
 	if !policyManagedParseError(err) {
 		*line = original
-		value, err = parseObject(c, line, level, depthLimit, true)
+		value, err = parseObject(c, line, level, depthLimit, validationMode, true)
 		return ParseObjectResult{Object: value}, err
 	}
 
@@ -1073,7 +1100,7 @@ func ParseObjectWithPolicy(c context.Context, line *string, level, validationMod
 	}
 
 	*line = original
-	result.Object, err = parseObject(c, line, level, depthLimit, true)
+	result.Object, err = parseObject(c, line, level, depthLimit, validationMode, true)
 	return result, err
 }
 
@@ -1089,13 +1116,13 @@ func ParseObject(c context.Context, line *string, level int, maxDepth ...int) (t
 
 	depthLimit := parseObjectDepthLimit(maxDepth)
 	original := *line
-	value, err := parseObject(c, line, level, depthLimit, false)
+	value, err := parseObject(c, line, level, depthLimit, ValidationRelaxed, false)
 	if err == nil || errors.Is(err, ErrMaxRecursionDepthExceeded) || c.Err() != nil {
 		return value, err
 	}
 
 	*line = original
-	return parseObject(c, line, level, depthLimit, true)
+	return parseObject(c, line, level, depthLimit, ValidationRelaxed, true)
 }
 
 func createXRefStreamDict(sd *types.StreamDict, objs []int, size int) (*types.XRefStreamDict, error) {
@@ -1337,8 +1364,9 @@ func objectStreamDict(sd *types.StreamDict, limits ResourceLimits, n, first *int
 	return &osd, nil
 }
 
-func isMarkerTerminated(r rune) bool {
-	return r == 0x00 || unicode.IsSpace(r)
+// isMarkerTerminated recognizes PDF whitespace after a recovery marker (see 7.2.3).
+func isMarkerTerminated(b byte) bool {
+	return pdfWhitespace(b)
 }
 
 func detectMarker(line, marker string) int {
@@ -1351,13 +1379,12 @@ func detectMarker(line, marker string) int {
 	}
 	off := i + len(marker)
 	ind := i
-	for !isMarkerTerminated(rune(line[off])) {
+	for !isMarkerTerminated(line[off]) {
 		line = line[off:]
 		if marker == "endobj" {
 			j := strings.Index(line, "xref")
-			if j >= 0 {
-				r := rune(line[j+4])
-				if isMarkerTerminated(r) {
+			if j >= 0 && j+len("xref") < len(line) {
+				if isMarkerTerminated(line[j+len("xref")]) {
 					return ind
 				}
 			}
@@ -1376,13 +1403,16 @@ func detectMarker(line, marker string) int {
 	return ind
 }
 
+// posUnsearched distinguishes a position needing a new search from a valid marker at byte zero.
+const posUnsearched = -2
+
 func detectMarkers(line string, endInd, streamInd *int) {
 	//fmt.Printf("buflen=%d\n%s", len(line), hex.Dump([]byte(line)))
-	if *endInd == 0 {
+	if *endInd == posUnsearched {
 		*endInd = detectMarker(line, "endobj")
 
 	}
-	if *streamInd == 0 {
+	if *streamInd == posUnsearched {
 		*streamInd = detectMarker(line, "stream")
 	}
 }
@@ -1411,33 +1441,6 @@ func posFloor(pos1, pos2 int) int {
 	return pos2
 }
 
-func detectNonEscaped(line, s string) int {
-	var ind int
-	for {
-		i := strings.Index(line, s)
-		if i < 0 {
-			// did not find s
-			return -1
-		}
-		if i == 0 {
-			// found s at pos 0
-			return ind
-		}
-		if line[i-1] != 0x5c {
-			// found s at pos i
-			return ind + i
-		}
-		// found escaped s
-		if i == len(line)-1 {
-			// last is escaped s -> did not find s
-			return -1
-		}
-		// moving on after escaped s
-		line = line[i+1:]
-		ind += i + 1
-	}
-}
-
 func applyOffBoth(endInd, streamInd, off int) (int, int, error) {
 	if endInd >= 0 {
 		endInd += off
@@ -1450,7 +1453,7 @@ func applyOffBoth(endInd, streamInd, off int) (int, int, error) {
 
 func applyOffEndIndFirst(endInd, streamInd, off, floor int) (int, int, error) {
 	endInd += off
-	if streamInd > 0 {
+	if streamInd >= 0 {
 		if streamInd > floor {
 			// stream after any ( or % to skip
 			streamInd = -1
@@ -1463,7 +1466,7 @@ func applyOffEndIndFirst(endInd, streamInd, off, floor int) (int, int, error) {
 
 func applyOffStreamIndFirst(endInd, streamInd, off, floor int) (int, int, error) {
 	streamInd += off
-	if endInd > 0 {
+	if endInd >= 0 {
 		if endInd > floor {
 			// endobj after any ( or % to skip
 			endInd = -1
@@ -1481,21 +1484,27 @@ func isComment(commentPos, strLitPos int) bool {
 func skipComment(line string, commentPos int, off, endInd, streamInd *int) string {
 	l, i := positionToNextEOL(line[commentPos:])
 	if l == "" {
+		if *endInd >= commentPos {
+			*endInd = -1
+		}
+		if *streamInd >= commentPos {
+			*streamInd = -1
+		}
 		return l
 	}
 	delta := commentPos + i
 	*off += delta
 
 	// Adjust found positions for changed line.
-	if *endInd > delta {
+	if *endInd >= delta {
 		*endInd -= delta
 	} else if *endInd != -1 {
-		*endInd = 0
+		*endInd = posUnsearched
 	}
-	if *streamInd > delta {
+	if *streamInd >= delta {
 		*streamInd -= delta
 	} else if *streamInd != -1 {
-		*streamInd = 0
+		*streamInd = posUnsearched
 	}
 	return l
 }
@@ -1508,15 +1517,15 @@ func skipStringLit(line string, strLitPos int, off, endInd, streamInd *int) (str
 	delta := strLitPos + i
 	*off += delta
 	// Adjust found positions for changed line.
-	if *endInd > delta {
+	if *endInd >= delta {
 		*endInd -= delta
 	} else if *endInd != -1 {
-		*endInd = 0
+		*endInd = posUnsearched
 	}
-	if *streamInd > delta {
+	if *streamInd >= delta {
 		*streamInd -= delta
 	} else if *streamInd != -1 {
-		*streamInd = 0
+		*streamInd = posUnsearched
 	}
 	return l, nil
 }
@@ -1533,6 +1542,19 @@ func skipCommentOrStringLiteral(line string, commentPos, slPos int, off, endInd,
 	return skipStringLit(line, slPos, off, endInd, streamInd)
 }
 
+func rebaseDelimiterPos(pos, delta int, empty bool) int {
+	if empty {
+		return -1
+	}
+	if pos < 0 {
+		return pos
+	}
+	if pos >= delta {
+		return pos - delta
+	}
+	return posUnsearched
+}
+
 // DetectKeywords detects endobj and stream keywords in line using c for cancellation.
 func DetectKeywords(c context.Context, line string) (endInd int, streamInd int, err error) {
 	if c == nil {
@@ -1544,7 +1566,8 @@ func DetectKeywords(c context.Context, line string) (endInd int, streamInd int, 
 func detectKeywords(c context.Context, line string) (endInd int, streamInd int, err error) {
 	// return endInd or streamInd which ever first encountered.
 	off := 0
-	strLitPos, commentPos := 0, 0
+	strLitPos, commentPos := posUnsearched, posUnsearched
+	endInd, streamInd = posUnsearched, posUnsearched
 	for {
 		if err := c.Err(); err != nil {
 			return -1, -1, err
@@ -1556,12 +1579,12 @@ func detectKeywords(c context.Context, line string) (endInd int, streamInd int, 
 			return -1, -1, nil
 		}
 
-		// Don't re-search in partial line if known to be not present.
-		if strLitPos != -1 {
-			strLitPos = detectNonEscaped(line, "(")
+		// Outside literal strings, backslashes do not escape delimiters.
+		if strLitPos == posUnsearched {
+			strLitPos = strings.IndexByte(line, '(')
 		}
-		if commentPos != -1 {
-			commentPos = detectNonEscaped(line, "%")
+		if commentPos == posUnsearched {
+			commentPos = strings.IndexByte(line, '%')
 		}
 
 		if strLitPos < 0 && commentPos < 0 {
@@ -1571,23 +1594,27 @@ func detectKeywords(c context.Context, line string) (endInd int, streamInd int, 
 
 		floor := posFloor(strLitPos, commentPos)
 
-		if endInd > 0 {
+		if endInd >= 0 {
 			if endInd < floor {
 				// endobj before any ( or % to skip
 				return applyOffEndIndFirst(endInd, streamInd, off, floor)
 			}
 		}
 
-		if streamInd > 0 {
+		if streamInd >= 0 {
 			if streamInd < floor {
 				// stream before any ( or % to skip
 				return applyOffStreamIndFirst(endInd, streamInd, off, floor)
 			}
 		}
 
+		prevOff := off
 		line, err = skipCommentOrStringLiteral(line, commentPos, strLitPos, &off, &endInd, &streamInd)
 		if err != nil {
 			return -1, -1, err
 		}
+		delta := off - prevOff
+		strLitPos = rebaseDelimiterPos(strLitPos, delta, line == "")
+		commentPos = rebaseDelimiterPos(commentPos, delta, line == "")
 	}
 }

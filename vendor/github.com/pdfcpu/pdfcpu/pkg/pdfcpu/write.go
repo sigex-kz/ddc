@@ -126,7 +126,7 @@ func writeContext(c context.Context, ctx *model.Context) (err error) {
 		}()
 	}
 
-	if err = runWritePhase(c, func() error { return prepareContextForWriting(ctx) }); err != nil {
+	if err = runWritePhase(c, func() error { return prepareContextForWriting(c, ctx) }); err != nil {
 		return fmt.Errorf("write PDF: prepare context: %w", err)
 	}
 
@@ -197,6 +197,12 @@ func WriteIncrement(c context.Context, ctx *model.Context) error {
 	if err := validateWriteContext(ctx); err != nil {
 		return err
 	}
+	if err := checkAnnotationAppearancesForWriting(c, ctx); err != nil {
+		return fmt.Errorf("write PDF: annotation appearances: %w", err)
+	}
+	if err := prepareCoreFontsForWriting(c, ctx); err != nil {
+		return err
+	}
 
 	// Write all modified objects that are part of this increment.
 	for _, i := range ctx.Write.ObjNrs {
@@ -212,7 +218,7 @@ func WriteIncrement(c context.Context, ctx *model.Context) error {
 	return runWritePhase(c, func() error { return writeTrailer(ctx.Write) })
 }
 
-func prepareContextForWriting(ctx *model.Context) error {
+func prepareContextForWriting(c context.Context, ctx *model.Context) error {
 	if err := ensureInfoDictAndFileID(ctx); err != nil {
 		return err
 	}
@@ -226,7 +232,7 @@ func prepareContextForWriting(ctx *model.Context) error {
 	if err := handleEncryption(ctx); err != nil {
 		return fmt.Errorf("encryption: %w", err)
 	}
-	return nil
+	return prepareCoreFontsForWriting(c, ctx)
 }
 
 func writeAdditionalStreams(c context.Context, ctx *model.Context) error {
@@ -372,6 +378,9 @@ func writeRootAttrsBatch2(c context.Context, ctx *model.Context, d types.Dict, d
 		{"Requirements", model.RootRequirements},
 		{"Collection", model.RootCollection},
 		{"NeedsRendering", model.RootNeedsRendering},
+		{"DSS", model.RootDSS},
+		{"AF", model.RootAF},
+		{"DPartRoot", model.RootDPartRoot},
 	} {
 		if err := contextutil.Check(c); err != nil {
 			return err
@@ -381,7 +390,9 @@ func writeRootAttrsBatch2(c context.Context, ctx *model.Context, d types.Dict, d
 		}
 	}
 
-	return nil
+	// Preserve remaining catalog references, including developer extensions.
+	// Already written objects are skipped, preserving the specialized page-tree output.
+	return writeDirectDict(c, ctx, d)
 }
 
 func writeRootObject(c context.Context, ctx *model.Context) error {
