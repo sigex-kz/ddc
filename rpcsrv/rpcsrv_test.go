@@ -2542,7 +2542,8 @@ func BenchmarkBuild(b *testing.B) {
 
 	errChan := make(chan error)
 	go func(errChan chan error) {
-		<-errChan
+		srvErr := <-errChan
+		b.Log(srvErr)
 	}(errChan)
 
 	err := Start(network, address, errChan)
@@ -2716,7 +2717,8 @@ func BenchmarkParse(b *testing.B) {
 
 	errChan := make(chan error)
 	go func(errChan chan error) {
-		<-errChan
+		srvErr := <-errChan
+		b.Log(srvErr)
 	}(errChan)
 
 	err := Start(network, address, errChan)
