@@ -22,7 +22,7 @@ github.com/munnerz/goautoneg
 # github.com/patrickmn/go-cache v2.1.0+incompatible
 ## explicit
 github.com/patrickmn/go-cache
-# github.com/pdfcpu/pdfcpu v0.16.3
+# github.com/pdfcpu/pdfcpu v0.16.4
 ## explicit; go 1.26.0
 github.com/pdfcpu/pdfcpu/internal/contextutil
 github.com/pdfcpu/pdfcpu/internal/corefont/metrics
@@ -30,6 +30,7 @@ github.com/pdfcpu/pdfcpu/internal/fileutil
 github.com/pdfcpu/pdfcpu/internal/filter/lzw
 github.com/pdfcpu/pdfcpu/internal/inputlimit
 github.com/pdfcpu/pdfcpu/internal/netutil
+github.com/pdfcpu/pdfcpu/internal/streamlimit
 github.com/pdfcpu/pdfcpu/pkg/api
 github.com/pdfcpu/pdfcpu/pkg/filter
 github.com/pdfcpu/pdfcpu/pkg/font
